@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>涂改标注复核</title>
+<style>
+:root{--ink:#14161b;--muted:#5b6472;--faint:#8d94a2;--paper:#e8ebf1;--surface:#fff;
+ --sunk:#f2f4f8;--rule:#d0d6e0;--firm:#aeb7c6;--sel:#111;
+ --blot:#d62828;--line:#0353a4;--over:#2a9d8f;--view:#f77f00;--ok:#1f7a4d}
+@media (prefers-color-scheme:dark){:root{--ink:#e6e9f0;--muted:#98a1b2;--faint:#6d7688;
+ --paper:#0e1015;--surface:#171a21;--sunk:#1c2029;--rule:#2a303c;--firm:#3c4453;--sel:#fff;
+ --blot:#ef5350;--line:#5b9bf5;--over:#4cbf99;--view:#ffa726;--ok:#4cbf85}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--paper);color:var(--ink);
+ font:400 14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+ display:flex;flex-direction:column;overflow:hidden}
+.bar{display:flex;align-items:center;gap:14px;padding:8px 14px;background:var(--surface);
+ border-bottom:1px solid var(--firm);flex-wrap:wrap;flex:0 0 auto}
+.bar .grow{flex:1 1 auto}
+.count{font:500 13px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+.count b{font-size:16px}
+.pill{font-size:12px;padding:3px 8px;border-radius:99px;background:var(--sunk);color:var(--muted)}
+.pill.r0{background:var(--blot);color:#fff}.pill.r1{background:var(--line);color:#fff}
+.pill.done{background:var(--ok);color:#fff}
+button{font:500 13px inherit;color:var(--ink);background:var(--surface);border:1px solid var(--firm);
+ padding:6px 11px;border-radius:5px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--ink)}
+button:disabled{opacity:.4;cursor:default}
+button[aria-pressed="true"]{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+button:focus-visible{outline:2px solid var(--view);outline-offset:2px}
+kbd{font:500 11px ui-monospace,monospace;background:var(--sunk);border:1px solid var(--firm);
+ border-bottom-width:2px;border-radius:3px;padding:0 4px;margin-left:4px;color:var(--muted)}
+.stage{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;padding:10px 14px;gap:8px}
+.overview{flex:0 0 auto;background:var(--surface);border:1px solid var(--rule);border-radius:6px;
+ padding:6px;position:relative}
+.overview canvas{display:block;max-width:100%;max-height:150px;width:auto;height:auto;margin:0 auto;cursor:crosshair}
+.ovlabel{position:absolute;top:8px;left:10px;font-size:11px;color:var(--faint);
+ background:var(--surface);padding:1px 5px;border-radius:3px;pointer-events:none}
+.work{flex:1 1 auto;min-height:0;background:var(--surface);border:1px solid var(--rule);
+ border-radius:6px;overflow:hidden;position:relative}
+.work canvas{display:block;cursor:crosshair;touch-action:none}
+.hud{position:absolute;right:10px;bottom:8px;font:500 11px ui-monospace,monospace;
+ color:var(--muted);background:var(--surface);border:1px solid var(--rule);
+ border-radius:4px;padding:2px 6px;pointer-events:none}
+.tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:0 0 auto}
+.swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+.marks{display:flex;gap:6px;flex-wrap:wrap;max-height:64px;overflow-y:auto;flex:1 1 200px}
+.chip{font:500 11px ui-monospace,monospace;padding:3px 7px;border-radius:4px;cursor:pointer;
+ border:1px solid var(--firm);background:var(--sunk);white-space:nowrap}
+.chip[aria-pressed="true"]{outline:2px solid var(--sel);outline-offset:1px}
+.chip.pick{background:var(--view);color:#fff;border-color:var(--view)}
+dialog{border:1px solid var(--firm);border-radius:8px;background:var(--surface);color:var(--ink);
+ max-width:560px;padding:18px}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+textarea{width:100%;height:120px;font:400 11px ui-monospace,monospace;background:var(--sunk);
+ color:var(--ink);border:1px solid var(--rule);border-radius:5px;padding:8px}
+.note{color:var(--muted);font-size:12.5px}
+</style></head><body>
+<div class="bar">
+  <span class="count">第 <b id="pos">–</b> / <span id="total">–</span></span>
+  <span class="pill" id="rank">–</span>
+  <span class="pill" id="state">未看</span>
+  <span class="count" id="progress">已看 0</span>
+  <span class="grow"></span>
+  <button id="prev">上一行<kbd>←</kbd></button>
+  <button id="next">下一行<kbd>空格</kbd></button>
+  <button id="jump">下一个未看</button>
+  <button id="reset">还原这一行</button>
+  <button id="export">导出</button>
+</div>
+<div class="stage">
+  <div class="overview"><canvas id="ov"></canvas><span class="ovlabel">全局</span></div>
+  <div class="tools">
+    <button id="t-line"><span class="swatch" style="background:var(--line)"></span>横线划掉<kbd>2</kbd></button>
+    <button id="t-blot"><span class="swatch" style="background:var(--blot)"></span>涂黑<kbd>1</kbd></button>
+    <button id="t-over"><span class="swatch" style="background:var(--over)"></span>盖写<kbd>3</kbd></button>
+    <button id="t-join">连接两段<kbd>C</kbd></button>
+    <button id="t-del">删除选中<kbd>D</kbd></button>
+    <button id="t-undo">撤销<kbd>Z</kbd></button>
+    <button id="t-fit">适应<kbd>0</kbd></button>
+    <button id="t-z1">1×</button><button id="t-z2">2×</button><button id="t-z4">4×</button>
+    <button id="t-hide" aria-pressed="false">暂时隐藏标记<kbd>H</kbd></button>
+    <button id="t-ref" aria-pressed="true" hidden>旧标注（参考）<kbd>R</kbd></button>
+    <div class="marks" id="marks"></div>
+  </div>
+  <div class="work" id="work"><canvas id="cv"></canvas><span class="hud" id="hud"></span></div>
+</div>
+<dialog id="dlg"><h3 style="margin:0 0 8px">导出</h3>
+<p class="note" id="dlgnote"></p><textarea id="dump" readonly></textarea>
+<div style="display:flex;gap:8px;margin-top:10px">
+<button id="save">下载 JSON</button><button id="close">关闭</button></div></dialog>
+<!--PACK--><script src="manifest.js"></script><!--/PACK-->
+<script>
+"use strict";
+const PACK = window.PACK, ROWS = PACK.rows, KEY = "reannotate-" + PACK.schema_version;
+const COLOUR = {line:"--line", blot:"--blot", overwrite:"--over"};
+const SHAPE = {line:"line", blot:"box", overwrite:"box"};
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+let store = {};
+try { store = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { store = {}; }
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {} };
+
+let at = 0, tool = "line", picking = [], selected = -1, history = [], image = null;
+let zoom = 1, panX = 0, panY = 0, drag = null, loadToken = 0, hidden = false;
+// The fitted view never blows a small crop up past FIT_MAX: a 60-pixel crop
+// filling a wide screen at 20x is a blur of blocks nobody can annotate.
+const FIT_MAX = PACK.fit_max_zoom || 4, WHEEL_MAX = 12;
+let reference = null, showRef = true;
+
+const row = () => ROWS[at];
+const original = () => row().versions[0].marks;
+function marks() {
+  const id = row().line_id;
+  if (!store[id]) store[id] = { marks: JSON.parse(JSON.stringify(original())), seen: false };
+  return store[id].marks;
+}
+const endpoints = m => m.path ? [m.path[0], m.path[m.path.length - 1]]
+                              : [[m.x1, m.y1], [m.x2, m.y2]];
+const points = m => m.path ? m.path.map(p => [p[0], p[1]]) : [[m.x1, m.y1], [m.x2, m.y2]];
+
+function remember() {
+  history.push(JSON.stringify(marks()));
+  if (history.length > 60) history.shift();
+}
+
+// ---------- drawing ----------
+function paintMarks(ctx, scale, ox, oy) {
+  if (hidden) return;
+  const list = marks();
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  list.forEach((m, i) => {
+    const colour = css(COLOUR[m.type] || "--line");
+    const chosen = i === selected, held = picking.includes(i);
+    ctx.strokeStyle = colour;
+    ctx.fillStyle = colour;
+    ctx.lineWidth = Math.max(1, (PACK.mark_stroke_px || 3) * scale);
+    // The band shows the true rasterised width; it gets fainter as it widens
+    // so the ink under it stays readable at any zoom.
+    const band = ctx.lineWidth > 12 ? .10 : .20;
+    if (SHAPE[m.type] === "box") {
+      ctx.globalAlpha = .12;
+      ctx.fillRect(m.x * scale + ox, m.y * scale + oy, m.w * scale, m.h * scale);
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = Math.max(1, 1.5 * scale);
+      ctx.strokeRect(m.x * scale + ox, m.y * scale + oy, m.w * scale, m.h * scale);
+    } else {
+      // The body of the stroke is translucent so the ink under it stays
+      // readable -- the whole job is judging that ink -- and a hairline down
+      // the centre keeps the exact geometry visible at any zoom.
+      const trace = () => {
+        ctx.beginPath();
+        points(m).forEach(([x, y], k) => k ? ctx.lineTo(x * scale + ox, y * scale + oy)
+                                           : ctx.moveTo(x * scale + ox, y * scale + oy));
+        ctx.stroke();
+      };
+      ctx.globalAlpha = band;
+      trace();
+      ctx.lineWidth = Math.max(1, .9 * Math.min(scale, 2));
+      ctx.globalAlpha = .85;
+      trace();
+      ctx.globalAlpha = 1;
+    }
+    if (chosen || held) {
+      ctx.strokeStyle = held ? css("--view") : css("--sel");
+      ctx.lineWidth = Math.max(1, 2 * scale);
+      ctx.setLineDash([5, 4]);
+      const b = bounds(m);
+      ctx.strokeRect(b[0] * scale + ox - 3, b[1] * scale + oy - 3,
+                     (b[2] - b[0]) * scale + 6, (b[3] - b[1]) * scale + 6);
+      ctx.setLineDash([]);
+    }
+  });
+}
+
+function bounds(m) {
+  if (SHAPE[m.type] === "box") return [m.x, m.y, m.x + m.w, m.y + m.h];
+  const p = points(m);
+  return [Math.min(...p.map(q => q[0])), Math.min(...p.map(q => q[1])),
+          Math.max(...p.map(q => q[0])), Math.max(...p.map(q => q[1]))];
+}
+
+function drawOverview() {
+  const cv = $("ov"), r = row();
+  const wide = Math.min(1400, Math.max(700, r.width));
+  const scale = wide / r.width;
+  cv.width = Math.round(r.width * scale); cv.height = Math.round(r.height * scale);
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = css("--surface"); ctx.fillRect(0, 0, cv.width, cv.height);
+  if (image) ctx.drawImage(image, 0, 0, cv.width, cv.height);
+  if (image && reference && showRef) ctx.drawImage(reference, 0, 0, cv.width, cv.height);
+  paintMarks(ctx, scale, 0, 0);
+  // the viewport rectangle: what the work canvas is currently showing
+  const w = $("cv");
+  ctx.strokeStyle = css("--view"); ctx.lineWidth = 2;
+  ctx.strokeRect((-panX / zoom) * scale, (-panY / zoom) * scale,
+                 (w.width / zoom) * scale, (w.height / zoom) * scale);
+}
+
+function drawWork() {
+  const cv = $("cv"), box = $("work");
+  cv.width = box.clientWidth; cv.height = box.clientHeight;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = css("--surface"); ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  if (image) ctx.drawImage(image, panX, panY, image.width * zoom, image.height * zoom);
+  if (image && reference && showRef)
+    ctx.drawImage(reference, panX, panY, image.width * zoom, image.height * zoom);
+  paintMarks(ctx, zoom, panX, panY);
+  if (drag && drag.preview) {
+    ctx.strokeStyle = css(COLOUR[tool]); ctx.setLineDash([4, 3]); ctx.lineWidth = 2;
+    const [a, b] = [drag.from, drag.to];
+    if (SHAPE[tool] === "box") {
+      ctx.strokeRect(Math.min(a[0], b[0]) * zoom + panX, Math.min(a[1], b[1]) * zoom + panY,
+                     Math.abs(b[0] - a[0]) * zoom, Math.abs(b[1] - a[1]) * zoom);
+    } else {
+      ctx.beginPath(); ctx.moveTo(a[0] * zoom + panX, a[1] * zoom + panY);
+      ctx.lineTo(b[0] * zoom + panX, b[1] * zoom + panY); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+  const refNote = row().reference ? ` · 旧标注 ${row().reference_components} 块${showRef ? "" : "（已隐藏）"}` : "";
+  const startNote = row().start_note ? ` · ${row().start_note}` : "";
+  $("hud").textContent = `${Math.round(zoom * 100)}% · ${row().width}×${row().height}${refNote}${startNote}`;
+  drawOverview();
+}
+
+// ---------- state ----------
+function fit() {
+  const box = $("work"), r = row();
+  zoom = Math.max(1, Math.min(FIT_MAX, (box.clientWidth - 8) / r.width, (box.clientHeight - 8) / r.height));
+  panX = (box.clientWidth - r.width * zoom) / 2;
+  panY = (box.clientHeight - r.height * zoom) / 2;
+}
+function setZoom(z) {
+  const box = $("work"), r = row();
+  zoom = z;
+  panX = (box.clientWidth - r.width * zoom) / 2;
+  panY = (box.clientHeight - r.height * zoom) / 2;
+  drawWork();
+}
+
+function listMarks() {
+  const box = $("marks");
+  box.innerHTML = "";
+  const list = marks();
+  if (!list.length) { box.innerHTML = '<span class="note">这一行没有标记</span>'; return; }
+  list.forEach((m, i) => {
+    const b = document.createElement("button");
+    b.className = "chip" + (picking.includes(i) ? " pick" : "");
+    b.setAttribute("aria-pressed", String(i === selected));
+    const label = SHAPE[m.type] === "box" ? `${Math.round(m.w)}×${Math.round(m.h)}`
+      : (m.path ? `折线${m.path.length}点` : `长${Math.round(Math.hypot(m.x2 - m.x1, m.y2 - m.y1))}`);
+    b.textContent = `${i + 1} ${m.type} ${label}`;
+    b.style.borderLeft = `4px solid ${css(COLOUR[m.type] || "--line")}`;
+    // status() too: it is what enables 删除选中 / D for a mark chosen from this list.
+    b.onclick = () => { selected = i; drawWork(); listMarks(); status(); };
+    box.appendChild(b);
+  });
+}
+
+function status() {
+  const r = row(), s = store[r.line_id];
+  $("pos").textContent = at + 1;
+  $("total").textContent = ROWS.length;
+  const rank = $("rank");
+  rank.textContent = ["模型有异议", "多段线", "常规"][r.rank];
+  rank.className = "pill r" + r.rank;
+  const changed = s && JSON.stringify(s.marks) !== JSON.stringify(original());
+  const st = $("state");
+  st.textContent = !s || !s.seen ? "未看" : changed ? "已改" : "已确认";
+  st.className = "pill" + (s && s.seen ? " done" : "");
+  const seen = Object.values(store).filter(v => v.seen).length;
+  const edited = Object.entries(store).filter(([k, v]) => v.seen &&
+    JSON.stringify(v.marks) !== JSON.stringify(
+      (ROWS.find(x => x.line_id === k) || {versions:[{marks:[]}]}).versions[0].marks)).length;
+  $("progress").textContent = `已看 ${seen} · 改过 ${edited}`;
+  $("t-join").disabled = picking.length !== 2;
+  $("t-del").disabled = selected < 0;
+  $("t-undo").disabled = !history.length;
+}
+
+function show(index, markSeen) {
+  at = Math.max(0, Math.min(ROWS.length - 1, index));
+  selected = -1; picking = []; history = []; drag = null;
+  const r = row();
+  if (!store[r.line_id]) marks();
+  if (markSeen) { store[r.line_id].seen = true; save(); }
+  const token = ++loadToken;
+  const img = new Image();
+  // The overview is sized first: it changes how much height the work area
+  // has, and fitting against the old height pushed small crops off-centre.
+  img.onload = () => { if (token !== loadToken) return; image = img; drawOverview(); fit(); drawWork(); };
+  img.onerror = () => { if (token !== loadToken) return; image = null; drawOverview(); fit(); drawWork(); };
+  // A single-file build carries each crop inline; a folder build reads crops/.
+  img.src = r.image_data || ("crops/" + r.file);
+  reference = null;
+  $("t-ref").hidden = !r.reference;
+  if (r.reference) {
+    const ref = new Image();
+    ref.onload = () => { if (token !== loadToken) return; reference = ref; drawWork(); };
+    ref.src = r.reference_data || r.reference;
+  }
+  image = null; drawOverview(); fit(); drawWork(); listMarks(); status();
+}
+
+function step(delta) {
+  store[row().line_id].seen = true; save();
+  show(at + delta, false);
+}
+
+// ---------- editing ----------
+function joinTwo(a, b) {
+  const list = marks();
+  const one = list[a], two = list[b];
+  if (SHAPE[one.type] === "box" || SHAPE[two.type] === "box" || one.type !== two.type) return false;
+  const pa = points(one), pb = points(two);
+  // Attach whichever pair of ends is closest, so the polyline reads in order.
+  const options = [
+    [pa.concat(pb), dist(pa[pa.length - 1], pb[0])],
+    [pa.concat(pb.slice().reverse()), dist(pa[pa.length - 1], pb[pb.length - 1])],
+    [pa.slice().reverse().concat(pb), dist(pa[0], pb[0])],
+    [pb.concat(pa), dist(pb[pb.length - 1], pa[0])]];
+  options.sort((x, y) => x[1] - y[1]);
+  const path = options[0][0];
+  remember();
+  list[a] = { type: one.type, shape: "line", path: path.map(p => [p[0], p[1]]),
+              x1: path[0][0], y1: path[0][1],
+              x2: path[path.length - 1][0], y2: path[path.length - 1][1] };
+  list.splice(b, 1);
+  return true;
+}
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+function hit(x, y) {
+  // The closest mark within reach wins, not the last one drawn, and reach is
+  // the mark's own width plus a few screen pixels, so neighbouring strokes can
+  // each be picked.
+  const list = marks(), reach = Math.max(1.5, 6 / zoom), half = (PACK.mark_stroke_px || 3) / 2;
+  let best = -1, bestDistance = Infinity;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    let d;
+    if (SHAPE[m.type] === "box") {
+      const dx = Math.max(m.x - x, 0, x - (m.x + m.w)), dy = Math.max(m.y - y, 0, y - (m.y + m.h));
+      d = Math.hypot(dx, dy);
+      if (d > reach) continue;
+    } else {
+      const p = points(m);
+      d = Infinity;
+      for (let k = 0; k + 1 < p.length; k++) d = Math.min(d, near(x, y, p[k], p[k + 1]));
+      if (d > reach + half) continue;
+    }
+    if (d < bestDistance) { best = i; bestDistance = d; }
+  }
+  return best;
+}
+function near(x, y, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], len = dx * dx + dy * dy;
+  const t = len ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / len)) : 0;
+  return Math.hypot(x - (a[0] + t * dx), y - (a[1] + t * dy));
+}
+
+const toImage = event => {
+  const box = $("cv").getBoundingClientRect();
+  return [(event.clientX - box.left - panX) / zoom, (event.clientY - box.top - panY) / zoom];
+};
+
+// A press becomes a selection only when it is released without moving; any
+// drag draws a new mark, even one that starts on top of an existing mark, so
+// strokes that sit close together can each be drawn.
+const CLICK_SLOP = 4;  // screen pixels
+$("cv").addEventListener("pointerdown", event => {
+  if (event.button === 1 || event.shiftKey) { drag = { pan: true, at: [event.clientX, event.clientY] }; return; }
+  const [x, y] = toImage(event);
+  drag = { pending: true, preview: false, from: [x, y], to: [x, y], screen: [event.clientX, event.clientY] };
+  $("cv").setPointerCapture(event.pointerId);
+});
+$("cv").addEventListener("pointermove", event => {
+  if (!drag) return;
+  if (drag.pan) {
+    panX += event.clientX - drag.at[0]; panY += event.clientY - drag.at[1];
+    drag.at = [event.clientX, event.clientY]; drawWork(); return;
+  }
+  drag.to = toImage(event);
+  if (drag.pending && Math.hypot(event.clientX - drag.screen[0], event.clientY - drag.screen[1]) > CLICK_SLOP) {
+    drag.pending = false; drag.preview = true;
+  }
+  if (drag.preview) drawWork();
+});
+function finishDrag() {
+  if (!drag) return;
+  if (drag.pending) {
+    const index = hit(drag.from[0], drag.from[1]);
+    if (index >= 0) {
+      selected = index;
+      const held = picking.indexOf(index);
+      if (held >= 0) picking.splice(held, 1); else picking.push(index);
+      if (picking.length > 2) picking.shift();
+    } else {
+      selected = -1; picking = [];
+    }
+    drag = null; drawWork(); listMarks(); status();
+    return;
+  }
+  if (drag.preview) {
+    const [a, b] = [drag.from, drag.to];
+    const list = marks();
+    if (SHAPE[tool] === "box") {
+      const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
+      if (w > 2 && h > 2) {
+        remember();
+        list.push({ type: tool, shape: "box", x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w, h });
+      }
+    } else if (dist(a, b) > 2) {
+      remember();
+      list.push({ type: tool, shape: "line", x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
+    }
+    store[row().line_id].seen = true; save();
+  }
+  drag = null; drawWork(); listMarks(); status();
+}
+$("cv").addEventListener("pointerup", finishDrag);
+$("cv").addEventListener("pointercancel", finishDrag);
+$("cv").addEventListener("wheel", event => {
+  event.preventDefault();
+  const [ix, iy] = toImage(event);
+  zoom = Math.max(.5, Math.min(WHEEL_MAX, zoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  const box = $("cv").getBoundingClientRect();
+  panX = event.clientX - box.left - ix * zoom;
+  panY = event.clientY - box.top - iy * zoom;
+  drawWork();
+}, { passive: false });
+
+$("ov").addEventListener("pointerdown", event => {
+  const box = $("ov").getBoundingClientRect(), r = row();
+  const ix = (event.clientX - box.left) / box.width * r.width;
+  const iy = (event.clientY - box.top) / box.height * r.height;
+  const cv = $("cv");
+  panX = cv.width / 2 - ix * zoom; panY = cv.height / 2 - iy * zoom;
+  drawWork();
+});
+
+// ---------- controls ----------
+const pickTool = id => { tool = id; picking = [];
+  ["line", "blot", "over"].forEach(k => $("t-" + k).setAttribute("aria-pressed",
+    String(({line:"line", blot:"blot", over:"overwrite"})[k] === tool)));
+  drawWork(); listMarks(); status(); };
+$("t-line").onclick = () => pickTool("line");
+$("t-blot").onclick = () => pickTool("blot");
+$("t-over").onclick = () => pickTool("overwrite");
+$("t-fit").onclick = () => { fit(); drawWork(); };
+$("t-z1").onclick = () => setZoom(1);
+$("t-z2").onclick = () => setZoom(2);
+$("t-z4").onclick = () => setZoom(4);
+$("t-ref").onclick = () => { showRef = !showRef;
+  $("t-ref").setAttribute("aria-pressed", String(showRef)); drawWork(); };
+$("t-hide").onclick = () => { hidden = !hidden;
+  $("t-hide").setAttribute("aria-pressed", String(hidden)); drawWork(); };
+$("t-del").onclick = () => {
+  if (selected < 0) return;
+  remember(); marks().splice(selected, 1); selected = -1; picking = [];
+  store[row().line_id].seen = true; save(); drawWork(); listMarks(); status();
+};
+$("t-join").onclick = () => {
+  if (picking.length !== 2) return;
+  const [a, b] = picking.slice().sort((x, y) => x - y);
+  if (!joinTwo(a, b)) { alert("只能连接同类型的两段线，方框不能连。"); return; }
+  picking = []; selected = -1;
+  store[row().line_id].seen = true; save(); drawWork(); listMarks(); status();
+};
+$("t-undo").onclick = () => {
+  if (!history.length) return;
+  store[row().line_id].marks = JSON.parse(history.pop());
+  selected = -1; picking = []; save(); drawWork(); listMarks(); status();
+};
+$("reset").onclick = () => {
+  if (!confirm("把这一行还原成原始标注？")) return;
+  remember();
+  store[row().line_id].marks = JSON.parse(JSON.stringify(original()));
+  selected = -1; picking = []; save(); drawWork(); listMarks(); status();
+};
+$("prev").onclick = () => step(-1);
+$("next").onclick = () => step(1);
+$("jump").onclick = () => {
+  const found = ROWS.findIndex((r, i) => i > at && !(store[r.line_id] || {}).seen);
+  const target = found >= 0 ? found : ROWS.findIndex(r => !(store[r.line_id] || {}).seen);
+  if (target < 0) { alert("全部看完了。"); return; }
+  show(target, false);
+};
+
+function exported() {
+  const records = {};
+  ROWS.forEach(r => {
+    const s = store[r.line_id];
+    if (!s) return;
+    records[r.line_id] = { marks: s.marks, seen: Boolean(s.seen),
+                           changed: JSON.stringify(s.marks) !== JSON.stringify(r.versions[0].marks) };
+  });
+  return { schema_version: "hme-revision-reannotation-export-v1",
+           package_schema: PACK.schema_version, exported_at: new Date().toISOString(),
+           rows_in_package: ROWS.length, records };
+}
+$("export").onclick = () => {
+  const value = exported();
+  const seen = Object.values(value.records).filter(r => r.seen).length;
+  const changed = Object.values(value.records).filter(r => r.changed).length;
+  $("dlgnote").textContent = `已看 ${seen} / ${ROWS.length} 行，其中改动 ${changed} 行。`;
+  $("dump").value = JSON.stringify(value).slice(0, 4000) + "\n… 完整内容用下载按钮";
+  $("dlg").showModal();
+};
+$("save").onclick = () => {
+  const blob = new Blob([JSON.stringify(exported(), null, 1)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "reannotation_" + new Date().toISOString().slice(0, 10) + ".json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+};
+$("close").onclick = () => $("dlg").close();
+
+document.addEventListener("keydown", event => {
+  if (event.target.tagName === "TEXTAREA" || $("dlg").open) return;
+  const key = event.key.toLowerCase();
+  if (key === " " || key === "arrowright") { step(1); event.preventDefault(); }
+  else if (key === "arrowleft") { step(-1); event.preventDefault(); }
+  else if (key === "1") pickTool("blot");
+  else if (key === "2") pickTool("line");
+  else if (key === "3") pickTool("overwrite");
+  else if (key === "c") $("t-join").click();
+  else if (key === "d") $("t-del").click();
+  else if (key === "z") $("t-undo").click();
+  else if (key === "0") { fit(); drawWork(); }
+  else if (key === "h") { hidden = !hidden; $("t-hide").setAttribute("aria-pressed", String(hidden)); drawWork(); }
+  else if (key === "r" && row().reference) $("t-ref").click();
+  else if (key === "escape") { selected = -1; picking = []; drawWork(); listMarks(); status(); }
+});
+window.addEventListener("resize", () => { drawWork(); });
+
+pickTool("line");
+const first = ROWS.findIndex(r => !(store[r.line_id] || {}).seen);
+show(first >= 0 ? first : 0, false);
+</script></body></html>

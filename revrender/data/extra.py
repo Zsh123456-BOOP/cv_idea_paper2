@@ -9,9 +9,9 @@ from pathlib import Path
 
 import numpy as np
 
-from ..util import digest, require, safe_path
+from ..util import digest, require, safe_path, schema_is
 
-CORRECTED_SCHEMA = 'hme-revision-corrected861-v1'
+CORRECTED_SCHEMA = r'hme-revision-corrected\d+-v1'     # the schema tag of the corrected-rows folders this reads
 
 
 def extra_rows(path, expected_sha, excluded, schema=CORRECTED_SCHEMA):
@@ -19,7 +19,7 @@ def extra_rows(path, expected_sha, excluded, schema=CORRECTED_SCHEMA):
     root = safe_path(path)
     require(digest(root/'run_manifest.json') == expected_sha, 'extra-row manifest changed')
     manifest = json.loads((root/'run_manifest.json').read_text())
-    require(manifest['schema'] == schema and manifest['test_touched'] is False, 'not a '+schema+' folder')
+    require(schema_is(manifest['schema'], schema) and manifest['test_touched'] is False, 'not a corrected-rows folder')
     for name, sha in manifest['files'].items():
         require(Path(name).name == name and digest(root/name) == sha, 'extra-row file changed: '+name)
     records = json.loads((root/'records.json').read_text())

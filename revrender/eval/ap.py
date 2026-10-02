@@ -6,15 +6,13 @@ mean over IoU 0.50:0.05:0.95; AP50 and AP75 are the single thresholds.  The dete
 own frozen mask NMS (``AP``, ``AP50``, ``AP75``) or with no NMS (``*_raw``).
 """
 import argparse
-import hashlib
 import json
-import platform
 from pathlib import Path
 
 import numpy as np
 
 from ..data.bundle import load_bundle, manifest_at
-from ..util import digest, require
+from ..util import digest, provenance, require, to_jsonable
 from . import matching
 from .fates import iou_matrix
 
@@ -108,7 +106,9 @@ def main(argv=None):
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x') as f:
         f.write(json.dumps({'schema': SCHEMA, 'gold_components': gold, 'models': report, 'test_touched': False,
-                            'bundle_sha256': args.bundle_sha, 'python': platform.python_version()},
+                            'bundle_sha256': args.bundle_sha,
+                            'provenance': provenance(to_jsonable(args), {str(args.bundle): args.bundle_sha, **{
+                                e.split('=', 1)[1]: digest(e.split('=', 1)[1]) for e in args.freeze}})},
                            indent=1, sort_keys=True)+'\n')
     return 0
 

@@ -148,8 +148,8 @@ def tabulate_at(provide, order, truths, level):
     tables, cuts = [], set()
     for line, truth in zip(order, truths):
         masks, scores = provide(line)
-        require(not (truth and masks and masks[0].shape != truth[0].shape),
-                f'{line}: candidate {masks[0].shape} against gold {truth[0].shape}')
+        if truth and masks and masks[0].shape != truth[0].shape:
+            raise ValueError(f'{line}: candidate {masks[0].shape} against gold {truth[0].shape}')
         keep = suppressed(masks, scores, level)
         table = prefix_outcomes([masks[i] for i in keep], np.array([float(scores[i]) for i in keep]), truth)
         tables.append(table)

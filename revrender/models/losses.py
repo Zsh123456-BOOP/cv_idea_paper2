@@ -11,7 +11,6 @@ The Hungarian cost (focal x4, BCE x5, Dice x5, L1 x5, -GIoU x2 on 4,096 random p
 device for every row and moved to the host once per stage; the assignment is the SciPy solver's, so the order of draws
 (stage, then row) is the recipe.  Terms are returned as detached tensors; ``materialize`` turns them into floats.
 """
-import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
 from torch.nn import functional as F

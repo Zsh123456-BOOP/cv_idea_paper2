@@ -22,6 +22,11 @@ def require(condition, message, error=RefusedError):
         raise error(message)
 
 
+def schema_is(value, pattern):
+    """Whether a data file's schema tag matches a regular expression (tags of existing data carry a historical id)."""
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
 def digest(path):
     h = hashlib.sha256()
     with Path(path).open('rb') as f:
@@ -84,18 +89,24 @@ def input_hashes(paths):
     return out
 
 
-def write_manifest(out_dir, name='run_manifest.json', *, config, inputs=None, seed=SEED, **extra):
-    """One manifest per run: the configuration, the seed, the git commit and the hashes of the input files."""
+def provenance(config, inputs=None, seed=SEED):
+    """What a run records about itself: the configuration, the seed, the git commit and the hashes of its input files."""
     import numpy
     record = {'config': config, 'seed': seed, 'git': git_state(), 'inputs': dict(inputs or {}),
               'environment': {'python': platform.python_version(), 'numpy': numpy.__version__,
                               'platform': platform.platform(), 'argv': list(sys.argv)},
-              'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), **extra}
+              'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
     try:
         import torch
         record['environment'].update(torch=torch.__version__, cuda=torch.version.cuda)
     except ImportError:
         pass
+    return record
+
+
+def write_manifest(out_dir, name='run_manifest.json', *, config, inputs=None, seed=SEED, **extra):
+    """One manifest per run, create-only: provenance (configuration, seed, git commit, input hashes) plus what the run adds."""
+    record = {**provenance(config, inputs, seed), **extra}
     write_json(Path(out_dir)/name, record)
     return record
 

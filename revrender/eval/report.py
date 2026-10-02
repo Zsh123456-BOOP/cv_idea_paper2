@@ -1,12 +1,16 @@
-"""Read RevRender's dev predictions at a frozen point: TP / FP / FN, F1, AP, AP50, AP75 and pixel IoU, and compare two
-prediction archives line by line.
+"""Re-score frozen models on the validation split: TP / FP / FN, F1, pixel IoU, AP, AP50, AP75 at each model's frozen point,
+and compare against recorded numbers and against another archive.
 
-    rvr-report --archive dev_predictions.npz --freeze freeze_rvr.json --bundle <bundle> --bundle-sha <sha>
-               [--compare other_dev_predictions.npz]
+    rvr-report --bundle B --bundle-sha S --freeze rvr=freeze_rvr.json --freeze maskdino=freeze_maskdino.json ...
+               [--archive rvr=dev_predictions.npz]          read RevRender's predictions from a new archive, same frozen point
+               [--compare rvr=old_dev_predictions.npz]      check that archive against another, line by line
+               [--reference-ap ap.json] [--reference-table main_table.json]
 
-``--compare`` checks the second archive against the first: same lines in the same order, identical scores, identical
-packed masks at every mask threshold; if not, how many lines and bits differ.  This is the inference-equivalence check
-of the paper-1 model after the port.
+Each freeze names the model's archive, mask threshold, mask NMS and score cut.  The reading is recomputed from the archive
+and must equal the freeze's own record (``matches_freeze``); AP and the table columns are checked against the reference
+files if given.  ``--compare`` checks a prediction archive against another: same lines in the same order, identical scores,
+identical packed masks at every mask threshold; if not, how many lines and bits differ.  Together these are the
+equivalence checks of the port: the paper-1 model on a new inference run, and the seven baselines on their frozen predictions.
 """
 import argparse
 import json
@@ -19,6 +23,10 @@ from ..util import require
 from . import ap as ap_module
 from . import matching
 
+TABLE_FIELDS = {'component_f1': 'f1', 'true_positive': 'true_positive', 'false_positive': 'false_positive',
+                'pixel_iou': 'pixel_iou'}
+AP_FIELDS = ('AP', 'AP50', 'AP75', 'AP_raw', 'AP50_raw')
+
 
 def read_point(provide, order, truths, point):
     """Counts, F1, pixel IoU and AP at one (NMS, score cut) point of one provider."""
@@ -26,7 +34,9 @@ def read_point(provide, order, truths, point):
     tables, _ = matching.tabulate_at(provide, order, truths, point['nms'])
     reading = matching.reading(tables, point['score_threshold'], gold)
     reading.update(matching.pixel_iou(provide, order, truths, point))
-    reading.update({k: v for k, v in ap_module.mask_ap(provide, order, truths, point['nms']).items() if k != 'by_iou'})
+    kept = ap_module.mask_ap(provide, order, truths, point['nms'])
+    raw = ap_module.mask_ap(provide, order, truths, 1.)
+    reading.update({k: v for k, v in kept.items() if k != 'by_iou'}, AP_raw=raw['AP'], AP50_raw=raw['AP50'])
     reading['gold_components'] = gold
     return reading
 
@@ -52,29 +62,58 @@ def compare_archives(first, second):
     return out
 
 
+def labelled(values):
+    out = {}
+    for value in values or []:
+        label, _, path = value.partition('=')
+        require(label and path, f'expected label=path, got {value!r}')
+        out[label] = Path(path)
+    return out
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
-    parser.add_argument('--archive', type=Path, required=True)
-    parser.add_argument('--freeze', type=Path, required=True)
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--bundle-sha', required=True)
-    parser.add_argument('--compare', type=Path, help='a second archive to compare against --archive')
+    parser.add_argument('--freeze', action='append', required=True, help='label=freeze.json (repeatable)')
+    parser.add_argument('--archive', action='append', help="label=path: read RevRender's predictions from this archive")
+    parser.add_argument('--compare', action='append', help='label=path: compare the archive against this one')
+    parser.add_argument('--reference-ap', type=Path, help='a mask-AP record: models.<label>.AP / AP50 / AP75 / AP_raw / AP50_raw')
+    parser.add_argument('--reference-table', type=Path, help='a table record: rows[].model with component_f1, TP, FP, pixel_iou')
     args = parser.parse_args(argv)
-    frozen = json.loads(args.freeze.read_text())
-    require(frozen['test_touched'] is False and frozen['model'] == 'point_context', 'not a RevRender validation freeze')
+    freezes, archives, compares = labelled(args.freeze), labelled(args.archive), labelled(args.compare)
+    reference_ap = json.loads(args.reference_ap.read_text())['models'] if args.reference_ap else {}
+    reference_rows = ({r['model']: r for r in json.loads(args.reference_table.read_text())['rows']}
+                      if args.reference_table else {})
     bundle = load_bundle(args.bundle, args.bundle_sha)
     dev, order, truths = matching.validation_order(bundle['dev'])
-    provide, available = matching.packed_provider(args.archive, float(frozen['mask_threshold']))
-    require(set(order) == available, 'the archive does not cover the validation lines')
-    best = frozen['validation']['own_best']
-    point = {'nms': float(frozen['nms']), 'score_threshold': float(frozen['score_threshold'])}
-    result = read_point(provide, order, truths, point)
-    expected = {k: best[k] for k in ('true_positive', 'false_positive', 'false_negative', 'f1', 'pixel_iou')}
-    result['matches_freeze'] = all(abs(result[k]-v) < 1e-12 for k, v in expected.items())
-    if args.compare:
-        result['compared_with'] = {str(args.compare): compare_archives(args.archive, args.compare)}
-    print(json.dumps(result, indent=1, sort_keys=True))
-    return 0 if result['matches_freeze'] and all(c['identical'] for c in result.get('compared_with', {}).values()) else 1
+    report, failed = {}, False
+    for label, path in freezes.items():
+        frozen = json.loads(path.read_text())
+        require(frozen['test_touched'] is False, f'{label}: not a validation freeze')
+        archive = archives.get(label, frozen['validation_archive'])
+        provide, available = matching.provider_for(archive, frozen['model'], frozen['mask_threshold'])
+        require(set(order) <= available, f'{label}: the archive does not cover the validation lines')
+        point = {'nms': float(frozen['nms']), 'score_threshold': float(frozen['score_threshold'])}
+        result = read_point(provide, order, truths, point)
+        best = frozen['validation']['own_best']
+        checks = {'matches_freeze': all(abs(result[k]-best[k]) < 1e-12 for k in
+                                        ('true_positive', 'false_positive', 'false_negative', 'f1', 'pixel_iou'))}
+        if label in reference_ap:
+            checks['matches_reference_ap'] = all(abs(result[k]-reference_ap[label][k]) < 1e-9 for k in AP_FIELDS)
+        if label in reference_rows:
+            checks['matches_reference_table'] = all(abs(result[field]-reference_rows[label][name]) < 1e-9
+                                                    for name, field in TABLE_FIELDS.items())
+        if label in compares:
+            checks['archive_identical'] = compare_archives(archive, compares[label])
+        report[label] = {'reading': result, 'checks': checks}
+        failed |= not all((v['identical'] if isinstance(v, dict) else v) for v in checks.values())
+        print(json.dumps({'label': label, 'tp_fp_fn': [result['true_positive'], result['false_positive'], result['false_negative']],
+                          'f1': round(result['f1'], 4), 'AP': round(result['AP'], 4), 'AP75': round(result['AP75'], 4),
+                          'pixel_iou': round(result['pixel_iou'], 4), **{k: (v['identical'] if isinstance(v, dict) else v)
+                                                                         for k, v in checks.items()}}), flush=True)
+    print(json.dumps({'all_checks_pass': not failed, 'models': sorted(report)}))
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':

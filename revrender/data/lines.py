@@ -11,6 +11,7 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
+from ..config import expand, load_paths
 from ..util import digest, require
 
 
@@ -20,6 +21,12 @@ def read_catalogue(path, expected_sha=None):
     if expected_sha is not None:
         require(digest(path) == expected_sha, 'line catalogue changed')
     return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line]
+
+
+def default_catalogue(paths=None):
+    """All records of the catalogue named in configs/paths.toml ([raw_data] line_catalogue)."""
+    paths = paths or load_paths()
+    return read_catalogue(expand(paths['raw_data']['line_catalogue']))
 
 
 def index_by_line(entries):

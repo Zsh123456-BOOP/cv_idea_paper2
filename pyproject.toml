@@ -12,22 +12,27 @@ dependencies = ["numpy", "scipy", "pillow"]
 [project.optional-dependencies]
 # Model, training and the CNN baselines (server: /home/zsh/hme/envs/hme).
 torch = ["torch", "torchvision", "segmentation-models-pytorch"]
-# Component-based baselines (906 / 915 / 917 in the old numbering).
+# Component-based baselines (component classifier, shape-feature methods, MathScrub).
 baselines = ["scikit-learn", "scikit-image", "joblib"]
 test = ["pytest"]
 
 [project.scripts]
 rvr-train = "revrender.train:main"
 rvr-infer = "revrender.infer:main"
-rvr-report = "revrender.eval.report:main"
 rvr-freeze = "revrender.eval.freeze:main"
+rvr-report = "revrender.eval.report:main"
 rvr-ap = "revrender.eval.ap:main"
+rvr-fates = "revrender.eval.fates:main"
 rvr-bootstrap = "revrender.eval.bootstrap:main"
 rvr-speed = "revrender.eval.speed:main"
-rvr-fates = "revrender.eval.fates:main"
+rvr-compare-trace = "revrender.tools.compare_trace:main"
 rvr-native-train = "revrender.baselines.native.train:main"
 rvr-native-threshold = "revrender.baselines.native.threshold:main"
-rvr-native-freeze = "revrender.eval.freeze:main_native"
+rvr-component-cls = "revrender.baselines.component_cls:main"
+rvr-strike-removal = "revrender.baselines.removal:main"
+rvr-paper-baselines = "revrender.baselines.paper:main"
+rvr-mathscrub = "revrender.baselines.mathscrub:main"
+rvr-annotate-page = "revrender.tools.annotate.single_file:main"
 
 [tool.setuptools.packages.find]
 include = ["revrender*"]

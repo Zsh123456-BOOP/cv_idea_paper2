@@ -15,14 +15,13 @@ A variant is ``label=freeze:<freeze.json>``.  Nothing here chooses or changes an
 """
 import argparse
 import json
-import platform
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
 from ..data.bundle import load_bundle, manifest_at
-from ..util import SEED, digest, require
+from ..util import SEED, digest, provenance, require, to_jsonable
 from . import ap as ap_module
 from . import matching
 from .fates import iou_matrix
@@ -220,7 +219,9 @@ def main(argv=None):
               'variants': {label: {'full_sample': full[label], 'ci95': intervals[label],
                                    'full_ap_order': read[label][1]['full_ap'],
                                    **{k: v for k, v in read[label][1].items() if k != 'full_ap'}} for label in labels},
-              'pairs': result_pairs, 'test_touched': False, 'python': platform.python_version(), 'numpy': np.__version__}
+              'pairs': result_pairs, 'test_touched': False,
+              'provenance': provenance(to_jsonable(args), {str(args.bundle): args.bundle_sha, **{
+                  str(p): digest(p) for _, _, p in variants}})}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x') as f:
         f.write(json.dumps(result, indent=1, sort_keys=True)+'\n')

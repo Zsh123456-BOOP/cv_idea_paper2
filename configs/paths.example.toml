@@ -22,8 +22,9 @@ upstream_v2  = "/home/zsh/hme/work/native_baselines_sources_v2"
 transfiner   = "/home/zsh/hme/work/native_baselines_sources_transfiner_v1"
 
 [server.data]
-# Train/validation bundle with validation gold v2 and the user-corrected rows (paper 1's data).
-bundle        = "/home/zsh/hme/work/revision_bundle878_gold_v2/morphology_s42"
-bundle_sha    = "574da74b6444699a4c375077c0aa9ff5819569692ba134a32db50d17da8acddf"
-corrected     = "/home/zsh/hme/work/revision_corrected861_v1"
-corrected_sha = "65a2db20b0a4ea563c153b7c1a1b63c42f45e68c65b63df86212201edcd9e429"
+# Train/validation bundle with the validation gold and the user-corrected rows (paper 1's data); the folders and their
+# manifest hashes are listed in README.md (data table).
+bundle        = "/path/to/bundle/morphology_split"
+bundle_sha    = "sha256 of the bundle's run_manifest.json"
+corrected     = "/path/to/corrected_rows"
+corrected_sha = "sha256 of the corrected rows' run_manifest.json"

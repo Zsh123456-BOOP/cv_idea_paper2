@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from ..data.bundle import load_bundle
-from ..util import digest, require
+from ..util import digest, provenance, require, to_jsonable
 from . import matching
 
 EXTENT_IOU, EXTENT_COVER, ON_GOLD = .1, .2, .2
@@ -122,7 +122,9 @@ def main(argv=None):
               flush=True)
     with args.output.open('x') as f:
         f.write(json.dumps({'models': report, 'test_touched': False, 'definitions': {
-            'extent_iou': EXTENT_IOU, 'extent_cover': EXTENT_COVER, 'on_gold': ON_GOLD}}, indent=1, sort_keys=True)+'\n')
+            'extent_iou': EXTENT_IOU, 'extent_cover': EXTENT_COVER, 'on_gold': ON_GOLD},
+            'provenance': provenance(to_jsonable(args), {str(args.bundle): args.bundle_sha, **{
+                e.split('=', 1)[1]: digest(e.split('=', 1)[1]) for e in args.freeze}})}, indent=1, sort_keys=True)+'\n')
     return 0
 
 

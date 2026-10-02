@@ -12,9 +12,9 @@ from pathlib import Path
 import numpy as np
 from scipy import ndimage
 
-from ..util import digest, json_digest, require, safe_path
+from ..util import digest, json_digest, require, safe_path, schema_is
 
-SCHEMA = 'hme-revision-c832-train-dev-v1'
+SCHEMA_PATTERN = r'hme-revision-c\d+-train-dev-v1'      # the schema tag of the bundles this reads
 POOLS = ('fit_positive', 'fit_clean', 'validation_positive', 'validation_clean')
 CANVAS = (96, 768)
 
@@ -32,7 +32,7 @@ def manifest_at(path, expected_sha=None):
     if expected_sha is not None:
         require(digest(root/'run_manifest.json') == expected_sha, 'bundle manifest changed')
     manifest = json.loads((root/'run_manifest.json').read_text())
-    require(manifest['schema'] == SCHEMA and manifest['new_test_rows_in_bundle'] == 0, 'not a train/dev bundle')
+    require(schema_is(manifest['schema'], SCHEMA_PATTERN) and manifest['new_test_rows_in_bundle'] == 0, 'not a train/dev bundle')
     return manifest
 
 
