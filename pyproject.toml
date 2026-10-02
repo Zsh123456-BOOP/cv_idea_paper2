@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "revrender"
+version = "0.1.0"
+description = "RevRender (paper 1) and its evaluation and baselines, ported as one package for paper 2"
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy", "pillow"]
+
+[project.optional-dependencies]
+# Model, training and the CNN baselines (server: /home/zsh/hme/envs/hme).
+torch = ["torch", "torchvision", "segmentation-models-pytorch"]
+# Component-based baselines (906 / 915 / 917 in the old numbering).
+baselines = ["scikit-learn", "scikit-image", "joblib"]
+test = ["pytest"]
+
+[project.scripts]
+rvr-train = "revrender.train:main"
+rvr-infer = "revrender.infer:main"
+rvr-report = "revrender.eval.report:main"
+rvr-freeze = "revrender.eval.freeze:main"
+rvr-ap = "revrender.eval.ap:main"
+rvr-bootstrap = "revrender.eval.bootstrap:main"
+rvr-speed = "revrender.eval.speed:main"
+rvr-fates = "revrender.eval.fates:main"
+rvr-native-train = "revrender.baselines.native.train:main"
+rvr-native-threshold = "revrender.baselines.native.threshold:main"
+rvr-native-freeze = "revrender.eval.freeze:main_native"
+
+[tool.setuptools.packages.find]
+include = ["revrender*"]
+
+[tool.setuptools.package-data]
+"revrender.tools.annotate" = ["*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

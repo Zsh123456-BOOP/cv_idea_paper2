@@ -1,0 +1,23 @@
+# RevRender recipe (paper 1). Every value is what the frozen paper-1 model was trained with; change one only
+# as a declared experiment. train.py records this whole file in the run manifest.
+
+[model]
+variant = "control"        # control | nofine | nocontext | nodense  (the paper-1 ablations)
+
+[train]
+batch_size = 8                     # 4 revised + 4 clean lines per step
+negative_ratio = 1.0
+optimizer_steps = 28300
+warmup_steps = 500
+validation_interval = 500
+select_from_step = 14150           # checkpoint selection and early stopping start here
+early_validation_multiplier = 4    # before select_from_step, validate every 4 x interval
+learning_rate = 3e-4
+weight_decay = 1e-4
+grad_clip = 5.0
+clip_groups = ["find.mask_iou"]    # clipped on their own; everything else together
+early_stop_patience = 6            # validations in a row without a better one
+
+[stages]
+smoke = 4          # first four steps; traced, replayed (smoke_b must equal smoke_a)
+learning = 512     # train-only learning gate on 8 fixed training lines

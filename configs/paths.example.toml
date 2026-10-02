@@ -1,0 +1,29 @@
+# Copy to configs/paths.toml (git-ignored) and edit. Raw data is read-only: point at it, never copy it.
+
+[raw_data]
+# Original data, read-only. Only this directory holds the originals.
+unlabeled = "~/Desktop/cv_idea/未标注数据"
+labeled   = "~/Desktop/cv_idea/标注好数据"
+# Row catalogue: one record per line (image_id, box_1000, question_no, ocr_text); the bridge to whole questions.
+line_catalogue = "~/Desktop/cv_idea_claude/gold/line_edit_all5002_policy_decisions_20260814_v1/canonical/exact_crops_46902.jsonl"
+
+[server]
+# ssh 4090x4
+host         = "4090x4"
+python       = "/home/zsh/hme/envs/hme/bin/python"
+native_python = "/home/zsh/hme/envs/native_baselines_v1/bin/python"
+code_root    = "/home/zsh/hme"                      # snapshots go to <code_root>/code_paper2_<commit>
+outputs      = "/home/zsh/hme/outputs"              # run outputs: paper2_*
+gpu_locks    = "/home/zsh/hme/work/revision_speed_gpu_locks"
+queue        = "/home/zsh/hme/work/revision_queue_v1"
+weights_dir  = "/home/zsh/hme/work/native_baselines_weights_v1"
+upstream_v1  = "/home/zsh/hme/work/native_baselines_sources_v1"
+upstream_v2  = "/home/zsh/hme/work/native_baselines_sources_v2"
+transfiner   = "/home/zsh/hme/work/native_baselines_sources_transfiner_v1"
+
+[server.data]
+# Train/validation bundle with validation gold v2 and the user-corrected rows (paper 1's data).
+bundle        = "/home/zsh/hme/work/revision_bundle878_gold_v2/morphology_s42"
+bundle_sha    = "574da74b6444699a4c375077c0aa9ff5819569692ba134a32db50d17da8acddf"
+corrected     = "/home/zsh/hme/work/revision_corrected861_v1"
+corrected_sha = "65a2db20b0a4ea563c153b7c1a1b63c42f45e68c65b63df86212201edcd9e429"

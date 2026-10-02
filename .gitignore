@@ -1,0 +1,51 @@
+# Privacy red lines: student handwriting, identity mappings and model weights never enter Git.
+# Commit only after `git add -An .` shows no .jpg/.png/.pdf/.zip/.pth/.npz.
+
+# raw data and anything derived from it
+标注好数据/
+未标注数据/
+work/
+data/
+raw/
+outputs/
+runs/
+
+# identity mappings (UUID <-> student number)
+id_mapping*
+*mapping*.csv
+*_private*
+
+# credentials
+*.key
+*.pem
+.env
+credentials/
+
+# images, arrays, weights, archives
+*.jpg
+*.jpeg
+*.png
+*.svg
+*.pdf
+*.zip
+*.tar
+*.gz
+*.npy
+*.npz
+*.pt
+*.pth
+*.pkl
+*.joblib
+*.onnx
+
+# local machine config (the example file is tracked)
+configs/paths.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/

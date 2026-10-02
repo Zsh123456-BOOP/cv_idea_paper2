@@ -1,0 +1,16 @@
+# Native instance-segmentation baselines (Mask R-CNN, PointRend, CondInst, SOLOv2, Mask2Former, MaskDINO,
+# DI-MaskDINO, Mask Transfiner): one common budget, as in paper 1.
+
+[native]
+total_steps = 28300
+warmup_steps = 500
+select_from_step = 14150
+early_stop_patience = 6
+validation_interval_early = 2000
+validation_interval_late = 500
+learning_rate = 3e-4
+weight_decay = 1e-4
+backbone_multiplier = 0.1          # MaskDINO, DI-MaskDINO and Mask2Former only
+grad_clip = 5.0
+microbatch = 2                     # effective batch 8
+smoke_steps = 4
