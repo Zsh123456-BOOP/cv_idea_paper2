@@ -3,7 +3,8 @@
     python -m revrender.tools.compare_curve OLD/curve.jsonl NEW/curve.jsonl
 
 Each line is {step, validation, loss_terms}.  Equal entries at a step mean the model, the batches drawn so far, the loss, the
-optimiser and the validation reading agree through that step.  A run stopped early still compares at the steps it reached.
+optimiser and the validation reading agree through that step.  A run stopped early still compares at the steps it reached;
+``same_steps`` in the summary says whether both curves have exactly the same steps (a complete run against a complete run).
 """
 import json
 import sys
@@ -32,7 +33,7 @@ def main(argv=None):
     for step, field, equal in rows:
         print(f"step {step} {field}: {'equal' if equal else 'DIFFERENT'}")
     summary = {'steps_compared': sorted({r[0] for r in rows}), 'different': sum(not r[2] for r in rows),
-               'identical': bool(rows) and all(r[2] for r in rows)}
+               'identical': bool(rows) and all(r[2] for r in rows), 'same_steps': set(old) == set(new)}
     print(json.dumps(summary))
     return 0 if summary['identical'] else 1
 
