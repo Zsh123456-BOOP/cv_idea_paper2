@@ -228,3 +228,13 @@ class TestDeterministicOperators(Deterministic):
     def test_install_twice_is_refused(self):
         with pytest.raises(RuntimeError, match='already installed'):
             determinism.install()
+
+
+def test_predict_lines_delivers_instances_per_strip(model):
+    from revrender import infer
+    strips = [np.full((96, 768), 250, np.uint8), np.full((96, 768), 200, np.uint8)]
+    out = infer.predict_lines(model, strips, {'mask_threshold': .4, 'nms': .5, 'score_threshold': 0.})
+    assert len(out) == 2
+    for instances in out:
+        assert all(mask.shape == (96, 768) and mask.dtype == bool and 0. <= score <= 1. for mask, score in instances)
+        assert [s for _, s in instances] == sorted((s for _, s in instances), reverse=True)

@@ -7,7 +7,7 @@
 # Holds the card's lock shared; OUT must not exist.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
-MODEL="$1"; GPU_UUID="$2"; NUMA="$3"; BUNDLE="$4"; BUNDLE_SHA="$5"; CORRECTED="$6"; CORRECTED_SHA="$7"; OUT="$8"; MIN_FREE="${9:-12000}"; shift 9
+MODEL="$1"; GPU_UUID="$2"; NUMA="$3"; BUNDLE="$4"; BUNDLE_SHA="$5"; CORRECTED="$6"; CORRECTED_SHA="$7"; OUT="$8"; MIN_FREE="${9:-12000}"; shift $(( $# < 9 ? $# : 9 ))
 if [ "$#" -gt 0 ]; then test "$1" = -- || { echo 'usage: ... MIN_FREE -- extra train arguments'; exit 2; }; shift; fi
 case "$MODEL" in maskdino|pointrend|mask2former|condinst|maskrcnn|solov2|dimaskdino) ;; *) echo 'undeclared model'; exit 2 ;; esac
 refuse_card3 "$GPU_UUID"

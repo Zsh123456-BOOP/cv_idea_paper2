@@ -68,6 +68,25 @@ def deliver(probabilities, scores, point):
     return [(masks[i], float(scores[i])) for i in keep if scores[i] >= point['score_threshold'] and masks[i].any()]
 
 
+def predict_lines(model, strips, point, batch_size=BATCH_SIZE):
+    """Delivered instances for grey strips (96 x 768 uint8 arrays), one list of (bool mask, score) per strip.
+
+    ``point`` is a frozen operating point (mask_threshold, nms, score_threshold).  The model may be on any device."""
+    import torch
+    device = next(model.parameters()).device
+    model.eval()
+    out = []
+    with torch.no_grad():
+        for start in range(0, len(strips), batch_size):
+            values = np.stack([np.asarray(s) for s in strips[start:start+batch_size]])
+            images = torch.from_numpy(values[:, None].astype(np.float32)/127.5-1).to(device)
+            masks, objects, _ = model(images)
+            probability = masks.sigmoid().cpu().numpy()
+            scores = objects.sigmoid().cpu().numpy()
+            out += [deliver(probability[i], scores[i], point) for i in range(len(images))]
+    return out
+
+
 def load_checkpoint(path, variant=None, expected_sha=None):
     """A RevRender in eval mode on the GPU with the checkpoint's weights (strict).  The variant defaults to the one the
     checkpoint's profile records."""

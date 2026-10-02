@@ -19,7 +19,7 @@ revrender/
   data/              bundle.py（数据包读取 + 训练池 + 测试集守卫）、extra.py（用户校正行）、sampling.py（平衡采样 + 预取）、
                      augment.py（增广）、gold.py（金标栅格化 / letterbox / 笔宽校正）、lines.py（行目录）、journal.py（写作者子集、合成阳性）
   train.py           训练循环：smoke → 精确重放 → 仅训练集学习门槛 → formal（早停、挑步）
-  infer.py           推理与后处理：packed 预测存档、deliver（掩膜阈值 / NMS / 分数线）、命令行
+  infer.py           推理与后处理：packed 预测存档、deliver（掩膜阈值 / NMS / 分数线）、predict_lines（把冻结点用到一批灰度行上）、命令行
   eval/              matching.py（组件匹配 + F1 + 前沿 + 误报预算）、ap.py（掩膜 AP）、bootstrap.py（按书写者自助法）、
                      freeze.py（阈值冻结）、fates.py（找到 / 画对）、speed.py（推理计速）、inloop.py（训练中验证读数）、
                      report.py（重新打分、与已记录数字和另一份存档比对）
