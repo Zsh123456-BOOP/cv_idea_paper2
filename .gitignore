@@ -2,13 +2,13 @@
 # Commit only after `git add -An .` shows no .jpg/.png/.pdf/.zip/.pth/.npz.
 
 # raw data and anything derived from it
-标注好数据/
-未标注数据/
-work/
-data/
-raw/
-outputs/
-runs/
+/标注好数据/
+/未标注数据/
+/work/
+/data/
+/raw/
+/outputs/
+/runs/
 
 # identity mappings (UUID <-> student number)
 id_mapping*
