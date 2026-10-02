@@ -47,6 +47,18 @@ def letterbox(image, width, height, fill, mask=False):
     return canvas
 
 
+def unletterbox(canvas, width, height):
+    """The inverse of ``letterbox`` for a boolean mask: the content area of the canvas resized (NEAREST) back to the crop's size."""
+    from PIL import Image
+
+    canvas = np.asarray(canvas, bool)
+    scale = min(canvas.shape[1] / width, canvas.shape[0] / height)
+    inner_w, inner_h = max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+    left, top = (canvas.shape[1] - inner_w) // 2, (canvas.shape[0] - inner_h) // 2
+    inner = Image.fromarray(canvas[top:top + inner_h, left:left + inner_w].astype(np.uint8) * 255)
+    return np.asarray(inner.resize((width, height), Image.Resampling.NEAREST)) > 127
+
+
 def strip_mask(raster):
     """The raster letterboxed onto the 96x768 canvas with NEAREST, as a uint8 array."""
     height, width = CANVAS

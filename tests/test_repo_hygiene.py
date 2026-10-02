@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OLD = (344, 354, 357, 422, 424, 425, 442, 445, 480, 483, 514, 515, 516, 517, 518, 519, 520, 547, 654, 655, 656, 668, 674, 675,
        685, 687, 699, 701, 702, 703, 750, 767, 772, 775, 782, 788, 793, 816, 831, 832, 833, 834, 835, 853, 854, 861, 865, 866,
        867, 868, 869, 871, 872, 877, 878, 880, 881, 883, 886, 887, 889, 906, 907, 910, 911, 912, 914, 915, 917, 921, 923, 925, 926)
-# not inside a hex digest or an identifier, not part of a larger number
-PATTERN = re.compile(r'(?<![0-9A-Za-z_,.])(%s)(?![0-9A-Za-z_,])' % '|'.join(map(str, OLD)))
+# not inside a hex digest or an identifier, not part of a larger number or a decimal (480.0)
+PATTERN = re.compile(r'(?<![0-9A-Za-z_,.])(%s)(?![0-9A-Za-z_,]|\.\d)' % '|'.join(map(str, OLD)))
 # One data constant keeps its historical text: the salt that ranks writers for nested training subsets.  It is part of the
 # data definition (changing it changes which writers each fraction holds), not a reference to a script.
 ALLOWED = ('SALT = ',)

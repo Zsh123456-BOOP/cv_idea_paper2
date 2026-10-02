@@ -112,4 +112,6 @@ def write_manifest(out_dir, name='run_manifest.json', *, config, inputs=None, se
 
 
 def to_jsonable(namespace):
-    return {k: str(v) if isinstance(v, Path) else v for k, v in vars(namespace).items()}
+    """An argparse namespace as plain JSON values (paths, alone or in a list, as strings)."""
+    text = lambda v: str(v) if isinstance(v, Path) else v
+    return {k: [text(x) for x in v] if isinstance(v, list) else text(v) for k, v in vars(namespace).items()}

@@ -29,10 +29,11 @@ RULE = 'chosen on validation among 0.3/0.4/0.5 (user, 2026-09-27)'
 def frozen_point(path, bundle_sha, source_sha=None, archive=None):
     """What a validation freeze tells a reader: the archive, the model, the mask threshold, the NMS level and score cut, and
     ``expected``, the freeze's own reading, which a recount must reproduce (None for a freeze made on the gold-v2 source
-    bundle, whose lines differ).  ``archive`` names another archive of the same model, read at the same point."""
+    bundle, whose lines differ).  ``archive`` names another archive of the same model, read at the same point;
+    ``bundle_sha=None`` skips the check against a bundle (a reader that only needs the point, like revrender.pages)."""
     record = json.loads(Path(path).read_text())
     on_source = source_sha is not None and record['bundle_sha256'] == source_sha
-    require(record.get('test_touched') is False and (record['bundle_sha256'] == bundle_sha or on_source),
+    require(record.get('test_touched') is False and (bundle_sha is None or record['bundle_sha256'] == bundle_sha or on_source),
             f'{path}: not a validation freeze of this bundle')
     best = record['validation']['own_best']
     return {'archive': str(archive or record['validation_archive']), 'model': record['model'],

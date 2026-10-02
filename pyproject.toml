@@ -19,6 +19,7 @@ test = ["pytest"]
 [project.scripts]
 rvr-train = "revrender.train:main"
 rvr-infer = "revrender.infer:main"
+rvr-pages = "revrender.pages:main"
 rvr-freeze = "revrender.eval.freeze:main"
 rvr-report = "revrender.eval.report:main"
 rvr-ap = "revrender.eval.ap:main"
