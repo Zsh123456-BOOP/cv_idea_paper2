@@ -18,9 +18,12 @@ revrender/
                      + 上下文残差）、quality.py（掩膜质量头）、revrender.py（组装 + 四个变体）、losses.py（损失 + 匹配 + 分组裁剪）、
                      ops.py（采样与框）、legacy_init.py（只为复现随机数流而建、随后丢弃的模块）
   data/              bundle.py（数据包读取 + 训练池 + 测试集守卫）、extra.py（用户校正行）、sampling.py（平衡采样 + 预取）、
-                     augment.py（增广）、gold.py（金标栅格化 / letterbox / 笔宽校正）、lines.py（行目录）、journal.py（写作者子集、合成阳性）
+                     augment.py（增广）、gold.py（金标栅格化 / letterbox 与它的逆 / 笔宽校正）、lines.py（行目录）、
+                     ocr_lines.py（整页 OCR 文本 → 目录里的那些行）、journal.py（写作者子集、合成阳性）
   train.py           训练循环：smoke → 精确重放 → 仅训练集学习门槛 → formal（早停、挑步）
   infer.py           推理与后处理：packed 预测存档、deliver（掩膜阈值 / NMS / 分数线）、predict_lines（把冻结点用到一批灰度行上）、命令行
+  ocr.py             Unlimited-OCR 的调用（切行的那个模型，设置与当年相同）
+  pages.py           整道题：OCR 切行 → 每行过 RevRender → 实例拼回整页；命令行
   eval/              matching.py（组件匹配 + F1 + 前沿 + 误报预算）、ap.py（掩膜 AP）、bootstrap.py（按书写者自助法）、
                      freeze.py（阈值冻结；`read_frozen` 是各读数共用的「读一份冻结」）、fates.py（找到 / 画对）、speed.py（推理计速）、
                      inloop.py（训练中验证读数）、report.py（重新打分、与已记录数字和另一份存档比对）、
@@ -55,6 +58,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 训练一个 RevRender | `launch_train_arm.sh control GPU NUMA B S C CS OUT`（smoke_a → smoke_b 重放 → 学习门槛 → formal → 冻结）；`STOP_AFTER=learning` 只跑三道门槛 |
 | 冻结 | `python -m revrender.eval.freeze --bundle B --bundle-sha S --run OUT/formal --output freeze.json`（原生基线加 `--model maskdino` 等） |
 | 掩膜 AP / 找到画对 / 自助法 / 计速 | `python -m revrender.eval.ap / .fates / .bootstrap / .speed`；三者加 `--ink-only` 就只在墨迹上读（金标和交付掩膜都裁到墨迹） |
+| 整道题：切行 → 标涂改 → 拼回 | `python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages 图片目录 --ocr-model /home/zsh/hme/models/Unlimited-OCR --output-dir OUT [--ids 页id文件] [--overlay]`；已有 OCR 文本时用 `--ocr-text ulocr.jsonl` 代替 `--ocr-model`（不占 OCR 的显存和时间）。每页写 `OUT/<image_id>.json`（切出的行、每个实例的行号 / 分数 / 框）和 `.npz`（每个实例在它的行裁图上的掩膜）。需要 GPU，约 16 GB（OCR 模型 14 GB + RevRender） |
 | 掩膜网格上限与加粗变细 / 六类像素错误 | `python -m revrender.eval.representation --bundle B --bundle-sha S --freeze 标签=freeze.json ... --output out.json`；`python -m revrender.eval.pixel_errors ...` |
 | 一个原生基线 | `launch_native_arm.sh MODEL GPU NUMA B S C CS OUT`（smoke → formal → 冻结 → 掩膜阈值）；Mask Transfiner：`MODEL=transfiner` 并设 `TRANSFINER_PIN=pin.json` |
 | 涂改专用方法 | `python -m revrender.baselines.component_cls / .removal / .paper / .mathscrub`（都有 `--smoke`） |
@@ -151,6 +155,8 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 |---|---|
 | 344（`rasterise`、letterbox）、500（`correct_mask`） | `data/gold.py` |
 | exact_crops_46902.jsonl 读取 | `data/lines.py` |
+| gold/tools/build_line_edit_review.py（`parse_ulocr`、`reorder`、`mathnorm`）；严格行的规则 | `data/ocr_lines.py`（在 2,238 页上与目录逐行相同） |
+| 服务器 annot_v1/annot_transcribe.py（Unlimited-OCR 的调用） | `ocr.py`（设置相同；在验证页上逐字符复现存档的 OCR 文本） |
 | 699、782 | `tools/annotate/editor.html`、`single_file.py` |
 | launch_gpu_job.sh、launch_queue_runner.sh | `scripts/launch_gpu_job.sh`、`launch_queue_runner.sh`（队列目录改为 `paper2_queue_v1`，不碰旧队列） |
 
@@ -241,6 +247,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 四个涂改专用方法各加了一个 `--smoke`（8 步 / 20 行，检查流程，输出里标 `smoke_only`），因为它们原来没有 smoke。
 - 数据包构建器（生成数据包的旧脚本）、标注协议与补标链不搬；题目图的位置已核对，见 [docs/data_location.md](docs/data_location.md)。
 - 各读数共用一份「读冻结」（`eval/freeze.py` 的 `read_frozen` / `frozen_point`）：fates、ap、bootstrap、report 和新的分析读数都走它，不各自再写一份；`--ink-only` 是 fates、ap、bootstrap 的选项（`eval/ink.py`），不是另一条流水线。
+- 整道题的行用目录当年的规则切：只留「严格行」（一个区域一行、有框、不是页码和图）。OCR 返回的「一个区域多行」（候选行的 11.7%）第一篇没有用，流水线也不切它们；要切要另定规则（区域框等高均分是近似）。
 - 922（线性探针）要抽模型特征，这次不搬；923 里旧的消融变体（rvr_coarse、nofine_nodense、nocontext）不搬，只比八个主模型。
 
 ## 已知差异

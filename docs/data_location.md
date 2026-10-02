@@ -82,6 +82,17 @@ uuid 的第三段首位也能区分来源：`5` 的是未标注 / 补充（3,967
 2. 外部集属于哪张卷没有记录；要按卷划分的话，这 1,026 张得另行判断。
 3. 没有别的歧义：图源、数量（5,002 = 3,976 + 1,026；4,990 + 12）、id 与文件的对应都对得上。
 
+## 7. 行是谁切的
+
+行目录里的框来自 OCR 模型 **Unlimited-OCR**（Baidu 开源、MIT；服务器 `/home/zsh/hme/models/Unlimited-OCR`，6.4 GB）。它把整道题读成带坐标的版面区域 `<|det|>类型 [x0, y0, x1, y1]<|/det|>内容`，框是千分比坐标。切行的规则（`revrender/data/ocr_lines.py`）：
+
+- 区域内容按换行和 `\\` 拆成视觉行；一个区域拆出多行时只能把区域框等高均分（旧记录里叫 `inferred`）。
+- 目录里只留「严格行」：不是页码 / 图（`page_number`、`image`、`image_caption`），一个区域恰好一行，框有正面积；相同的框只留一条；顺序先左栏后右栏、栏内自上而下。
+- 在第一篇训练 / 验证 / 校正用到的 2,238 页上，这套规则从 OCR 原文逐页复现了目录里的 25,534 条裁图：框、顺序、文字完全相同。
+- 候选行里有 11.7% 是「一个区域多行」的均分行，第一篇没有用，目录里也没有；整页流水线同样不切它们。
+
+原始 OCR 输出（模型对 5,002 页各读一遍）：未标注 / 补充 3,976 页在本机 `~/Desktop/cv_idea/work/line_edit_all5002_authority_v1/ulocr_3976.jsonl`、服务器 `/home/zsh/hme/annot_v1/ulocr_dedup.jsonl`（两份 SHA-256 相同，`3e5ee451…`）；外部集 1,026 页在本机 `~/Desktop/cv_idea_claude/outputs/line_edit_external_blind_v1/ocr_v1/shard_0[0-3].jsonl`、服务器 `/home/zsh/hme/artifacts/line_edit_external_blind_20260811_v1/ulocr/shard_0[0-3].jsonl`。每行 `{image_id, text}`，`text` 就是上面的区域文本。运行方式见 `revrender/ocr.py`（提示词 `<image>document parsing.`，与当时相同）。
+
 ## 做法与范围
 
 - 对应关系：原件 ↔ 副本按文件名规则和映射表、再按内容哈希核对；行目录、数据包的记录只读 id、划分和数量。
