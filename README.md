@@ -156,7 +156,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 ## 等价验证
 
-在服务器 `4090x4`（RTX 4090；torch 2.9.1+cu128，与第一篇训练时同一环境）上，用提交 `14701ec8` 的部署快照，`scripts/verify_equivalence.sh`
+在服务器 `4090x4`（RTX 4090；torch 2.9.1+cu128，与第一篇训练时同一环境）上，用提交 `14701ec8` 的部署快照（后来在最终代码 `3ca89f94` 上整个重跑，结果相同，见第 4 节末），`scripts/verify_equivalence.sh`
 一次跑完下列检查，输出在 `/home/zsh/hme/outputs/paper2_verify_14701ec8/`，全部通过（`summary.log` 末行的 `CHECKS` 全为 true）。数据是第一篇的验证集金标 v2 数据包（476 行、51 名书写者、
 365 处涂改）；不读测试集。服务器上的全部测试（120 条）通过，本地 103 条通过（17 条需要 torch 的模型测试跳过）。
 
@@ -220,7 +220,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - `eval.pixel_errors`：八个模型 × 六类像素的像素数、错误数、错误率、占全部错误的份额。旧记录里的三个消融变体不搬，没有比。
 - 只算墨迹（`eval.fates` / `eval.ap` / `eval.bootstrap` 的 `--ink-only`）：区域读数的 TP / FP / F1、墨迹读数的 TP / FP / F1 / AP / AP50 / AP75、找到 / 画对 / 找到没画对 / 漏掉、金标无墨迹数和交付掩膜无墨迹数，以及 RevRender 减各基线的 F1 差与按书写者的 95% 区间（5,000 次、种子 42）。
 
-另外，把旧的各自一份「读冻结记录」合并成 `eval/freeze.py` 的 `read_frozen` 之后，`fates`、`ap`、`bootstrap`、`report` 的输出没有变（本地测试里有用旧实现录下的金标：`tests/golden/analysis_tools.json`；服务器上的 `verify_equivalence.sh` 重跑见 RESULTS.md）。
+另外，把旧的各自一份「读冻结记录」合并成 `eval/freeze.py` 的 `read_frozen` 之后，在最终代码（提交 `3ca89f94`）上把 `scripts/verify_equivalence.sh` 整个重跑了一遍（`/home/zsh/hme/outputs/paper2_verify_3ca89f94/`）：六项 `CHECKS`（推理报告、重新打分、冻结规则重推、找到 / 画对、自助法、阈值重跑）全为 true，服务器上的测试 133 条全过。本地的测试里还有用旧实现录下的金标（`tests/golden/analysis_tools.json`）。
 
 ### 本地测试
 
