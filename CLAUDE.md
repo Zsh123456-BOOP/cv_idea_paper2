@@ -13,7 +13,7 @@
 - 原始数据：`~/Desktop/cv_idea/未标注数据/`、`~/Desktop/cv_idea/标注好数据/`。文件夹名含学号，只读；UUID ↔ 学号的映射表（`id_mapping*.csv`）不进 Git，处理链路一律用 UUID。
 - 行目录：旧仓库 `gold/line_edit_all5002_policy_decisions_20260814_v1/canonical/exact_crops_46902.jsonl`（46,902 行、4,990 张题目图，每行有 `image_id`、`box_1000`）。读取：`revrender.data.lines.default_catalogue()`。
 - 路径配置：`configs/paths.toml`（本机，已被 git 忽略）；模板 `configs/paths.example.toml`。服务器上第一篇数据包、权重、上游源码的位置在 README 的数据表。
-- 题目图在原始数据里的确切路径尚未核对（行目录只给 `image_id`）。
+- 题目图（5,002 张）在哪、`image_id` 怎么对到文件：见 `docs/data_location.md`。副本以 `image_id` 命名、与原件逐字节相同，读图不需要映射表。
 
 ## 红线
 
@@ -45,3 +45,14 @@ python -m revrender.infer / .train / .eval.report / .eval.freeze ...            
 - 普通 Python 包 `revrender/`，正常 import；命令行入口在各模块的 `main()`，`pyproject.toml` 里有 `rvr-*` 别名。
 - 配方在 `configs/revrender.toml`、`configs/baselines.toml`，训练时整份写进 manifest；改一个值就是一个声明过的实验。
 - 模型的建造顺序和随机数流是模型的一部分（见 `revrender/models/legacy_init.py` 的说明），不要“顺手整理”；改了就要重新核对 smoke 前 4 步的轨迹（`python -m revrender.tools.compare_trace`）。
+
+## 长期规矩：不要让代码再变成旧仓库
+
+旧仓库每做一个实验就新写一个编号脚本、复制一份旧代码改几行、加一个模式开关、写一段流水账，久了同一个功能有十几份实现，谁也不敢删。从这里起：
+
+- 不写编号脚本，不为一个实验复制一份代码。新实验 = 配置文件 + 已有入口的参数；新能力加进已有模块，或新开一个有明确名字的模块。加东西前先问：能不能改已有代码？
+- 同一功能只有一份实现。一个实验分支结束（不进论文、不再用）就删掉它的代码和开关，历史留在 git 里。不留「以防万一」的开关、注释掉的代码、`_v2` / `_new` / `_old` 文件（文件名由 `tests/test_repo_hygiene.py` 守）。
+- 不在代码里硬写哈希常量、不写大段防御性校验；溯源靠 run manifest。
+- 文档只留 `README.md`、`CLAUDE.md`、`RESULTS.md`（每次正式实验一行：日期、配置、提交、输出目录、关键数字、一句结论）。不写流水账。
+- 产物目录按运行名（配置里的 name）区分，不按复制的脚本区分。
+- 单个文件超过约 800 行就拆；模块边界保持 models / data / train / infer / eval / baselines / tools。

@@ -17,6 +17,7 @@ TEXT = ('.py', '.sh', '.toml', '.html', '.md', '.json', '.txt', '.cfg')
 # files exempt from the number rule: the provenance table, this test, and the data note, whose image counts (872, 788) equal two script numbers
 COUNTS_AS_NUMBERS = ('README.md', 'test_repo_hygiene.py', 'data_location.md')
 FORBIDDEN = ('.jpg', '.jpeg', '.png', '.pdf', '.zip', '.pth', '.pt', '.npz', '.npy', '.pkl', '.csv')
+MAX_LINES = 800                  # longer than this, split the module (the module boundaries stay)
 # a file is not named by a number and is not a second copy of another one (v2, new, old)
 NAMED_AS_A_COPY = re.compile(r'^\d|(?:^|[_.-])(?:v\d+|new|old)(?:$|[_.-])', re.I)
 
@@ -49,3 +50,9 @@ def test_no_image_weights_array_or_table_file_is_in_the_repository():
 def test_no_file_is_named_by_a_number_or_as_a_copy_of_another():
     bad = [str(p.relative_to(ROOT)) for p in tracked_files() if NAMED_AS_A_COPY.search(p.name)]
     assert not bad, bad
+
+
+def test_no_source_file_is_longer_than_about_800_lines():
+    long = [f'{p.relative_to(ROOT)}: {n} lines' for p in tracked_files() if p.suffix == '.py'
+            and (n := len(p.read_text(encoding='utf-8').splitlines())) > MAX_LINES]
+    assert not long, long
