@@ -72,7 +72,7 @@ lane_baselines() {   # card 2: every native baseline and Mask Transfiner through
         echo "native_smoke_$m exit=$?" >> "$OUT/summary.log"
     done
     if [ -n "${TRANSFINER_PIN:-}" ]; then
-        STOP_AFTER=smoke bash scripts/launch_native_arm.sh maskrcnn $G2 1 "$B" "$BS" "$C" "$CS" "$OUT/native_smoke/transfiner" 12000 > "$OUT/native_smoke_transfiner.log" 2>&1
+        STOP_AFTER=smoke bash scripts/launch_native_arm.sh transfiner $G2 1 "$B" "$BS" "$C" "$CS" "$OUT/native_smoke/transfiner" 12000 > "$OUT/native_smoke_transfiner.log" 2>&1
         echo "native_smoke_transfiner exit=$?" >> "$OUT/summary.log"
     fi
     bash scripts/launch_gpu_job.sh $G2 1 "$OUT/threshold_maskrcnn" -- "$NATIVE_PY" -m revrender.baselines.native.threshold --method maskrcnn \
