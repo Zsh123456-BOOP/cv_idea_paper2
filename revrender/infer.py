@@ -87,16 +87,22 @@ def predict_lines(model, strips, point, batch_size=BATCH_SIZE):
     return out
 
 
+def variant_of(profile, given=None):
+    """The model variant a checkpoint's profile records: this package's ``variant``, or paper 1's tuning mode."""
+    return (given or profile.get('variant') or (profile.get('configuration', {}).get('tuning880') or {}).get('mode')
+            or 'control')
+
+
 def load_checkpoint(path, variant=None, expected_sha=None):
     """A RevRender in eval mode on the GPU with the checkpoint's weights (strict).  The variant defaults to the one the
-    checkpoint's profile records."""
+    checkpoint's profile records (this package's ``variant``, or paper 1's tuning mode)."""
     import torch
     from .models.revrender import build_model
     path = Path(path)
     if expected_sha is not None:
         require(digest(path) == expected_sha, 'the checkpoint is not the declared one')
     payload = torch.load(path, map_location='cpu', weights_only=False)
-    variant = variant or payload.get('profile', {}).get('variant', 'control')
+    variant = variant_of(payload.get('profile', {}), variant)
     model = build_model(variant)
     model.load_state_dict(payload['state_dict'], strict=True)
     return model.cuda().eval(), payload

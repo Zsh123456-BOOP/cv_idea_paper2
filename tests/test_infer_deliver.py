@@ -27,3 +27,9 @@ def test_the_packed_archive_format_round_trips(tmp_path):
     with np.load(tmp_path/'p.npz') as a:
         assert a['mask_shape'].tolist() == [2, 32, 96, 768] and a['sample_ids'].tolist() == ['a:b', 'a:c']
         assert np.allclose(a['mask_thresholds'], [.2, .3, .4, .5, .6, .7, .8])
+
+
+def test_a_checkpoint_names_its_variant_in_either_profile_format():
+    assert infer.variant_of({'variant': 'nofine'}) == 'nofine'
+    assert infer.variant_of({'configuration': {'tuning880': {'mode': 'nocontext'}}}) == 'nocontext'
+    assert infer.variant_of({}) == 'control' and infer.variant_of({'variant': 'nofine'}, 'nodense') == 'nodense'
