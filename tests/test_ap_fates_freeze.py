@@ -77,18 +77,10 @@ def test_writer_draws_pair_every_variant_and_sum_per_writer():
     assert s['share_not_above_zero'] == .25 and s['difference'] == .1
 
 
-def test_bootstrap_refuses_bad_variants_and_a_freeze_on_another_bundle(tmp_path):
+def test_bootstrap_refuses_a_malformed_variant():
     from revrender.eval import bootstrap
     with pytest.raises(Exception, match='label=freeze'):
         bootstrap.parse_variant('a=other:x')
-    record = {'test_touched': False, 'bundle_sha256': 'old', 'model': 'maskdino', 'validation_archive': 'a', 'mask_threshold': .5,
-              'validation': {'own_best': {'nms': .5, 'score_threshold': .3, 'true_positive': 1}}}
-    path = tmp_path/'f.json'
-    path.write_text(json.dumps(record))
-    assert bootstrap.variant_point(path, 'new', 'old')['expected'] is None          # the gold-v2 source bundle: unchecked
-    assert bootstrap.variant_point(path, 'old')['expected']['true_positive'] == 1
-    with pytest.raises(Exception, match='another bundle'):
-        bootstrap.variant_point(path, 'new', 'other')
 
 
 def test_fates_separate_found_from_drawn_right():

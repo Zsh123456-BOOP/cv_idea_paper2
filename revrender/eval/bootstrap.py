@@ -11,7 +11,8 @@ named pair's difference is paired.  Reported per pair and metric: the full-sampl
 percentiles and the share of draws in which the difference is not above zero.  Before any draw the per-line totals must
 reproduce each freeze's TP, FP and pixel IoU exactly.
 
-A variant is ``label=freeze:<freeze.json>``.  Nothing here chooses or changes an operating point.
+A variant is ``label=freeze:<freeze.json>``.  Nothing here chooses or changes an operating point.  ``--ink-only`` reads every
+metric on ink alone (eval.ink): the gold and the delivered masks cut to ink, the delivered set decided on the full masks.
 """
 import argparse
 import json
@@ -20,11 +21,13 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data.bundle import load_bundle, manifest_at
+from ..data.bundle import gold_source_sha, load_bundle
 from ..util import SEED, digest, provenance, require, to_jsonable
 from . import ap as ap_module
+from . import ink as ink_view
 from . import matching
-from .fates import iou_matrix
+from .fates import iou_matrix, line_record
+from .freeze import read_frozen
 
 SCHEMA = 'hme-revision-writer-bootstrap-v1'
 METRICS = ('f1', 'AP', 'AP50', 'AP75', 'pixel_iou')
@@ -38,64 +41,56 @@ def parse_variant(text):
     return label, kind, Path(path)
 
 
-def variant_point(path, bundle_sha, source_sha=None):
-    """The archive, how to read it, and the frozen point of one variant."""
-    record = json.loads(path.read_text())
-    require(record.get('test_touched') is False, f'{path}: not a validation record')
-    on_source = source_sha is not None and record['bundle_sha256'] == source_sha
-    require(record['bundle_sha256'] == bundle_sha or on_source, f'{path}: frozen on another bundle')
-    best = record['validation']['own_best']
-    return {'archive': record['validation_archive'], 'packed': record['model'] == 'point_context',
-            'mask_threshold': float(record['mask_threshold']), 'nms': float(best['nms']),
-            'score_threshold': float(best['score_threshold']), 'expected': None if on_source else best}
-
-
-def line_counts(masks, scores, truth, point):
-    """One line at one frozen point: component, pixel and AP records."""
+def line_counts(masks, scores, truth, point, ink=None):
+    """One line at one frozen point: component, pixel and AP records (``ink``: read on ink alone)."""
     keep = matching.suppressed(masks, scores, point['nms'])
-    matched, kept, ordered = matching.prefix_outcomes([masks[i] for i in keep],
-                                                      np.array([float(scores[i]) for i in keep]), truth)
-    admitted = int(np.sum(np.asarray(ordered, np.float64) >= point['score_threshold']))
-    tp, fp = int(matched[admitted]), int(kept[admitted]-matched[admitted])
+    if ink is None:
+        cut, truth_seen = (lambda m: m), truth
+        matched, kept, ordered = matching.prefix_outcomes([masks[i] for i in keep],
+                                                          np.array([float(scores[i]) for i in keep]), truth)
+        admitted = int(np.sum(np.asarray(ordered, np.float64) >= point['score_threshold']))
+        tp, fp = int(matched[admitted]), int(kept[admitted]-matched[admitted])
+    else:
+        cut, truth_seen = (lambda m: np.asarray(m, bool) & ink), ink_view.restrict([], truth, ink)[1]
+        counts = line_record(masks, scores, truth, point, ink)      # a delivered mask left with no ink is a false positive
+        tp, fp = counts['tp'], counts['fp']
     union = None
     for i in keep:
         if float(scores[i]) >= point['score_threshold']:
-            union = masks[i] if union is None else np.logical_or(union, masks[i])
+            union = cut(masks[i]) if union is None else np.logical_or(union, cut(masks[i]))
     inter = predicted = gold_pixels = 0
-    if union is not None or truth:
-        shape = truth[0].shape if truth else union.shape
+    if union is not None or truth_seen:
+        shape = truth_seen[0].shape if truth_seen else union.shape
         union = np.zeros(shape, bool) if union is None else union
         gold = np.zeros(shape, bool)
-        for component in truth:
+        for component in truth_seen:
             gold |= component
         inter, predicted, gold_pixels = int((union & gold).sum()), int(union.sum()), int(gold.sum())
     nonempty = [i for i in keep if masks[i].any()]
     if nonempty:
-        iou = iou_matrix([masks[i] for i in nonempty], truth)
+        iou = iou_matrix([cut(masks[i]) for i in nonempty], truth_seen)
         records = [ap_module.match_line(iou, [scores[i] for i in nonempty], t) for t in ap_module.IOUS]
         det_scores = np.array([s for s, _ in records[0]], np.float64)
         det_tp = np.array([[hit for _, hit in r] for r in records], bool).T
     else:
         det_scores, det_tp = np.zeros(0), np.zeros((0, len(ap_module.IOUS)), bool)
-    return {'tp': tp, 'fp': fp, 'gold': len(truth), 'inter': inter, 'pred': predicted, 'gold_px': gold_pixels,
+    return {'tp': tp, 'fp': fp, 'gold': len(truth_seen), 'inter': inter, 'pred': predicted, 'gold_px': gold_pixels,
             'scores': det_scores, 'hits': det_tp}
 
 
 def read_variant(job):
     """Every validation line of one variant; runs in a worker process."""
-    label, path, bundle_sha, source_sha, order, truths = job
-    point = variant_point(path, bundle_sha, source_sha)
-    if point['packed']:
-        provide, available = matching.packed_provider(Path(point['archive']), point['mask_threshold'])
-    else:
-        provide, available = matching.native_provider(Path(point['archive']))
+    label, path, bundle_sha, source_sha, order, truths, inks = job
+    provide, available, point = read_frozen(path, bundle_sha, source_sha)
     require(set(order) <= available, f'{label}: archive does not cover validation')
-    lines = []
-    for line, truth in zip(order, truths):
+    lines, regions = [], []
+    for line, truth, ink in zip(order, truths, inks):
         masks, scores = provide(line)
-        lines.append(line_counts(masks, np.asarray(scores, np.float64), truth, point))
-    tp, fp = sum(x['tp'] for x in lines), sum(x['fp'] for x in lines)
-    inter, pred, gold_px = (sum(x[k] for x in lines) for k in ('inter', 'pred', 'gold_px'))
+        scores = np.asarray(scores, np.float64)
+        regions.append(line_counts(masks, scores, truth, point))
+        lines.append(regions[-1] if ink is None else line_counts(masks, scores, truth, point, ink))
+    tp, fp = sum(x['tp'] for x in regions), sum(x['fp'] for x in regions)
+    inter, pred, gold_px = (sum(x[k] for x in regions) for k in ('inter', 'pred', 'gold_px'))
     expected = point['expected']
     if expected is not None:
         require((tp, fp) == (expected['true_positive'], expected['false_positive']),
@@ -170,6 +165,7 @@ def main(argv=None):
     parser.add_argument('--bundle-sha', required=True)
     parser.add_argument('--variant', action='append', required=True, help='label=freeze:<path>')
     parser.add_argument('--pair', action='append', required=True, help='A-B: the difference A minus B')
+    parser.add_argument('--ink-only', action='store_true', help='read every metric on ink alone')
     parser.add_argument('--resamples', type=int, default=5000)
     parser.add_argument('--seed', type=int, default=SEED, choices=(SEED,))
     parser.add_argument('--workers', type=int, default=8)
@@ -183,16 +179,16 @@ def main(argv=None):
     require(all(len(p) == 2 and p[0] in labels and p[1] in labels and p[0] != p[1] for p in pairs),
             'a pair names an unknown variant')
     require(args.resamples >= 100, 'too few resamples')
-    manifest = manifest_at(args.bundle, args.bundle_sha)
+    source_sha = gold_source_sha(args.bundle, args.bundle_sha)
     bundle = load_bundle(args.bundle, args.bundle_sha)
     dev = sorted(bundle['dev'], key=lambda r: not r['is_positive'])
     require(not any(r.get('split') == 'test' for r in dev), 'a test row reached the validation split')
     order = [r['sample_id'].split(':', 1)[1] for r in dev]
     truths = [list(r['instances']) for r in dev]
     writers = [r['group_uuid'] for r in dev]
-    source_sha = (manifest.get('gold_v2') or {}).get('from_bundle_sha256')
+    inks = ink_view.ink_maps(dev) if args.ink_only else [None]*len(dev)
     names = sorted(set(writers))
-    jobs = [(label, path, args.bundle_sha, source_sha, order, truths) for label, _, path in variants]
+    jobs = [(label, path, args.bundle_sha, source_sha, order, truths, inks) for label, _, path in variants]
     with ProcessPoolExecutor(max_workers=min(args.workers, len(jobs))) as pool:
         read = {label: (lines, info) for label, lines, info in pool.map(read_variant, jobs)}
     groups = {label: by_writer(read[label][0], writers, names) for label in labels}
@@ -216,6 +212,7 @@ def main(argv=None):
                  for label in labels}
     result = {'schema': SCHEMA, 'bundle_sha256': args.bundle_sha, 'lines': len(order), 'writers': len(names),
               'gold_components': sum(map(len, truths)), 'resamples': args.resamples, 'seed': args.seed,
+              'ink_only': args.ink_only, **({'ink_below': ink_view.INK_BELOW} if args.ink_only else {}),
               'variants': {label: {'full_sample': full[label], 'ci95': intervals[label],
                                    'full_ap_order': read[label][1]['full_ap'],
                                    **{k: v for k, v in read[label][1].items() if k != 'full_ap'}} for label in labels},

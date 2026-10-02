@@ -12,7 +12,8 @@ matched to the gold components one to one at IoU 0.50.  Every gold component the
   drawn right, of found    = matched / (matched + extent)    of those located, the share whose extent is right
 
 Every delivered mask is ``true`` (matched), ``on_gold`` (not matched, but >= 20% of its pixels lie on the gold union)
-or ``spurious``.
+or ``spurious``.  ``--ink-only`` reads the same fates a second time with the gold and the delivered masks cut to ink
+(eval.ink).
 """
 import argparse
 import json
@@ -21,9 +22,11 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data.bundle import load_bundle
+from ..data.bundle import gold_source_sha, load_bundle
 from ..util import digest, provenance, require, to_jsonable
+from . import ink as ink_view
 from . import matching
+from .freeze import read_frozen
 
 EXTENT_IOU, EXTENT_COVER, ON_GOLD = .1, .2, .2
 
@@ -56,24 +59,31 @@ def delivered(masks, scores, point):
     return [i for i in keep if float(scores[i]) >= point['score_threshold'] and masks[i].any()]
 
 
-def line_record(masks, scores, truth, point):
-    """Gold-side fates and prediction-side kinds of one line at one frozen point."""
+def line_record(masks, scores, truth, point, ink=None):
+    """Gold-side fates and prediction-side kinds of one line at one frozen point (``ink``: read on ink alone)."""
     chosen = delivered(masks, scores, point)
-    iou = iou_matrix([masks[i] for i in chosen], truth) if chosen and truth else np.zeros((len(chosen), len(truth)))
-    won = greedy(iou, range(len(chosen)), range(len(truth)), .5) if chosen and truth else {}
+    shown = [masks[i] for i in chosen]
+    dropped = 0
+    if ink is not None:
+        shown, truth, dropped = ink_view.restrict(shown, truth, ink)
+    iou = iou_matrix(shown, truth) if shown and truth else np.zeros((len(shown), len(truth)))
+    won = greedy(iou, range(len(shown)), range(len(truth)), .5) if shown and truth else {}
     gold_union = np.logical_or.reduce(truth) if truth else None
     gold = []
     for g, component in enumerate(truth):
-        cover = max((float((masks[i] & component).sum())/float(component.sum()) for i in chosen), default=0.)
-        best = float(iou[:, g].max()) if chosen else 0.
+        cover = max((float((m & component).sum())/float(component.sum()) for m in shown), default=0.)
+        best = float(iou[:, g].max()) if shown else 0.
         fate = 'matched' if g in won else ('extent' if best >= EXTENT_IOU or cover >= EXTENT_COVER else 'missed')
         gold.append({'fate': fate, 'iou': float(iou[won[g], g]) if g in won else best})
     hits = set(won.values())
     predicted = []
-    for r, i in enumerate(chosen):
-        on_gold = gold_union is not None and float((masks[i] & gold_union).sum()) >= ON_GOLD*float(masks[i].sum())
+    for r, m in enumerate(shown):
+        on_gold = gold_union is not None and float((m & gold_union).sum()) >= ON_GOLD*float(m.sum())
         predicted.append('true' if r in hits else ('on_gold' if on_gold else 'spurious'))
-    return {'tp': len(won), 'fp': len(chosen)-len(won), 'gold': gold, 'predicted': predicted}
+    record = {'tp': len(won), 'fp': len(shown)-len(won), 'gold': gold, 'predicted': predicted}
+    if ink is not None:
+        record['without_ink'] = {'gold': dropped, 'delivered': sum(not m.any() for m in shown)}
+    return record
 
 
 def summarise(records):
@@ -81,16 +91,15 @@ def summarise(records):
     predicted = Counter(p for r in records for p in r['predicted'])
     total = sum(gold.values())
     located = gold['matched']+gold['extent']
-    return {'gold': dict(gold), 'predicted': dict(predicted), 'gold_components': total,
-            'found': located/total if total else 0.,
-            'drawn_right': gold['matched']/total if total else 0.,
-            'drawn_right_of_found': gold['matched']/located if located else 0.,
-            'true_positive': sum(r['tp'] for r in records), 'false_positive': sum(r['fp'] for r in records)}
-
-
-def read_freeze_point(frozen):
-    best = frozen['validation']['own_best']
-    return {'nms': float(best['nms']), 'score_threshold': float(best['score_threshold'])}
+    tp, fp = sum(r['tp'] for r in records), sum(r['fp'] for r in records)
+    out = {'gold': dict(gold), 'predicted': dict(predicted), 'gold_components': total,
+           'found': located/total if total else 0.,
+           'drawn_right': gold['matched']/total if total else 0.,
+           'drawn_right_of_found': gold['matched']/located if located else 0.,
+           'true_positive': tp, 'false_positive': fp, 'f1': 2*tp/(tp+fp+total) if tp+fp+total else 0.}
+    if any('without_ink' in r for r in records):
+        out['without_ink'] = {k: sum(r['without_ink'][k] for r in records) for k in ('gold', 'delivered')}
+    return out
 
 
 def main(argv=None):
@@ -98,33 +107,40 @@ def main(argv=None):
     parser.add_argument('--freeze', action='append', required=True, help='label=freeze.json')
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--bundle-sha', required=True)
+    parser.add_argument('--ink-only', action='store_true', help='also read the fates on ink alone (the gold and the masks cut to ink)')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
     require(not args.output.exists(), 'create-only output exists', FileExistsError)
     bundle = load_bundle(args.bundle, args.bundle_sha)
     dev, order, truths = matching.validation_order(bundle['dev'])
+    inks = ink_view.ink_maps(dev) if args.ink_only else [None]*len(dev)
+    source = gold_source_sha(args.bundle, args.bundle_sha)
     report = {}
     for entry in args.freeze:
         label, path = entry.split('=', 1)
-        frozen = json.loads(Path(path).read_text())
-        require(frozen['test_touched'] is False and frozen['bundle_sha256'] == args.bundle_sha,
-                f'{label} is not a validation freeze of this bundle')
-        provide, _ = matching.provider_for(frozen['validation_archive'], frozen['model'], frozen['mask_threshold'])
-        point = read_freeze_point(frozen)
-        records = []
-        for line, truth in zip(order, truths):
+        provide, _, point = read_frozen(path, args.bundle_sha, source)
+        records, ink_records = [], []
+        for line, truth, ink in zip(order, truths, inks):
             masks, scores = provide(line)
-            records.append(line_record(masks, np.asarray(scores, np.float64), truth, point))
+            scores = np.asarray(scores, np.float64)
+            records.append(line_record(masks, scores, truth, point))
+            if args.ink_only:
+                ink_records.append(line_record(masks, scores, truth, point, ink))
         summary = summarise(records)
-        best = frozen['validation']['own_best']
-        require((summary['true_positive'], summary['false_positive']) == (best['true_positive'], best['false_positive']),
+        best = point['expected']
+        require(best is None or (summary['true_positive'], summary['false_positive']) == (best['true_positive'], best['false_positive']),
                 f'{label}: the recount disagrees with its freeze')
         report[label] = dict(summary, freeze_sha256=digest(path))
+        if args.ink_only:
+            report[label]['ink'] = summarise(ink_records)
         print(json.dumps({'label': label, 'found': round(summary['found'], 4), 'drawn_right': round(summary['drawn_right'], 4),
-                          'drawn_right_of_found': round(summary['drawn_right_of_found'], 4)}), flush=True)
+                          'drawn_right_of_found': round(summary['drawn_right_of_found'], 4),
+                          **({'ink_found': round(report[label]['ink']['found'], 4), 'ink_drawn_right': round(report[label]['ink']['drawn_right'], 4)}
+                             if args.ink_only else {})}), flush=True)
     with args.output.open('x') as f:
         f.write(json.dumps({'models': report, 'test_touched': False, 'definitions': {
-            'extent_iou': EXTENT_IOU, 'extent_cover': EXTENT_COVER, 'on_gold': ON_GOLD},
+            'extent_iou': EXTENT_IOU, 'extent_cover': EXTENT_COVER, 'on_gold': ON_GOLD,
+            **({'ink_below': ink_view.INK_BELOW} if args.ink_only else {})},
             'provenance': provenance(to_jsonable(args), {str(args.bundle): args.bundle_sha, **{
                 e.split('=', 1)[1]: digest(e.split('=', 1)[1]) for e in args.freeze}})}, indent=1, sort_keys=True)+'\n')
     return 0

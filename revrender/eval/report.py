@@ -22,6 +22,7 @@ from ..data.bundle import load_bundle
 from ..util import require
 from . import ap as ap_module
 from . import matching
+from .freeze import read_frozen
 
 TABLE_FIELDS = {'component_f1': 'f1', 'true_positive': 'true_positive', 'false_positive': 'false_positive',
                 'pixel_iou': 'pixel_iou'}
@@ -89,14 +90,10 @@ def main(argv=None):
     dev, order, truths = matching.validation_order(bundle['dev'])
     report, failed = {}, False
     for label, path in freezes.items():
-        frozen = json.loads(path.read_text())
-        require(frozen['test_touched'] is False, f'{label}: not a validation freeze')
-        archive = archives.get(label, frozen['validation_archive'])
-        provide, available = matching.provider_for(archive, frozen['model'], frozen['mask_threshold'])
+        provide, available, point = read_frozen(path, args.bundle_sha, archive=archives.get(label))
         require(set(order) <= available, f'{label}: the archive does not cover the validation lines')
-        point = {'nms': float(frozen['nms']), 'score_threshold': float(frozen['score_threshold'])}
         result = read_point(provide, order, truths, point)
-        best = frozen['validation']['own_best']
+        best, archive = point['expected'], point['archive']
         checks = {'matches_freeze': all(abs(result[k]-best[k]) < 1e-12 for k in
                                         ('true_positive', 'false_positive', 'false_negative', 'f1', 'pixel_iou'))}
         if label in reference_ap:

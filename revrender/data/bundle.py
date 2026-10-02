@@ -36,6 +36,11 @@ def manifest_at(path, expected_sha=None):
     return manifest
 
 
+def gold_source_sha(path, expected_sha=None):
+    """The bundle a gold-v2 bundle was corrected from (earlier freezes were made on it), or None."""
+    return (manifest_at(path, expected_sha).get('gold_v2') or {}).get('from_bundle_sha256')
+
+
 def test_ids_sha256(mapping):
     ids = sorted(r['sample_id'] for r in mapping['rows'] if r['split'] == 'test')
     return json_digest(ids)

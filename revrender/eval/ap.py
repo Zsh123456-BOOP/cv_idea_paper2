@@ -11,10 +11,12 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data.bundle import load_bundle, manifest_at
+from ..data.bundle import gold_source_sha, load_bundle
 from ..util import digest, provenance, require, to_jsonable
+from . import ink as ink_view
 from . import matching
 from .fates import iou_matrix
+from .freeze import read_frozen
 
 SCHEMA = 'hme-revision-mask-ap-v1'
 IOUS = tuple(round(.5+.05*i, 2) for i in range(10))
@@ -53,27 +55,28 @@ def average_precision(records, gold):
     return float(np.mean(sampled))
 
 
-def mask_ap(provide, order, truths, nms):
-    """AP, AP50, AP75 and the per-IoU values at one NMS level (``nms`` = 1.0 reads the raw masks)."""
-    gold = sum(map(len, truths))
+def mask_ap(provide, order, truths, nms, inks=None):
+    """AP, AP50, AP75 and the per-IoU values at one NMS level (``nms`` = 1.0 reads the raw masks).
+
+    ``inks`` (one ink map per line, eval.ink) reads them on ink alone: the masks are kept by the NMS on the full masks, then both
+    they and the gold are cut to ink, and the gold that has no ink is not counted.
+    """
+    gold = 0
     records = {t: [] for t in IOUS}
-    for line, truth in zip(order, truths):
+    for k, (line, truth) in enumerate(zip(order, truths)):
         masks, scores = provide(line)
         keep = [i for i in matching.suppressed(masks, scores, nms) if masks[i].any()]
+        shown = [masks[i] for i in keep]
+        if inks is not None:
+            shown, truth, _ = ink_view.restrict(shown, truth, inks[k])
+        gold += len(truth)
         if not keep:
             continue
-        iou = iou_matrix([masks[i] for i in keep], truth)
+        iou = iou_matrix(shown, truth)
         for t in IOUS:
             records[t] += match_line(iou, [scores[i] for i in keep], t)
     values = {str(t): average_precision(records[t], gold) for t in IOUS}
     return {'AP': sum(values.values())/len(values), 'AP50': values['0.5'], 'AP75': values['0.75'], 'by_iou': values}
-
-
-def read_freeze(path, bundle_sha, source_sha=None):
-    frozen = json.loads(Path(path).read_text())
-    require(frozen['test_touched'] is False and frozen['bundle_sha256'] in (bundle_sha, source_sha),
-            f'{path} is not a validation freeze of this bundle or its gold-v2 source')
-    return frozen
 
 
 def main(argv=None):
@@ -81,32 +84,33 @@ def main(argv=None):
     parser.add_argument('--freeze', action='append', required=True, help='label=freeze.json')
     parser.add_argument('--bundle', type=Path, required=True, help='the validation bundle (gold v2)')
     parser.add_argument('--bundle-sha', required=True)
+    parser.add_argument('--ink-only', action='store_true', help='also read AP on ink alone (the gold and the masks cut to ink)')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
     require(not args.output.exists(), 'create-only output exists', FileExistsError)
-    manifest = manifest_at(args.bundle, args.bundle_sha)
-    source = (manifest.get('gold_v2') or {}).get('from_bundle_sha256')
+    source = gold_source_sha(args.bundle, args.bundle_sha)
     bundle = load_bundle(args.bundle, args.bundle_sha)
     dev, order, truths = matching.validation_order(bundle['dev'])
+    inks = ink_view.ink_maps(dev) if args.ink_only else None
     gold = sum(map(len, truths))
     report = {}
     for entry in args.freeze:
         label, path = entry.split('=', 1)
-        frozen = read_freeze(path, args.bundle_sha, source)
-        provide, _ = matching.provider_for(frozen['validation_archive'], frozen['model'], frozen['mask_threshold'])
-        nms = frozen['validation']['own_best']['nms']
-        kept = mask_ap(provide, order, truths, nms)
+        provide, _, point = read_frozen(path, args.bundle_sha, source)
+        kept = mask_ap(provide, order, truths, point['nms'])
         raw = mask_ap(provide, order, truths, 1.)
-        report[label] = {'model': frozen['model'], 'mask_threshold': frozen['mask_threshold'], 'nms': nms,
+        report[label] = {'model': point['model'], 'mask_threshold': point['mask_threshold'], 'nms': point['nms'],
                          'AP': kept['AP'], 'AP50': kept['AP50'], 'AP75': kept['AP75'],
                          'AP_raw': raw['AP'], 'AP50_raw': raw['AP50'],
                          'by_iou': {'nms': kept['by_iou'], 'raw': raw['by_iou']}, 'freeze_sha256': digest(path)}
-        print(json.dumps({'label': label, **{k: round(report[label][k], 4) for k in ('AP', 'AP50', 'AP75', 'AP_raw', 'AP50_raw')}}),
-              flush=True)
+        if args.ink_only:
+            report[label]['ink'] = mask_ap(provide, order, truths, point['nms'], inks)
+        print(json.dumps({'label': label, **{k: round(report[label][k], 4) for k in ('AP', 'AP50', 'AP75', 'AP_raw', 'AP50_raw')},
+                          **({'ink_AP': round(report[label]['ink']['AP'], 4)} if args.ink_only else {})}), flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x') as f:
         f.write(json.dumps({'schema': SCHEMA, 'gold_components': gold, 'models': report, 'test_touched': False,
-                            'bundle_sha256': args.bundle_sha,
+                            'bundle_sha256': args.bundle_sha, **({'ink_below': ink_view.INK_BELOW} if args.ink_only else {}),
                             'provenance': provenance(to_jsonable(args), {str(args.bundle): args.bundle_sha, **{
                                 e.split('=', 1)[1]: digest(e.split('=', 1)[1]) for e in args.freeze}})},
                            indent=1, sort_keys=True)+'\n')

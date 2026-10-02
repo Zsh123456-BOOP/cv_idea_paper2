@@ -26,6 +26,27 @@ NATIVE_FREEZE_SCHEMAS = (NATIVE_SCHEMA, r'hme-revision-c\d+-freeze-v1')
 RULE = 'chosen on validation among 0.3/0.4/0.5 (user, 2026-09-27)'
 
 
+def frozen_point(path, bundle_sha, source_sha=None, archive=None):
+    """What a validation freeze tells a reader: the archive, the model, the mask threshold, the NMS level and score cut, and
+    ``expected``, the freeze's own reading, which a recount must reproduce (None for a freeze made on the gold-v2 source
+    bundle, whose lines differ).  ``archive`` names another archive of the same model, read at the same point."""
+    record = json.loads(Path(path).read_text())
+    on_source = source_sha is not None and record['bundle_sha256'] == source_sha
+    require(record.get('test_touched') is False and (record['bundle_sha256'] == bundle_sha or on_source),
+            f'{path}: not a validation freeze of this bundle')
+    best = record['validation']['own_best']
+    return {'archive': str(archive or record['validation_archive']), 'model': record['model'],
+            'mask_threshold': float(record['mask_threshold']), 'nms': float(best['nms']),
+            'score_threshold': float(best['score_threshold']), 'expected': None if on_source else best}
+
+
+def read_frozen(path, bundle_sha, source_sha=None, archive=None):
+    """(provider, line ids the archive covers, point) of a validation freeze."""
+    point = frozen_point(path, bundle_sha, source_sha, archive)
+    provide, available = matching.provider_for(point['archive'], point['model'], point['mask_threshold'])
+    return provide, available, point
+
+
 def is_freeze(schema, native_only=False):
     """Whether a record's schema tag names a freeze (a native-baseline one at its upstream threshold if native_only)."""
     return any(schema_is(schema, p) for p in (NATIVE_FREEZE_SCHEMAS if native_only else FREEZE_SCHEMAS))

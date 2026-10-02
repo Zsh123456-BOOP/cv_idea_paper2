@@ -1,5 +1,5 @@
-"""The repository carries no number of the numbered scripts it was ported from (README's provenance table excepted)
-and no data, weights or identity files."""
+"""The repository carries no number of the numbered scripts it was ported from (README's provenance table excepted), no file
+named by a number or as a copy of another, and no data, weights or identity files."""
 import re
 import subprocess
 from pathlib import Path
@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OLD = (344, 354, 357, 422, 424, 425, 442, 445, 480, 483, 514, 515, 516, 517, 518, 519, 520, 547, 654, 655, 656, 668, 674, 675,
        685, 687, 699, 701, 702, 703, 750, 767, 772, 775, 782, 788, 793, 816, 831, 832, 833, 834, 835, 853, 854, 861, 865, 866,
-       867, 868, 869, 871, 872, 877, 878, 880, 881, 883, 886, 887, 889, 906, 907, 910, 911, 912, 914, 915, 917, 925)
+       867, 868, 869, 871, 872, 877, 878, 880, 881, 883, 886, 887, 889, 906, 907, 910, 911, 912, 914, 915, 917, 921, 923, 925, 926)
 # not inside a hex digest or an identifier, not part of a larger number
 PATTERN = re.compile(r'(?<![0-9A-Za-z_,.])(%s)(?![0-9A-Za-z_,])' % '|'.join(map(str, OLD)))
 # One data constant keeps its historical text: the salt that ranks writers for nested training subsets.  It is part of the
@@ -15,6 +15,8 @@ PATTERN = re.compile(r'(?<![0-9A-Za-z_,.])(%s)(?![0-9A-Za-z_,])' % '|'.join(map(
 ALLOWED = ('SALT = ',)
 TEXT = ('.py', '.sh', '.toml', '.html', '.md', '.json', '.txt', '.cfg')
 FORBIDDEN = ('.jpg', '.jpeg', '.png', '.pdf', '.zip', '.pth', '.pt', '.npz', '.npy', '.pkl', '.csv')
+# a file is not named by a number and is not a second copy of another one (v2, new, old)
+NAMED_AS_A_COPY = re.compile(r'^\d|(?:^|[_.-])(?:v\d+|new|old)(?:$|[_.-])', re.I)
 
 
 def tracked_files():
@@ -39,4 +41,9 @@ def test_no_old_script_number_appears_outside_the_readme_and_this_test():
 
 def test_no_image_weights_array_or_table_file_is_in_the_repository():
     bad = [str(p.relative_to(ROOT)) for p in tracked_files() if p.suffix.lower() in FORBIDDEN or 'id_mapping' in p.name]
+    assert not bad, bad
+
+
+def test_no_file_is_named_by_a_number_or_as_a_copy_of_another():
+    bad = [str(p.relative_to(ROOT)) for p in tracked_files() if NAMED_AS_A_COPY.search(p.name)]
     assert not bad, bad

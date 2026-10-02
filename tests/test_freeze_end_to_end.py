@@ -81,3 +81,30 @@ def test_the_validation_order_puts_revised_lines_first_and_strips_the_bundle_pre
     positives = [r['is_positive'] for r in dev]
     assert positives == sorted(positives, reverse=True)
     assert order[0] == dev[0]['sample_id'].split(':', 1)[1] and all(len(t) == len(r['instances']) for t, r in zip(truths, dev))
+
+
+def test_the_analysis_commands_read_a_frozen_run_end_to_end(bundle, tmp_path):
+    from revrender.eval import ap, bootstrap, fates, pixel_errors, representation
+    path, sha = bundle
+    run = make_run(tmp_path/'run', path, sha)
+    freeze.freeze_revrender(path, sha, run, tmp_path/'freeze.json')
+    common = ['--bundle', str(path), '--bundle-sha', sha]
+    frozen = f'rvr={tmp_path/"freeze.json"}'
+    assert fates.main([*common, '--freeze', frozen, '--ink-only', '--output', str(tmp_path/'fates.json')]) == 0
+    read = json.loads((tmp_path/'fates.json').read_text())['models']['rvr']
+    assert read['f1'] == 1. and read['ink']['f1'] == 1. and read['ink']['without_ink'] == {'gold': 0, 'delivered': 0}
+    assert ap.main([*common, '--freeze', frozen, '--ink-only', '--output', str(tmp_path/'ap.json')]) == 0
+    assert json.loads((tmp_path/'ap.json').read_text())['models']['rvr']['ink']['AP50'] == 1.
+    assert bootstrap.main([*common, '--variant', f'a=freeze:{tmp_path/"freeze.json"}', '--variant', f'b=freeze:{tmp_path/"freeze.json"}',
+                           '--pair', 'a-b', '--resamples', '100', '--workers', '1', '--ink-only',
+                           '--output', str(tmp_path/'bootstrap.json')]) == 0
+    boot = json.loads((tmp_path/'bootstrap.json').read_text())
+    assert boot['ink_only'] is True and boot['variants']['a']['full_sample']['f1'] == 1.
+    assert pixel_errors.main([*common, '--freeze', frozen, '--workers', '1', '--output', str(tmp_path/'classes.json')]) == 0
+    classes = json.loads((tmp_path/'classes.json').read_text())['models']['rvr']
+    assert classes['revision ink']['wrong'] == 0 and classes['far ink']['wrong'] == 0       # the run draws exactly the gold
+    pytest.importorskip('skimage')
+    assert representation.main([*common, '--freeze', frozen, '--workers', '1', '--output', str(tmp_path/'representation.json')]) == 0
+    shaped = json.loads((tmp_path/'representation.json').read_text())
+    assert shaped['thickness']['rvr']['0']['f1'] == 1. and shaped['thickness']['rvr']['0']['pixel_iou'] == 1.
+    assert shaped['thickness']['rvr']['3']['pixel_iou'] < 1. and set(shaped['grids']) == set(representation.GRIDS)
