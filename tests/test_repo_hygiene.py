@@ -14,6 +14,8 @@ PATTERN = re.compile(r'(?<![0-9A-Za-z_,.])(%s)(?![0-9A-Za-z_,])' % '|'.join(map(
 # data definition (changing it changes which writers each fraction holds), not a reference to a script.
 ALLOWED = ('SALT = ',)
 TEXT = ('.py', '.sh', '.toml', '.html', '.md', '.json', '.txt', '.cfg')
+# files exempt from the number rule: the provenance table, this test, and the data note, whose image counts (872, 788) equal two script numbers
+COUNTS_AS_NUMBERS = ('README.md', 'test_repo_hygiene.py', 'data_location.md')
 FORBIDDEN = ('.jpg', '.jpeg', '.png', '.pdf', '.zip', '.pth', '.pt', '.npz', '.npy', '.pkl', '.csv')
 # a file is not named by a number and is not a second copy of another one (v2, new, old)
 NAMED_AS_A_COPY = re.compile(r'^\d|(?:^|[_.-])(?:v\d+|new|old)(?:$|[_.-])', re.I)
@@ -31,7 +33,7 @@ def tracked_files():
 def test_no_old_script_number_appears_outside_the_readme_and_this_test():
     found = []
     for path in tracked_files():
-        if path.name in ('README.md', 'test_repo_hygiene.py') or path.suffix not in TEXT:
+        if path.name in COUNTS_AS_NUMBERS or path.suffix not in TEXT:
             continue
         for number, line in enumerate(path.read_text(encoding='utf-8', errors='ignore').splitlines(), 1):
             if PATTERN.search(line) and not line.lstrip().startswith(ALLOWED):
