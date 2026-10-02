@@ -7,8 +7,9 @@ matched to the gold components one to one at IoU 0.50.  Every gold component the
   extent    not matched, but a delivered mask reaches it: IoU >= 0.10, or the mask covers >= 20% of the component
   missed    nothing delivered reaches it
 
-  found         = (matched + extent) / gold            the model located the revision
-  drawn right   = matched / (matched + extent)         of those located, the share whose extent is right
+  found                    = (matched + extent) / gold       the model located the revision
+  drawn right              = matched / gold                  located and drawn right (IoU >= 0.50); the recall
+  drawn right, of found    = matched / (matched + extent)    of those located, the share whose extent is right
 
 Every delivered mask is ``true`` (matched), ``on_gold`` (not matched, but >= 20% of its pixels lie on the gold union)
 or ``spurious``.
@@ -82,7 +83,8 @@ def summarise(records):
     located = gold['matched']+gold['extent']
     return {'gold': dict(gold), 'predicted': dict(predicted), 'gold_components': total,
             'found': located/total if total else 0.,
-            'drawn_right': gold['matched']/located if located else 0.,
+            'drawn_right': gold['matched']/total if total else 0.,
+            'drawn_right_of_found': gold['matched']/located if located else 0.,
             'true_positive': sum(r['tp'] for r in records), 'false_positive': sum(r['fp'] for r in records)}
 
 
@@ -118,8 +120,8 @@ def main(argv=None):
         require((summary['true_positive'], summary['false_positive']) == (best['true_positive'], best['false_positive']),
                 f'{label}: the recount disagrees with its freeze')
         report[label] = dict(summary, freeze_sha256=digest(path))
-        print(json.dumps({'label': label, 'found': round(summary['found'], 4), 'drawn_right': round(summary['drawn_right'], 4)}),
-              flush=True)
+        print(json.dumps({'label': label, 'found': round(summary['found'], 4), 'drawn_right': round(summary['drawn_right'], 4),
+                          'drawn_right_of_found': round(summary['drawn_right_of_found'], 4)}), flush=True)
     with args.output.open('x') as f:
         f.write(json.dumps({'models': report, 'test_touched': False, 'definitions': {
             'extent_iou': EXTENT_IOU, 'extent_cover': EXTENT_COVER, 'on_gold': ON_GOLD},

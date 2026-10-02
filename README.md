@@ -25,8 +25,8 @@ revrender/
                      report.py（重新打分、与已记录数字和另一份存档比对）
   baselines/         native/（七个原生实例分割基线 + Mask Transfiner：factory、train、threshold、transfiner、dense、metrics、compat）
                      component_cls.py、removal.py、paper.py、mathscrub.py（涂改专用方法）、common.py
-  tools/             annotate/（标注页 editor.html + 单文件打包）、compare_trace.py（两份训练轨迹逐项比对）
-scripts/             deploy.sh、launch_gpu_job.sh、launch_queue_runner.sh、launch_train_arm.sh、launch_native_arm.sh、_common.sh
+  tools/             annotate/（标注页 editor.html + 单文件打包）、compare_trace.py / compare_curve.py（两份训练轨迹 / 验证曲线逐项比对）
+scripts/             deploy.sh、launch_gpu_job.sh、launch_queue_runner.sh、launch_train_arm.sh、launch_native_arm.sh、verify_equivalence.sh、_common.sh
 configs/             revrender.toml（RevRender 配方）、baselines.toml、paths.example.toml
 tests/               本地全过；torch 相关测试在没有 torch 时自动跳过，服务器上跑全部
 ```
@@ -52,7 +52,8 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 掩膜 AP / 找到画对 / 自助法 / 计速 | `python -m revrender.eval.ap / .fates / .bootstrap / .speed` |
 | 一个原生基线 | `launch_native_arm.sh MODEL GPU NUMA B S C CS OUT`（smoke → formal → 冻结 → 掩膜阈值）；Mask Transfiner：`TRANSFINER_PIN=pin.json` + `MODEL=maskrcnn` |
 | 涂改专用方法 | `python -m revrender.baselines.component_cls / .removal / .paper / .mathscrub`（都有 `--smoke`） |
-| 训练轨迹比对 | `python -m revrender.tools.compare_trace 旧/trace.json 新/trace.json` |
+| 训练轨迹 / 曲线比对 | `python -m revrender.tools.compare_trace 旧/trace.json 新/trace.json`；`python -m revrender.tools.compare_curve 旧/curve.jsonl 新/curve.jsonl` |
+| 重做全部等价验证 | `scripts/verify_equivalence.sh OUT_ROOT REF_DIR [probe]`（REF_DIR 放第一篇记录的副本，见脚本头）；约 25 分钟（加 `probe` 另加约 15 分钟） |
 | 标注页 | `python -m revrender.tools.annotate.single_file --package 包目录 --output 页.html` |
 | 原生环境 | `baselines/native/environment.sh`（建 `native_baselines_v1`；服务器上已建好，只读使用） |
 

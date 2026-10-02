@@ -114,8 +114,11 @@ def test_fates_separate_found_from_drawn_right():
     assert record['predicted'] == ['true', 'true', 'on_gold', 'spurious']
     summary = fates.summarise([record])
     assert summary['found'] == 1.0 and summary['drawn_right'] == pytest.approx(2/3)
+    assert summary['drawn_right_of_found'] == pytest.approx(2/3)
     cut = fates.line_record(masks, scores, gold, {'nms': 1., 'score_threshold': .85})
     assert [g['fate'] for g in cut['gold']] == ['matched', 'missed', 'missed']
+    partial = fates.summarise([cut])
+    assert partial['found'] == pytest.approx(1/3) and partial['drawn_right'] == pytest.approx(1/3) and partial['drawn_right_of_found'] == 1.0
 
 
 def test_pick_best_f1_then_fewer_false_positives_then_lower_threshold():
