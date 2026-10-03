@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>整页清洁：前后对比</title>
+<style>
+:root { --bg:#f5f5f2; --panel:#fff; --ink:#1e1e1c; --muted:#6c6c66; --line:#dcdcd6; --red:#c62828; --blue:#1565c0; --tag:#ecece6; --box:#2e9c3e; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#151515; --panel:#1f1f1f; --ink:#ececea; --muted:#9d9d97; --line:#343430; --red:#ff6b6b; --blue:#64b5f6; --tag:#2b2b28; --box:#5fd36f; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+a { color:var(--blue); }
+header { position:sticky; top:0; z-index:10; background:var(--panel); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; }
+header h1 { font-size:16px; margin:0; }
+header .count { color:var(--muted); }
+header label { display:inline-flex; gap:5px; align-items:center; white-space:nowrap; }
+select, input[type=search] { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--ink); }
+#grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 900px), 1fr)); gap:14px; padding:14px 16px; align-items:start; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.head { padding:8px 10px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.id { font:12px ui-monospace, Menlo, monospace; color:var(--muted); word-break:break-all; }
+.tag { background:var(--tag); border-radius:10px; padding:0 8px; font-size:12px; white-space:nowrap; }
+.tag.out { background:var(--red); color:#fff; }
+.pair { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:0 8px 8px; }
+.stage { position:relative; background:#fff; border:1px solid var(--line); cursor:zoom-in; }
+.stage img { display:block; width:100%; height:auto; }
+.stage .box { position:absolute; border:2px solid var(--box); pointer-events:none; display:none; }
+body.show-box .stage .box { display:block; }
+.cap { padding:0 10px 2px; color:var(--muted); font-size:12px; }
+#lb { position:fixed; inset:0; background:rgba(0,0,0,.82); z-index:50; overflow:auto; display:none; padding:16px; }
+#lb img { display:block; max-width:1500px; width:100%; margin:0 auto 12px; background:#fff; }
+#sentinel { height:1px; }
+.empty { padding:40px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body class="show-box">
+<header>
+  <h1>整页清洁：前后对比</h1>
+  <span class="count" id="count"></span>
+  <label>题号 <select id="q"><option value="all">全部</option></select></label>
+  <label>来源 <select id="source"><option value="all">全部</option><option value="main">主扫描</option><option value="supp">补充资料包</option></select></label>
+  <label>排序 <select id="sort"><option value="default">随机（固定）</option><option value="out-desc">框外去掉的墨迹 多→少</option><option value="in-desc">框内去掉的杂点 多→少</option></select></label>
+  <label><input type="checkbox" id="box" checked> 画出保留的框（绿）</label>
+  <label><input type="search" id="search" placeholder="页 id 包含…" size="16"></label>
+</header>
+<main id="grid"></main>
+<div id="sentinel"></div>
+<div id="lb"></div>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const CARDS = DATA.cards, STEP = 12;
+const $ = id => document.getElementById(id);
+let view = [], shown = 0;
+
+for (const q of [...new Set(CARDS.map(c => c.q))].sort((a, b) => a - b)) {
+  const o = document.createElement('option'); o.value = q; o.textContent = '第 ' + q + ' 题'; $('q').appendChild(o);
+}
+
+function matches(c) {
+  if ($('q').value !== 'all' && String(c.q) !== $('q').value) return false;
+  const src = $('source').value;
+  if (src !== 'all' && (src === 'supp') !== c.supp) return false;
+  const s = $('search').value.trim();
+  return !s || c.id.includes(s);
+}
+
+function apply() {
+  view = CARDS.filter(matches);
+  const keys = {'out-desc': (a, b) => b.outside - a.outside, 'in-desc': (a, b) => b.inside - a.inside};
+  if (keys[$('sort').value]) view.sort(keys[$('sort').value]);
+  $('grid').replaceChildren(); shown = 0;
+  $('count').textContent = '显示 ' + view.length + ' / 共 ' + CARDS.length + ' 页';
+  if (!view.length) { const d = document.createElement('div'); d.className = 'empty'; d.textContent = '没有符合条件的页'; $('grid').appendChild(d); }
+  more();
+}
+
+function stage(c, kind) {
+  const s = document.createElement('div'); s.className = 'stage'; s.style.aspectRatio = c.w + ' / ' + c.h;
+  const i = document.createElement('img'); i.loading = 'lazy'; i.alt = c.id;
+  i.src = 'assets/' + c.id + (kind === 'before' ? '_before.' + c.ext : '_after.png'); s.appendChild(i);
+  if (kind === 'before') {
+    const b = document.createElement('div'); b.className = 'box'; const [l, t, r, bt] = c.box;
+    b.style.cssText = 'left:' + 100 * l / c.w + '%;top:' + 100 * t / c.h + '%;width:' + 100 * (r - l + 1) / c.w + '%;height:' + 100 * (bt - t + 1) / c.h + '%';
+    s.appendChild(b);
+  }
+  s.addEventListener('click', () => openLightbox(c));
+  return s;
+}
+
+function card(c) {
+  const el = document.createElement('div'); el.className = 'card';
+  const head = document.createElement('div'); head.className = 'head';
+  const id = document.createElement('span'); id.className = 'id'; id.textContent = c.id; head.appendChild(id);
+  for (const t of [['第 ' + c.q + ' 题'], [c.supp ? '补充资料包' : '主扫描'], ['框外去掉的墨迹 ' + c.outside + ' 像素', c.outside ? 'out' : ''], ['框内去掉的杂点 ' + c.inside + ' 像素']]) {
+    const tag = document.createElement('span'); tag.className = 'tag ' + (t[1] || ''); tag.textContent = t[0]; head.appendChild(tag);
+  }
+  el.appendChild(head);
+  const pair = document.createElement('div'); pair.className = 'pair';
+  for (const [kind, caption] of [['before', '扫描的原样（绿框：保留的范围）'], ['after', '清洁后']]) {
+    const col = document.createElement('div');
+    const cap = document.createElement('div'); cap.className = 'cap'; cap.textContent = caption;
+    col.appendChild(cap); col.appendChild(stage(c, kind)); pair.appendChild(col);
+  }
+  el.appendChild(pair);
+  return el;
+}
+
+function more() {
+  const end = Math.min(view.length, shown + STEP), frag = document.createDocumentFragment();
+  for (let i = shown; i < end; i++) frag.appendChild(card(view[i]));
+  $('grid').appendChild(frag); shown = end;
+}
+new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && shown < view.length) more(); }, {rootMargin: '1200px'}).observe($('sentinel'));
+
+function openLightbox(c) {
+  const lb = $('lb'); lb.replaceChildren();
+  for (const src of ['assets/' + c.id + '_before.' + c.ext, 'assets/' + c.id + '_after.png']) { const i = document.createElement('img'); i.src = src; lb.appendChild(i); }
+  lb.style.display = 'block'; lb.scrollTop = 0;
+}
+$('lb').addEventListener('click', () => { $('lb').style.display = 'none'; $('lb').replaceChildren(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('lb').click(); });
+
+for (const id of ['q', 'source', 'sort']) $(id).addEventListener('change', apply);
+$('search').addEventListener('input', apply);
+$('box').addEventListener('change', () => document.body.classList.toggle('show-box', $('box').checked));
+apply();
+</script>
+</body>
+</html>
