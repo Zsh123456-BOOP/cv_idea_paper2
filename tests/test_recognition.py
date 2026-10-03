@@ -47,11 +47,43 @@ def test_erasure_changes_exactly_the_mask_and_hint_keeps_unmarked_pixels():
 
 
 def test_recognition_prompt_shares_the_task_and_only_d_adds_the_hint():
-    assert recognize.messages('B') == recognize.messages('C')
-    assert sum(x['type'] == 'image' for x in recognize.messages('B')[1]['content']) == 2
-    assert sum(x['type'] == 'image' for x in recognize.messages('D')[1]['content']) == 3
+    for task in ('verbatim', 'deletion'):
+        assert recognize.messages('B', task) == recognize.messages('C', task)
+        assert recognize.messages('B', task)[1]['content'][0]['text'].startswith(recognize.INSTRUCTIONS[task])
+        assert sum(x['type'] == 'image' for x in recognize.messages('B', task)[1]['content']) == 1
+        assert sum(x['type'] == 'image' for x in recognize.messages('D', task)[1]['content']) == 2
     assert recognize.clean_text('[空]</transcription>') == ''
     assert recognize.clean_text('x=7\\n y=3</transcription>extra') == 'x=7\\n y=3'
+    assert recognize.clean_text('<del>x=7</del> y=3</transcription>') == '<del>x=7</del> y=3'
+
+
+def test_model_receives_only_the_exact_original_cut(tmp_path):
+    colors = {'raw': 'black', 'erased': 'white', 'hint': 'red'}
+    row = {'images': {k: f'{k}.png' for k in colors}}
+    for k, color in colors.items():
+        Image.new('RGB', (120, 40), color).save(tmp_path/row['images'][k])
+    assert [im.size for im in recognize.input_images(tmp_path, row, 'D')] == [(120, 40), (120, 40)]
+    assert recognize.input_images(tmp_path, row, 'B')[0].getpixel((0, 0)) == (0, 0, 0)
+    assert recognize.input_images(tmp_path, row, 'C')[0].getpixel((0, 0)) == (255, 255, 255)
+
+
+def test_revision_subset_is_fixed_positive_and_covers_every_positive_page(tmp_path):
+    source = tmp_path/'source'
+    source.mkdir()
+    Image.new('RGB', (120, 40), 'white').save(source/'image.png')
+    files = {k: 'image.png' for k in ('raw', 'erased', 'hint')}
+    pages = [{'image_id': f'p{j}', 'split': 'dev', 'images': files,
+              'rows': [{'id': f'p{j}:L{i}', 'masked_pixels': i if j < 3 else 0,
+                        'box': [0, 0, 120, 40], 'images': files} for i in range(4)]} for j in range(4)]
+    (source/'pack.json').write_text(json.dumps({'pages': pages, 'seed': 42}))
+    pack.revision_subset(source, 7, tmp_path/'a')
+    pack.revision_subset(source, 7, tmp_path/'b')
+    result = json.loads((tmp_path/'a/pack.json').read_text())
+    assert result == json.loads((tmp_path/'b/pack.json').read_text())
+    assert len(result['pages']) == 3
+    assert sum(len(p['rows']) for p in result['pages']) == 7
+    assert all(r['masked_pixels'] > 0 for p in result['pages'] for r in p['rows'])
+    assert result['selection']['candidate_rows'] == 9
 
 
 def test_a_test_page_is_rejected_before_its_image_or_masks_are_read(tmp_path):

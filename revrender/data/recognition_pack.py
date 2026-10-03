@@ -7,6 +7,7 @@ Images and the resulting pack belong under work/ or the server outputs, never in
 import argparse
 import json
 import random
+import shutil
 from collections import Counter
 from pathlib import Path
 
@@ -80,16 +81,66 @@ def page_variants(image, instances):
     return {'raw': Image.fromarray(base), 'erased': Image.fromarray(erased), 'hint': Image.fromarray(hint)}, union
 
 
+def revision_subset(source, count, output):
+    """Freeze detector-positive cuts without looking at any recognition outputs."""
+    pack_path = source/'pack.json'
+    pack = json.loads(pack_path.read_text())
+    require(all(p['split'] == 'dev' for p in pack['pages']), 'development pages only')
+    candidates = [(p, r) for p in pack['pages'] for r in p['rows'] if r['masked_pixels'] > 0]
+    groups = {}
+    for p, r in candidates:
+        groups.setdefault(p['image_id'], []).append(r['id'])
+    require(len(groups) <= count <= len(candidates), 'count must cover each positive page and fit the candidate pool')
+    rng = random.Random(SEED)
+    # Each positive page has one randomly chosen cut; round-robin adds the rest.
+    queues = [sorted(ids) for _, ids in sorted(groups.items())]
+    for queue in queues:
+        rng.shuffle(queue)
+    chosen = []
+    while len(chosen) < count:
+        rng.shuffle(queues)
+        for queue in queues:
+            if queue and len(chosen) < count:
+                chosen.append(queue.pop())
+    chosen = set(chosen)
+    selected = [{**p, 'rows': [r for r in p['rows'] if r['id'] in chosen]} for p in pack['pages']]
+    selected = [p for p in selected if p['rows']]
+    out = make_output_dir(output)
+    files = {path for p in selected for item in [p, *p['rows']] for path in item['images'].values()}
+    hashes = {}
+    for relative in sorted(files):
+        dest = out/relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source/relative, dest)
+        hashes[relative] = digest(dest)
+    selection = {'kind': 'revision-only', 'candidate_rows': len(candidates), 'selected_rows': count,
+                 'excluded_rows': [r['id'] for _, r in candidates if r['id'] not in chosen],
+                 'rule': 'masked_pixels > 0; seed 42; page-balanced round-robin; no OCR outputs used',
+                 'human_positive_confirmed': False}
+    payload = {**pack, 'pages': selected, 'selection': selection,
+               'note': '仅检测阳性候选；实际是否涂改及关键字符由人工核实；保留原有切块坐标。'}
+    write_json(out/'pack.json', payload)
+    write_manifest(out, config={'source': str(source), 'count': count},
+                   inputs={str(pack_path): digest(pack_path)}, asset_sha256=hashes,
+                   pack_sha256=digest(out/'pack.json'), pages=len(selected), rows=count, selection=selection)
+    print(json.dumps({'pages': len(selected), 'candidate_rows': len(candidates), 'rows': count}))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
-    p.add_argument('--pages-output', type=Path, required=True)
-    p.add_argument('--images', type=Path, required=True)
-    p.add_argument('--ids', type=Path, required=True, help='development page IDs only')
-    p.add_argument('--tags', type=Path, required=True)
-    p.add_argument('--page-index', type=Path, required=True, help='pages_view pages.json with the existing answer-length filter')
+    p.add_argument('--source-pack', type=Path, help='select only predicted-positive cuts from an existing pack')
+    p.add_argument('--pages-output', type=Path)
+    p.add_argument('--images', type=Path)
+    p.add_argument('--ids', type=Path, help='development page IDs only')
+    p.add_argument('--tags', type=Path)
+    p.add_argument('--page-index', type=Path, help='pages_view pages.json with the existing answer-length filter')
     p.add_argument('--count', type=int, default=40)
     p.add_argument('--output-dir', type=Path, required=True)
     args = p.parse_args(argv)
+    if args.source_pack:
+        revision_subset(args.source_pack, args.count, args.output_dir)
+        return 0
+    require(all((args.pages_output, args.images, args.ids, args.tags, args.page_index)), 'page-building inputs required')
     ids = args.ids.read_text().splitlines()
     tags = json.loads(args.tags.read_text())
     index = json.loads(args.page_index.read_text())['pages']
