@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>掩膜收紧到墨迹：前后对比</title>
+<style>
+:root { --bg:#f5f5f2; --panel:#fff; --ink:#1e1e1c; --muted:#6c6c66; --line:#dcdcd6; --red:#c62828; --blue:#1565c0; --tag:#ecece6; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#151515; --panel:#1f1f1f; --ink:#ececea; --muted:#9d9d97; --line:#343430; --red:#ff6b6b; --blue:#64b5f6; --tag:#2b2b28; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+a { color:var(--blue); }
+header { position:sticky; top:0; z-index:10; background:var(--panel); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; }
+header h1 { font-size:16px; margin:0; }
+header .count { color:var(--muted); }
+header label { display:inline-flex; gap:5px; align-items:center; white-space:nowrap; }
+select, input[type=search] { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--ink); }
+#grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 660px), 1fr)); gap:14px; padding:14px 16px; align-items:start; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.head { padding:8px 10px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.id { font:12px ui-monospace, Menlo, monospace; color:var(--muted); word-break:break-all; }
+.tag { background:var(--tag); border-radius:10px; padding:0 8px; font-size:12px; white-space:nowrap; }
+.tag.model { background:var(--red); color:#fff; }
+.tag.gold { background:#2e7d32; color:#fff; }
+.tag.gone { background:#ef6c00; color:#fff; }
+.cap { padding:4px 10px 2px; color:var(--muted); font-size:12px; }
+.panel { padding:0 10px 6px; }
+.stage { position:relative; width:calc(var(--w) * var(--z) * 1px); max-width:100%; aspect-ratio:var(--w) / var(--h); background:#fff; border:1px solid var(--line); }
+.stage img { display:block; width:100%; height:100%; image-rendering:pixelated; }
+.stage img.ov { position:absolute; left:0; top:0; pointer-events:none; }
+body.amp .stage.amp { filter:brightness(.5426) contrast(11.7); }
+.foot { padding:2px 10px 9px; color:var(--muted); font-size:12px; }
+#sentinel { height:1px; }
+.empty { padding:40px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>掩膜收紧到墨迹：前后对比</h1>
+  <span class="count" id="count"></span>
+  <label>对象 <select id="set"><option value="all">全部</option><option value="model">模型</option><option value="gold">金标</option></select></label>
+  <label>形状 <select id="shape">
+    <option value="all">全部</option><option value="block">整块（墨迹占外框 ≥ 55%）</option><option value="line">细长（宽高比 ≥ 5）</option>
+    <option value="other">其他</option><option value="gone">收紧后没有墨迹</option></select></label>
+  <label>去掉的白纸 <select id="cut">
+    <option value="0">全部</option><option value="0.1">≥ 10%</option><option value="0.3">≥ 30%</option><option value="0.5">≥ 50%</option></select></label>
+  <label>排序 <select id="sort">
+    <option value="shuffled">随机（固定）</option><option value="cut-desc">去掉的白纸 多→少</option><option value="cut-asc">去掉的白纸 少→多</option>
+    <option value="area-desc">面积 大→小</option><option value="area-asc">面积 小→大</option></select></label>
+  <label>放大 <select id="zoom"><option value="0">自动</option><option value="1">×1</option><option value="2">×2</option><option value="3">×3</option>
+    <option value="4">×4</option><option value="6">×6</option></select></label>
+  <label><input type="checkbox" id="amp"> 放大对比度（看原图和擦除后残留的灰）</label>
+  <label><input type="search" id="search" placeholder="页 id 包含…" size="14"></label>
+  <a href="index.html">汇总</a>
+</header>
+<main id="grid"></main>
+<div id="sentinel"></div>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const CARDS = DATA.cards, LABELS = DATA.labels, STEP = 24;
+const $ = id => document.getElementById(id);
+let view = [], shown = 0;
+const removed = c => 1 - c.after / c.before;
+
+function matches(c) {
+  if ($('set').value !== 'all' && c.set !== $('set').value) return false;
+  if ($('shape').value !== 'all' && c.shape !== $('shape').value) return false;
+  if (removed(c) < parseFloat($('cut').value)) return false;
+  const s = $('search').value.trim();
+  return !s || c.id.includes(s);
+}
+
+function apply() {
+  view = CARDS.filter(matches);
+  const keys = {'cut-desc': (a, b) => removed(b) - removed(a), 'cut-asc': (a, b) => removed(a) - removed(b),
+                'area-desc': (a, b) => b.before - a.before, 'area-asc': (a, b) => a.before - b.before};
+  if (keys[$('sort').value]) view.sort(keys[$('sort').value]);
+  $('grid').replaceChildren(); shown = 0;
+  $('count').textContent = '显示 ' + view.length + ' / 共 ' + CARDS.length + ' 个掩膜';
+  if (!view.length) { const d = document.createElement('div'); d.className = 'empty'; d.textContent = '没有符合条件的掩膜'; $('grid').appendChild(d); }
+  more();
+}
+
+function stage(c, overlay, amp) {
+  const z = parseInt($('zoom').value) || Math.max(1, Math.min(6, Math.floor(620 / c.w)));
+  const s = document.createElement('div'); s.className = 'stage' + (amp ? ' amp' : '');
+  s.style.cssText = '--w:' + c.w + ';--h:' + c.h + ';--z:' + z;
+  for (const [suffix, cls] of [['c', 'base'], [overlay, 'ov']]) {
+    if (!suffix) continue;
+    const i = document.createElement('img'); i.className = cls; i.loading = 'lazy'; i.src = 'assets/' + c.file + '_' + suffix + '.png'; i.alt = ''; s.appendChild(i);
+  }
+  return s;
+}
+
+function panel(c, caption, overlay, amp) {
+  const p = document.createElement('div'); p.className = 'panel';
+  const cap = document.createElement('div'); cap.className = 'cap'; cap.textContent = caption;
+  p.appendChild(cap); p.appendChild(stage(c, overlay, amp));
+  return p;
+}
+
+function tag(text, cls) { const t = document.createElement('span'); t.className = 'tag ' + (cls || ''); t.textContent = text; return t; }
+const SHAPE = {block: '整块', line: '细长', other: '其他', gone: '收紧后没有墨迹'};
+
+function card(c) {
+  const el = document.createElement('div'); el.className = 'card';
+  const head = document.createElement('div'); head.className = 'head';
+  head.appendChild(tag(LABELS[c.set], c.set));
+  const id = document.createElement('span'); id.className = 'id'; id.textContent = c.id + ' #' + c.n; head.appendChild(id);
+  if (c.set === 'model') head.appendChild(tag('分数 ' + c.score.toFixed(2)));
+  head.appendChild(tag(SHAPE[c.shape], c.shape === 'gone' ? 'gone' : ''));
+  el.appendChild(head);
+  el.appendChild(panel(c, '原图', null, true));
+  el.appendChild(panel(c, '原来的掩膜（红）', 'b', false));
+  el.appendChild(panel(c, c.shape === 'gone' ? '收紧后：整个掩膜都在白纸上（蓝），没有墨迹，被丢弃' : '收紧后（红：保留的墨迹；蓝：去掉的白纸）', 'a', false));
+  el.appendChild(panel(c, '擦除后（把收紧后的掩膜涂白）', 'e', true));
+  el.appendChild(panel(c, '对照：只取墨迹（灰度 < 200，不带软边）擦除后', 'k', true));
+  const foot = document.createElement('div'); foot.className = 'foot';
+  foot.textContent = '掩膜 ' + c.before + ' 像素 → ' + c.after + ' 像素，去掉 ' + (100 * removed(c)).toFixed(1) + '%（外框 ' + c.w + '×' + c.h + '，含四周 12 像素的页面）';
+  el.appendChild(foot);
+  return el;
+}
+
+function more() {
+  const end = Math.min(view.length, shown + STEP), frag = document.createDocumentFragment();
+  for (let i = shown; i < end; i++) frag.appendChild(card(view[i]));
+  $('grid').appendChild(frag); shown = end;
+}
+new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && shown < view.length) more(); }, {rootMargin: '1200px'}).observe($('sentinel'));
+
+for (const id of ['set', 'shape', 'cut', 'sort', 'zoom']) $(id).addEventListener('change', apply);
+$('search').addEventListener('input', apply);
+$('amp').addEventListener('change', () => document.body.classList.toggle('amp', $('amp').checked));
+apply();
+</script>
+</body>
+</html>
