@@ -28,9 +28,14 @@ MASK_INSTRUCTION = '''第三张图是第二张图叠加红色候选涂改掩膜�
 
 
 def messages(mode):
-    content = [{'type': 'text', 'text': INSTRUCTION}, {'type': 'image'}, {'type': 'image'}]
+    content = [{'type': 'text', 'text': INSTRUCTION+'\n第一张：整题上下文，只供参考，不能转写整页。'},
+               {'type': 'image'},
+               {'type': 'text', 'text': '第二张：唯一需要转写的目标切块。下面这张图的边界就是输出范围。'},
+               {'type': 'image'}]
     if mode == 'D':
         content += [{'type': 'text', 'text': MASK_INSTRUCTION}, {'type': 'image'}]
+    content += [{'type': 'text', 'text': '现在仅转写第二张目标切块。第二张图里没有出现的任何字、公式或后续步骤都不能输出。'
+                 '第一张图蓝框以外的内容一律不输出。抄完本切块即结束，不要续写。'}]
     return [{'role': 'system', 'content': [{'type': 'text', 'text': SYSTEM}]}, {'role': 'user', 'content': content}]
 
 
