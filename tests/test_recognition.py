@@ -99,9 +99,9 @@ def test_a_test_page_is_rejected_before_its_image_or_masks_are_read(tmp_path):
 
 def test_comparison_refuses_duplicate_or_unrelated_predictions(tmp_path):
     path = tmp_path/'predictions.jsonl'
-    item = {'row_id': 'writer:L001', 'mode': 'B', 'text': '', 'truncated': False}
+    item = {'row_id': 'writer:L001', 'test': 'deletion', 'mode': 'B', 'text': '', 'truncated': False}
     path.write_text(json.dumps(item)+'\n')
-    assert recognition_view.predictions([path], {'writer:L001'})['writer:L001']['B']['text'] == ''
+    assert recognition_view.predictions([path], {'writer:L001'})['writer:L001']['deletion']['B']['text'] == ''
     with pytest.raises(RefusedError, match='duplicate prediction'):
         recognition_view.predictions([path, path], {'writer:L001'})
     with pytest.raises(RefusedError, match='does not belong'):

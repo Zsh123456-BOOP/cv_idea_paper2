@@ -86,36 +86,62 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 消融：`--variant control|nofine|nocontext|nodense`（第一篇用到的三个消融）。其余旧脚本里的调参模式、历史分支不搬。
 
-## 40 页逐行识别与标注试验
+## 涂改阳性切块：两任务识别与关键字符校对
 
-入口 `revrender.data.recognition_pack` 只接受已声明的开发页，沿用原有字数过滤，从中按预测掩膜的未检出、细长、块状、其他形状各抽 10 页，种子 42，优先不同书写者。当前样本为 **40 页、40 位书写者、448 块**（OCR 397、细分 30、补充墨迹 21）。预测形状仅用于保证试验样本多样，不能代替人工判断真实涂改类别。保留所有原切块的坐标及索引，只调整展示顺序，不重新切分。
+本轮取代旧的「整页上下文 + 只保留最终答案」识别设计。旧 40 页、448 块的输出与标注页保留在 `work/recognition_pilot40`，不能作为本轮证据。复用那批开发页及 Claude 的优化切块坐标、索引、清洁图像与收紧掩膜，不重新切行，不读取测试页。
 
-- A：供人工校对的清洁原图，保留本题涂改。只转写学生最终保留的有效作答，数学错误照录；印刷文字、图形和作废内容排除。
-- B：原图直接识别；C：收紧后的候选掩膜并集精确涂白后识别；D：原图识别并额外提供红色候选掩膜图。C 不扩大掩膜，D 不直接替换原图。现有掩膜不等于纯划线层，因此 C 可能同时擦除仍有效笔画。
-- 三组使用同一 Qwen3-VL-8B-Instruct、切块、任务说明和解码设置：BF16、贪心、种子 42、输出上限 384 tokens。每次输入为蓝框定位的整题上下文和当前切块；D 额外输入标记切块及提示。D 包含额外图像和说明，属于整套提示方案的比较，不能把差异直接归因于掩膜单一因素。
-- 人工答案初始为空，模型结果默认折叠。“采用”只复制到待确认答案，不自动成为金标。按块确认，无法判断或切分问题另记待复核；支持整题遗漏补充、公式预览、浏览器自动保存、JSON 导入导出。人工校对尚未完成，不报告识别准确率。
+**样本固定为 80 个检测阳性候选，覆盖 30 页。** 原 448 块实际有 98 块的掩膜像素数大于零；种子 42，按页轮转抽取 80 个（OCR 73、细分 5、补充墨迹 2），剩余 18 个编号记在 `pack.json`。选择不读取本轮模型输出，10 页无检测对照全部排除。检测阳性不是人工金标，评估前须确认真实涂改；误检、不确定、重复块不进入分母。
+
+| 条件 | 每次模型收到的图像 |
+|---|---|
+| B | 原切块，一张 |
+| C | 在收紧候选掩膜并集内精确遮白的同一切块，一张 |
+| D | 原切块 + 同切块的红色候选掩膜辅助图，两张 |
+
+三组均不发送整页。标注页左侧整页只供人工定位。C 不扩张掩膜；D 保留原图并说明红色是检测候选，不把检测当金标。D 含额外图像和说明，比较的是这套提示方案，不能据此把效果归因于掩膜单一因素。
+
+同一 Qwen3-VL-8B-Instruct，BF16、贪心、种子 42、输出上限 384 tokens，各条件分别跑两个任务，共 **80 × 2 × 3 = 480 条**：
+
+1. 全墨迹转写：`请转写图中的所有手写字符和公式。无论是否有划线、涂黑，只要有墨迹就请如实还原，不要主观过滤。`
+2. 作废标注：`请完整识别图像中的全部内容。若内容属于正常作答，直接输出；若文字被划除或涂抹覆盖，请用 <del>被划掉的内容</del> 标签包裹。`
+
+共同格式规则仅要求保留换行、公式用 LaTeX、看不清写 □、不猜测/解题/纠错/补全和输出容器。系统指令、实际用户消息及模型模板渲染后的请求都保存在各条件 `run_manifest.json`；网页显示实际消息。没有「忽略涂改 / 只输出最终有效答案」指令。结果保留原文、空输出、重复和未闭合标签，不按预期修订模型答案。
+
+本次六组均为 80 条，完成文件和输入哈希核对通过。测试 2 有 `<del>` 的块数为 B 10、C 5、D 19，**标签数量不是准确率**。达到生成上限：测试 1 的 B/C/D 为 2/1/1，测试 2 为 1/1/1；其中 C 的测试 2 有一条 `<del>` 未闭合。D 也有重复转写或复述提示的输出，须结合原图核对，不能预先认定优胜。
+
+人工标注页支持：原切块/C 遮白/D 掩膜切换、逐字符拖框、三个对应局部放大、两套任务的 B/C/D 原文、LaTeX 预览、是否真实涂改、不可辨认标记、自动保存、JSON 导入导出。每个框代表一个可见字符/数学符号，不按 LaTeX 字符串长度计数。先完整覆盖可辨认作废字符及相邻有效字符，包含未受损者，避免只挑出错位置；同一字符跨切块只标一次。更新字符或判断后须重新确认本块。人工标注仍为空。
+
+只计算两个关键字符指标，**不计算整句 CER**：
+
+- **作废字符溢出率（仅测试 2）**：在人工确认阳性块中，以 B/C/D 都已明确核对的同一批可辨认作废字符为共同分母；正确读出或误读后仍放在 `<del>` 外均计入分子。同时出现在标签内外也计溢出；缺失不算溢出，但这不表示识别正确。测试 1 要求读出作废字符，该行为本身不是错误。
+- **有效字符截断率（分别报告两个测试的 C 相对 B）**：分母为关键区域中 B 识别正确、B/C 均已核对且物理损伤状态明确的有效字符。分子还要求 C 漏掉/误读（测试 2 也含错误删除），且人工对比像素确认有效笔画确实被遮白擦损；不能仅由 B 对、C 错推断损伤。报告数量、分母和比例，仅代表已标关键区域。
+
+完全不可辨认的 □、判断不确定或未配齐的字符不进入相应分母，并单列覆盖数。分母为零显示「待评估」，不显示零错误率。浏览器读数与 `revrender.eval.recognition_score` 使用同一口径，并以固定边界案例核对一致性。
 
 ```bash
-python3 -m revrender.data.recognition_pack \
-  --pages-output work/tighten/clean_run_tight_dev171 --images work/clean_server \
-  --ids work/tighten/dev171_ids.txt --tags work/paper1_tags.json \
-  --page-index work/pages_view_clean/pages.json --output-dir work/recognition_pilot40/pack
+# 在旧 40 页包上冻结阳性子集（所有输出目录都必须尚不存在）
+python3 -m revrender.data.recognition_pack --source-pack work/recognition_pilot40/pack \
+  --count 80 --output-dir work/recognition_revision80/pack
 
-# 服务器：在已提交快照内持锁启动，每组一个独立输出目录。
-# 当前 vLLM 不接受 UUID 形式的 CUDA_VISIBLE_DEVICES；先核对显卡 UUID 与 PCI 顺序，
-# 然后在启动命令中显式设置 CUDA_DEVICE_ORDER=PCI_BUS_ID 和对应整数编号。
+# 服务器已提交快照内持锁运行。分别传 B、C、D；每组一次加载模型，运行两个任务。
+# 当前 vLLM 不接受 UUID 形式的 CUDA_VISIBLE_DEVICES；先核对 UUID 与 PCI 顺序，
+# 再在持锁启动命令中设置 CUDA_DEVICE_ORDER=PCI_BUS_ID 和对应整数编号。
 python -m revrender.recognize --pack PACK --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct \
-  --mode B --output-dir OUT
+  --mode B --tests verbatim deletion --output-dir OUT
 
-python3 -m revrender.tools.recognition_view --pack work/recognition_pilot40/pack \
-  --predictions work/recognition_pilot40/results/B/predictions.jsonl \
-  --predictions work/recognition_pilot40/results/C/predictions.jsonl \
-  --predictions work/recognition_pilot40/results/D/predictions.jsonl \
-  --mathjax work/recognition_pilot40/vendor/tex-svg.js --output-dir work/recognition_pilot40/site
-python3 -m http.server 8767 --bind 127.0.0.1 --directory work/recognition_pilot40/site
+python3 -m revrender.tools.recognition_view --pack work/recognition_revision80/pack \
+  --predictions work/recognition_revision80/results/B/predictions.jsonl \
+  --predictions work/recognition_revision80/results/C/predictions.jsonl \
+  --predictions work/recognition_revision80/results/D/predictions.jsonl \
+  --mathjax work/recognition_pilot40/vendor/tex-svg.js --output-dir work/recognition_revision80/site
+python3 -m http.server 8768 --bind 127.0.0.1 --directory work/recognition_revision80/site
+
+# 人工导出 JSON 后复算，不读模型输出替代人工金标
+python3 -m revrender.eval.recognition_score --pack work/recognition_revision80/pack \
+  --annotations 标注.json --output-dir 尚未存在的评分目录
 ```
 
-输出均为 create-only 并记录 manifest。识别输出含原始文本、切块编号、截断标记和完成文件；HTML 构建时拒绝重复、外来或缺失的 B/C/D 结果。省略全部 `--predictions` 可生成待识别的校对预览页。MathJax 为本地保存的 3.2.2 `tex-svg.js` 与许可证，跟随页面资源一起移动；省略 `--mathjax` 则使用纯文本。标注与图片只保存在本机工作产物中，不进 Git。
+输出均为 create-only，并记录配置、提交和输入哈希。HTML 构建拒绝旧协议、不同包哈希、重复/缺失的任务条件。MathJax 为本地 3.2.2 `tex-svg.js` 与许可证，省略 `--mathjax` 则使用纯文本。图像、模型结果和标注在本机工作产物中，不进 Git；新版使用独立存储键与端口，不覆盖旧 40 页标注。
 
 ## 数据
 
