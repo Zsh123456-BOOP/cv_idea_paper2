@@ -20,11 +20,12 @@ revrender/
   data/              bundle.py（数据包读取 + 训练池 + 测试集守卫）、extra.py（用户校正行）、sampling.py（平衡采样 + 预取）、
                      augment.py（增广）、gold.py（金标栅格化 / letterbox 与它的逆 / 笔宽校正）、lines.py（行目录）、
                      ocr_lines.py（整页 OCR 文本 → 目录里的那些行）、handwriting.py（整页的手写墨迹：印刷模板、答题框、按墨迹切多行区域、给没被框的手写补框）、
-                     page_gold.py（第一篇的金标放回整页坐标，写成与整页输出同一布局）、journal.py（写作者子集、合成阳性）
+                     page_gold.py（第一篇的金标放回整页坐标，写成与整页输出同一布局）、clean_pages.py（整页清洁：只留本题自己的虚线框、去杂点）、
+                     journal.py（写作者子集、合成阳性）
   train.py           训练循环：smoke → 精确重放 → 仅训练集学习门槛 → formal（早停、挑步）
   infer.py           推理与后处理：packed 预测存档、deliver（掩膜阈值 / NMS / 分数线）、predict_lines（把冻结点用到一批灰度行上）、命令行
   ocr.py             Unlimited-OCR 的调用（切行的那个模型，设置与当年相同）
-  pages.py           整道题：OCR 的行 + 按墨迹切开的多行区域 + 补切的手写 → 每块过 RevRender → 实例拼回整页；命令行；`write_page` / `read_output` 是整页输出的唯一读写
+  pages.py           整道题：OCR 的行 + 按墨迹切开的多行区域 + 补切的手写 → 每块过 RevRender → 实例拼回整页；命令行；`write_page` / `read_output` 是整页输出的唯一读写；`--frames` 丢掉框外的块
   tighten.py         掩膜收紧到非白像素（墨迹 + 紧贴的软边）：整页输出和放回整页的金标都能收；命令行
   eval/              pages_score.py（整页输出对放回整页的金标：找到 / 画对）、matching.py（组件匹配 + F1 + 前沿 + 误报预算）、ap.py（掩膜 AP）、bootstrap.py（按书写者自助法）、
                      freeze.py（阈值冻结；`read_frozen` 是各读数共用的「读一份冻结」）、fates.py（找到 / 画对）、speed.py（推理计速）、
@@ -35,7 +36,8 @@ revrender/
                      component_cls.py、removal.py、paper.py、mathscrub.py（涂改专用方法）、common.py
   tools/             annotate/（标注页 editor.html + 单文件打包）、compare_trace.py / compare_curve.py / compare_checkpoint.py（两份训练轨迹 / 验证曲线 / 检查点张量逐项比对）、
                      pages_view.py + pages_view.html（整页结果的静态 HTML：识别完拼回的、被字数过滤掉的）、
-                     tighten_view.py + tighten_view.html（掩膜收紧前后的静态对比页：模型的和金标的）
+                     tighten_view.py + tighten_view.html（掩膜收紧前后的静态对比页：模型的和金标的）、
+                     clean_view.py + clean_view.html（整页清洁前后的静态对比页）
 scripts/             deploy.sh、launch_gpu_job.sh、launch_queue_runner.sh、launch_train_arm.sh、launch_native_arm.sh、
                      verify_equivalence.sh、verify_thresholds.sh、verify_analysis.sh、_common.sh
 docs/                data_location.md（题目图在哪、怎么对上 image_id：只读调查）
@@ -63,7 +65,9 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 冻结 | `python -m revrender.eval.freeze --bundle B --bundle-sha S --run OUT/formal --output freeze.json`（原生基线加 `--model maskdino` 等） |
 | 掩膜 AP / 找到画对 / 自助法 / 计速 | `python -m revrender.eval.ap / .fates / .bootstrap / .speed`；三者加 `--ink-only` 就只在墨迹上读（金标和交付掩膜都裁到墨迹） |
 | 看整页结果（HTML） | `python -m revrender.tools.pages_view --pages-output OUT --images 图片目录 --answer-text qwen_shard0.jsonl [...] --tags tags.json --min-chars 10 --output-dir SITE`：学生手写解答转写少于 `--min-chars` 个字的页被过滤；`SITE/kept.html` 是识别完并拼回整页的，`SITE/filtered.html` 是被过滤掉的，`SITE/index.html` 是汇总；图片拷进 `SITE/assets`，文件夹拷到哪都能打开（浏览器直接开 html，或 `python3 -m http.server`）。只含学生手写图，别提交 |
-| 整道题：切行 → 标涂改 → 拼回 | `python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages 图片目录 --ocr-model /home/zsh/hme/models/Unlimited-OCR --templates templates.npz --output-dir OUT [--ids 页id文件] [--overlay]`；`templates.npz`（每道题一个印刷模板，用来分出手写墨迹）由 `python -m revrender.data.handwriting --pages 图片目录 --output templates.npz` 生成；已有 OCR 文本时用 `--ocr-text ulocr.jsonl` 代替 `--ocr-model`（不占 OCR 的显存和时间）。每页写 `OUT/<image_id>.json`（切出的行、每个实例的行号 / 分数 / 框）和 `.npz`（每个实例在它的行裁图上的掩膜）。需要 GPU，约 16 GB（OCR 模型 14 GB + RevRender） |
+| 整页清洁 | `python -m revrender.data.clean_pages --pages 图片目录 [...] [--ids 页id文件] --output-dir OUT`：同一道题、同一尺寸的页共用一个虚线框（按该组各页共有的虚线定，不是每页自己的最外两条）；框外的一切（相邻题的虚线和字、页脚、页角黑块）涂白，去杂点和浅灰雾；页的尺寸不变；`OUT/<image_id>.png` 和 `OUT/frames.json`。只用 CPU，3,976 页约 7 分钟 |
+| 清洁前后的对比页 | `python -m revrender.tools.clean_view --before 扫描目录 [...] --after 清洁输出 --per-question 30 --output-dir SITE`：每题抽若干页，左扫描（绿框 = 保留的范围）右清洁后；只含学生手写图，别提交 |
+| 整道题：切行 → 标涂改 → 拼回 | `python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages 图片目录 --ocr-model /home/zsh/hme/models/Unlimited-OCR --templates templates.npz --output-dir OUT [--ids 页id文件] [--frames frames.json] [--overlay]`；`templates.npz`（每道题一个印刷模板，用来分出手写墨迹）由 `python -m revrender.data.handwriting --pages 图片目录 --output templates.npz` 生成；已有 OCR 文本时用 `--ocr-text ulocr.jsonl` 代替 `--ocr-model`（不占 OCR 的显存和时间）。每页写 `OUT/<image_id>.json`（切出的行、每个实例的行号 / 分数 / 框）和 `.npz`（每个实例在它的行裁图上的掩膜）。需要 GPU，约 16 GB（OCR 模型 14 GB + RevRender）；在清洁后的页上跑：`--pages` 指清洁输出，`--frames` 给它的 frames.json（框外的块丢掉） |
 | 金标放回整页 | `python -m revrender.data.page_gold --bundle B --bundle-sha S --catalogue 行目录.jsonl --pages 图片目录 [...] [--split train --split dev] --output-dir OUT`（默认只验证行；写成与整页输出同一布局，只用 CPU，几秒） |
 | 掩膜收紧到非白像素 | `python -m revrender.tighten --pages-output OUT --images 图片目录 [...] [--ids 页id文件] --output-dir NEW`：OUT 是整页输出，或放回整页的金标；每个实例只留页面上的非白像素（墨迹 + 紧贴的软边），没有墨迹的丢掉，`from_instance` 记它来自哪个实例；只用 CPU，3,976 页约 50 秒 |
 | 整页读数（对金标） | `python -m revrender.eval.pages_score --pages-output OUT --gold-output GOLD --output scores.json [--ids 页id文件]`：整页输出对放回整页的金标，找到 / 画对 / 多画；收紧前后各读一次就是两边的对比 |
@@ -279,6 +283,28 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 网页（`tools/tighten_view`，学生手写图，只放本机的 `work/tighten/site/`，第一版留在 `site_first/`，不提交）：验证集 171 页的 1,029 个掩膜（模型 764、金标 265）。
 - 看到的限制（不是收紧造成的）：横线压在字上的那几笔，线和字是同一处墨迹，擦掉线之后字会断开；掩膜没盖住的墨迹（模型掩膜没覆盖到的笔画尾巴）收紧不会补上。
 
+### 7. 整页清洁
+
+用户要整张答题卡先清洁：去杂质小点，去掉相邻题露进来的虚线（页是围着本题的虚线框裁的，上下各带一截相邻题），再裁到本题自己的框。`python -m revrender.data.clean_pages`（提交 `a43a0bea` 的快照，只用 CPU）：
+
+- **框怎么定。** 第一版取页上最外面的两条横虚线，裁到了相邻题的线上（用户看出来的）：相邻题的线离本题的线只有 11–22 像素。再试「间隔最大的相邻两条」也不行：页内长得像虚线的手写横线（划掉的线、下划线）有时让「最大间隔」落在页内。现行做法：同一道题、同一尺寸的页是从同一张答题卡的同一个窗口裁的（`handwriting.group_key`），虚线在每页的行位置只差一两个像素；整组各页共有的行（至少 30% 的页在 ±3 像素内有虚线）才是答题卡的，本题的框是这些行里间隔最宽的相邻两条，相邻题的线更近。只有部分页有的行是手写的，不参与。每页取与组内位置最接近的自己的虚线行（±8 像素内，否则用组内的），左右取该页最外的竖虚线（不会在组内中位数之内）。23 组各 113–194 页，每组 2–4 个共有行，一眼能核对。
+- **框外涂白，页尺寸不变**，所以 OCR 的框、印刷模板、金标都不用动；框外留 6 像素（相邻线更近时少留，保证相邻题的线在框外）。要裁成小图用 `frames.json` 的框。
+- **杂点**：一块不超过 8 像素的墨迹、6 像素内没有别的墨迹，就是灰尘，涂白；离墨迹 3 像素以外、灰度在 235 以上的浅灰（JPEG 的雾）漂成纯白。笔画和紧挨笔画的像素不动。随机 500 页里 79% 的页有这样的孤立小黑点，平均每页 7.9 个；全部 3,976 页去了 11,596 个。
+- **结果**（`paper2_pages_clean_unlabeled3976`，`frames.json` 里 3,976 页都有框）：在本机的一次清洁上数清洁后的虚线行：每页只剩 2 条（本题自己的上下框线）的有 3,955 页，14 页多一条（页内长得像虚线的手写线，在框里面），7 页只检出 1 条（框用的是组内的位置）；相邻题的线一条不剩。框外被去掉的有页角的黑色定位块、页脚「第 1 页（共 2 页）」、相邻题的虚线和手写行；抽看 14 页框外的页独有墨迹，都是相邻题的字、线和页边的块，没有看到本题自己的字被裁掉。
+- **整页流水线在清洁后的页上重跑**（`paper2_pages_clean_run_unlabeled3976`，`--frames`，存档的 OCR 文本，没重跑 OCR；GPU 约 14 分钟）：块 45,073 → 44,331（框外的 OCR 块 727 个丢掉），涂改 14,729 → 14,620 处；原来有 120 处的中心在清洁用的框外（页角的黑块被标成涂黑，分数多在 0.8 以上，和相邻题的字被标成涂改），现在是 0。
+- **验证集 171 页对金标 265 处**（`eval/pages_score.py`，`paper2_clean_dev171_scores`）：
+
+| | 找到 | 画对 | 多画 |
+|---|---|---|---|
+| 原页 | 79.2% | 64.5%（171） | 593 |
+| 清洁后的页 | 80.0% | 64.5%（171） | 591 |
+| 原页，两边收紧 | 79.2% | 68.7% | 582 |
+| 清洁后的页，两边收紧（`paper2_pages_clean_run_unlabeled3976_tight`、`paper2_gold_pages_tight_clean_dev171`） | 80.3% | 69.7%（金标 264 处：1 处在框外的相邻题虚线上，清洁后没有墨迹） | 578 |
+
+- **金标里在框外的**：有框的 1,463 个金标页的 2,499 处里，10 处（0.4%）的中心在本题框外：相邻题的手写行（`7bd2e73d…` 的 3 处）、页边、相邻题的虚线。
+- 网页（学生手写图，只放本机，不提交）：`tools/clean_view` 的 `work/clean_view/`；收紧对比页在清洁后的页上重做，`work/tighten/site_clean/`。
+- 没做的：字数过滤用的 Qwen 转写还是原页的，相邻题露进来的字会让少数页的字数偏高；要精确得用清洁页重新转写。
+
 ### 本地测试
 
 `python3 -m pytest -q`：本地全过（需要 torch / skimage 的测试跳过）；服务器上全部通过（见 RESULTS.md 里各次验证的 `pytest.log`）。含一条行为测试（训练数据永不产出测试集的行）、与旧实现逐项比对的增广 / 采样器金标测试、
@@ -304,6 +330,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 整页的切法（`pages.page_lines`）：OCR 的「严格行」（第一篇训练用的那些行，原样保留，所以金标上的读数不变）；OCR 返回成一块的多行区域，按墨迹的缺口切成行（旧的等高均分会切歪）；OCR 没框的手写补框。补框先在每道题的印刷模板（同一道题、同一裁剪尺寸的页，至少一半的页在该像素有墨）和答题框之外找手写墨迹，按行合并，丢掉只有细线、虚线或单根笔画的（印刷框的残影、扫描边缘的线），一块跨多行的按墨迹缺口切成行。涂抹跨多行就按行拆开、不合并，与第一篇逐行金标一致。
 - 试过「不取矩形」：补切的片段只留笔迹的形状、框里其余抹白。在有金标的验证行上，同样的 OCR 行改成这样读，265 处金标对上 167 处，矩形是 171 处，略差，所以不用，补切的块就是普通矩形（`paper2_shape_ab_rect`、`_shape`，脚本在里面）。
 - 掩膜收紧（`tighten.py`）：口径 = 页面的非白像素：墨迹（`INK_BELOW` 以下）加与墨迹相连的软边（从墨迹出发、只经过灰度低于 `EDGE_BELOW`（240）的像素、最多 `EDGE_PX`（2）步）。不用「低于 255」：这些扫描件的空白纸正好是 255（随机抽 400 页，每页的众数都是 255），但 JPEG 在笔画旁留下 220–254 的浅灰杂点，低于 255 几乎什么也去不掉；不用逐像素腐蚀：它去不掉笔画之间的白纸；不只取墨迹（低于 200，第一篇 `--ink-only` 的口径，只用于读数）：擦掉之后笔画的灰边还在，是一圈灰色的影子；也不靠调低灰度线滤杂点：它先吃掉软边（见上表）。软边要与笔画相连，是用户指出第一版掩膜里有杂的像素之后改的。只与页面像素取交，不生长、不补笔画；没有墨迹的掩膜丢掉并记数。收紧后的输出与整页输出同一布局，`pages_view` 等工具可以直接读。
+- 整页清洁（`data/clean_pages.py`）：框由同一道题、同一尺寸的页共有的虚线行定，不是每页自己找最外的两条（会裁到相邻题）或最大间隔（页内像虚线的手写线会骗它）；页尺寸不变（涂白不裁剪），否则 OCR 框、印刷模板、金标都要换坐标，印刷模板要求同一道题的页同尺寸对齐；清洁后的页存 PNG（不再压 JPEG，免得把杂点压回来），`pages.page_files` 找 jpg 或 png、同名时 jpg 优先；OCR 文本不重跑（框内的内容没变，框外的块用 `--frames` 丢掉）。浅灰雾只在离墨迹 3 像素以外、灰度 235 以上才漂白，浅色的笔画不动。
 - 922（线性探针）要抽模型特征，这次不搬；923 里旧的消融变体（rvr_coarse、nofine_nodense、nocontext）不搬，只比八个主模型。
 
 ## 已知差异
