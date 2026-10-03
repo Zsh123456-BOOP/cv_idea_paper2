@@ -160,8 +160,9 @@ def main(argv=None):
     random.Random(SEED).shuffle(cards)
     scores = score_rows(*(json.loads(p.read_text()) for p in args.scores)) if args.scores else []
     (out/'compare.html').write_text(TEMPLATE.read_text(encoding='utf-8').replace('__DATA__', embed({'cards': cards, 'labels': LABELS})), encoding='utf-8')
-    note = ('收紧 = 原掩膜 ∩ 页面上的非白像素：墨迹（灰度 &lt; 200）和紧贴墨迹 2 像素内灰度 &lt; 240 的软边。灰度 250–254 是 JPEG 在笔画旁留下的杂点，'
-            '肉眼当作白色，所以不能用“&lt; 255”。收紧只会去掉像素，不会多出像素。')
+    note = ('收紧 = 原掩膜 ∩ 页面上的非白像素：墨迹（灰度 &lt; 200），加上从墨迹出发、只经过灰度 &lt; 240 的像素、最多走 2 步够得着的软边；'
+            '不挨着笔画的浅灰孤点不算。JPEG 在笔画旁留下 220–254 的浅灰杂点，所以不能用“&lt; 255”，也不能只调低灰度线去杂点：那会先吃掉笔画的软边。'
+            '收紧只会去掉像素，不会多出像素。')
     (out/'index.html').write_text(index_page([('页数', len(ids)), *rows], scores, note), encoding='utf-8')
     write_manifest(out, config=to_jsonable(args), inputs={str(d/'run_manifest.json'): digest(d/'run_manifest.json') for pair in sets.values() for d in pair},
                    pages=len(ids), cards=len(cards))
