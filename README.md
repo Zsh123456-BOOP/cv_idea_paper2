@@ -302,7 +302,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 清洁后的页，两边收紧（`paper2_pages_clean_run_unlabeled3976_tight`、`paper2_gold_pages_tight_clean_dev171`） | 80.3% | 69.7%（金标 264 处：1 处在框外的相邻题虚线上，清洁后没有墨迹） | 578 |
 
 - **金标里在框外的**：有框的 1,463 个金标页的 2,499 处里，10 处（0.4%）的中心在本题框外：相邻题的手写行（`7bd2e73d…` 的 3 处）、页边、相邻题的虚线。
-- 网页（学生手写图，只放本机，不提交）：`tools/clean_view` 的 `work/clean_view/`；收紧对比页在清洁后的页上重做，`work/tighten/site_clean/`。
+- 网页（学生手写图，只放本机，不提交）：`tools/clean_view` 的 `work/clean_view/`（每题 30 页，240 页）；收紧对比页在清洁后的页上重做，`work/tighten/site_clean/`；总览页在清洁后的页和收紧后的掩膜上重建，`work/pages_view_clean/`（字数阈值 30：保留 3,596 页、过滤 380 页）。
 - 没做的：字数过滤用的 Qwen 转写还是原页的，相邻题露进来的字会让少数页的字数偏高；要精确得用清洁页重新转写。
 
 ### 本地测试
