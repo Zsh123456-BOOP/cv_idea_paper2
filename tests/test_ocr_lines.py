@@ -45,3 +45,13 @@ def test_the_normaliser_drops_markup_so_only_real_symbols_count():
     assert O.normalise(r'\( \angle A = {36}^{\circ} \)') == '∠A=36°'
     assert O.normalise(r'\frac {1}{2}') == '(1)/(2)' and O.normalise('') == ''
     assert O.split_region('x\n\\\\\n=') == []               # single symbols and bare separators are not lines
+
+
+def test_the_answer_length_is_read_from_the_first_non_empty_transcription_of_a_page(tmp_path):
+    (tmp_path/'a.jsonl').write_text('\n'.join(json.dumps(r) for r in (
+        {'image_id': 'p1', 'text': ''}, {'image_id': 'p2', 'text': 'x = 3'}, {'image_id': 'p3', 'text': None})) + '\n')
+    (tmp_path/'b.jsonl').write_text('\n'.join(json.dumps(r) for r in (
+        {'image_id': 'p1', 'text': r'\( \angle A = 36^{\circ} \)'}, {'image_id': 'p2', 'text': 'later entry'})) + '\n')
+    texts = O.answer_texts([tmp_path/'a.jsonl', tmp_path/'b.jsonl'])
+    assert texts == {'p1': r'\( \angle A = 36^{\circ} \)', 'p2': 'x = 3', 'p3': ''}
+    assert [O.answer_chars(texts[k]) for k in ('p1', 'p2', 'p3')] == [6, 3, 0]

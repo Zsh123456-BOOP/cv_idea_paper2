@@ -6,8 +6,10 @@ only share its box between them (equal heights: ``inferred``).  The catalogue ke
 numbers or figures), one line to its region, a real box.  ``strict_lines`` gives those, in reading order (a second column after
 the first), each box once; on the OCR text of 2,238 pages it reproduces the catalogue's logical lines box for box.
 """
+import json
 import re
 import unicodedata
+from pathlib import Path
 
 REGION = re.compile(r'<\|det\|>\s*([a-z_]+)\s*\[([^\]]*)\]\s*<\|/det\|>')
 PRINTED = ('page_number', 'image', 'image_caption')        # furniture of the page, not a student's line
@@ -117,3 +119,22 @@ def strict_lines(text):
         seen.add(tuple(box))
         out.append({'box': box, 'ocr_type': line['ocr_type'], 'ocr_text': line['ocr_text']})
     return out
+
+
+def answer_texts(files):
+    """{image_id: what the student wrote on the page}: the first non-empty ``text`` among the jsonl files' {image_id, text}
+    records, ``''`` for a page whose every record is empty.  The records are the student-only transcription of the annotation
+    pipeline (Qwen3-VL-8B: printed question and crossed-out writing left out), which is what the page's answer length is read from."""
+    out = {}
+    for path in files:
+        for line in Path(path).read_text(encoding='utf-8').splitlines():
+            if line.strip():
+                record = json.loads(line)
+                if not out.get(record['image_id']):
+                    out[record['image_id']] = (record.get('text') or '').strip()
+    return out
+
+
+def answer_chars(text):
+    """How much a student wrote, in characters: the length of the transcription once its markup and spaces are gone."""
+    return len(normalise(text))

@@ -31,7 +31,8 @@ revrender/
                      representation.py（掩膜网格的上限、掩膜加粗 / 变细后的读数）、pixel_errors.py（错误像素按六类统计）
   baselines/         native/（七个原生实例分割基线 + Mask Transfiner：factory、train、threshold、transfiner、dense、metrics、compat）
                      component_cls.py、removal.py、paper.py、mathscrub.py（涂改专用方法）、common.py
-  tools/             annotate/（标注页 editor.html + 单文件打包）、compare_trace.py / compare_curve.py / compare_checkpoint.py（两份训练轨迹 / 验证曲线 / 检查点张量逐项比对）
+  tools/             annotate/（标注页 editor.html + 单文件打包）、compare_trace.py / compare_curve.py / compare_checkpoint.py（两份训练轨迹 / 验证曲线 / 检查点张量逐项比对）、
+                     pages_view.py + pages_view.html（整页结果的静态 HTML：识别完拼回的、被字数过滤掉的）
 scripts/             deploy.sh、launch_gpu_job.sh、launch_queue_runner.sh、launch_train_arm.sh、launch_native_arm.sh、
                      verify_equivalence.sh、verify_thresholds.sh、verify_analysis.sh、_common.sh
 docs/                data_location.md（题目图在哪、怎么对上 image_id：只读调查）
@@ -58,6 +59,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 训练一个 RevRender | `launch_train_arm.sh control GPU NUMA B S C CS OUT`（smoke_a → smoke_b 重放 → 学习门槛 → formal → 冻结）；`STOP_AFTER=learning` 只跑三道门槛 |
 | 冻结 | `python -m revrender.eval.freeze --bundle B --bundle-sha S --run OUT/formal --output freeze.json`（原生基线加 `--model maskdino` 等） |
 | 掩膜 AP / 找到画对 / 自助法 / 计速 | `python -m revrender.eval.ap / .fates / .bootstrap / .speed`；三者加 `--ink-only` 就只在墨迹上读（金标和交付掩膜都裁到墨迹） |
+| 看整页结果（HTML） | `python -m revrender.tools.pages_view --pages-output OUT --images 图片目录 --answer-text qwen_shard0.jsonl [...] --tags tags.json --min-chars 10 --output-dir SITE`：学生手写解答转写少于 `--min-chars` 个字的页被过滤；`SITE/kept.html` 是识别完并拼回整页的，`SITE/filtered.html` 是被过滤掉的，`SITE/index.html` 是汇总；图片拷进 `SITE/assets`，文件夹拷到哪都能打开（浏览器直接开 html，或 `python3 -m http.server`）。只含学生手写图，别提交 |
 | 整道题：切行 → 标涂改 → 拼回 | `python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages 图片目录 --ocr-model /home/zsh/hme/models/Unlimited-OCR --output-dir OUT [--ids 页id文件] [--overlay]`；已有 OCR 文本时用 `--ocr-text ulocr.jsonl` 代替 `--ocr-model`（不占 OCR 的显存和时间）。每页写 `OUT/<image_id>.json`（切出的行、每个实例的行号 / 分数 / 框）和 `.npz`（每个实例在它的行裁图上的掩膜）。需要 GPU，约 16 GB（OCR 模型 14 GB + RevRender） |
 | 掩膜网格上限与加粗变细 / 六类像素错误 | `python -m revrender.eval.representation --bundle B --bundle-sha S --freeze 标签=freeze.json ... --output out.json`；`python -m revrender.eval.pixel_errors ...` |
 | 一个原生基线 | `launch_native_arm.sh MODEL GPU NUMA B S C CS OUT`（smoke → formal → 冻结 → 掩膜阈值）；Mask Transfiner：`MODEL=transfiner` 并设 `TRANSFINER_PIN=pin.json` |
@@ -239,6 +241,10 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 与用存档 OCR 文本（`--ocr-text`；输出 `paper2_pages_dev_stored`）跑的结果逐页比对：205 页的行（框和文字）与实例（行号、分数、框、掩膜比特）完全相同。模型重新调用的输出就是当年的输出。
 - 对第一篇的行级金标（放回整页坐标）：365 处涂改，画对（IoU ≥ 0.5，一对一）236 处（64.7%），找到 81.4%；第一篇在行条坐标下的读数是 240 处（65.8%），差别来自放回整页后重新算 IoU。流水线交付 774 个实例，其中 463 个落在没有金标的行上：金标只覆盖每页约四分之一的行，这些不能当误报。
 - 除第一篇 44 名测试书写者之外的 4,628 页（这些书写者的 374 页整个不读），用存档的 OCR 文本跑（`paper2_pages_nontest_stored_ocr`）：43,455 行、14,694 个实例，921 秒，输出 41 MB；12 页没有严格行，1,408 页没有实例。训练书写者的页，结果偏乐观。
+- 全量（用户要求，取代上一条的 4,628 页）：不含外部集的全部 3,976 页（主扫描 2,340 + 补充资料包 1,636），包括第一篇测试书写者的 292 页（只做推理），存档的 OCR 文本，
+  37,689 行、12,586 个实例，710 秒（`paper2_pages_unlabeled3976`）。字数过滤（学生手写解答转写少于 10 个字）：保留 3,866 页、过滤 110 页（46 页转写为空、字数 0）；
+  保留的里 2,722 页至少检出一处涂改，过滤的里有 10 页也检出了涂改；9 页（都在保留里）OCR 没切出可用的行，所以没有结果。网页用 `tools/pages_view` 生成
+  （学生手写图，只放本机的 `work/pages_view/`，不提交）。
 - 对照：整页直接过模型（不切行），同一批页面（198 页、340 处涂改）上冻结点只画对 2.4%，不设分数线 23.8%，放大 1.78 倍更差；等距横条（不用行框）26.2%；按行目录的框切行 65.3%（探针，脚本和输出在 `paper2_probe_whole_question`）。
 
 ### 本地测试
@@ -260,7 +266,9 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 四个涂改专用方法各加了一个 `--smoke`（8 步 / 20 行，检查流程，输出里标 `smoke_only`），因为它们原来没有 smoke。
 - 数据包构建器（生成数据包的旧脚本）、标注协议与补标链不搬；题目图的位置已核对，见 [docs/data_location.md](docs/data_location.md)。
 - 各读数共用一份「读冻结」（`eval/freeze.py` 的 `read_frozen` / `frozen_point`）：fates、ap、bootstrap、report 和新的分析读数都走它，不各自再写一份；`--ink-only` 是 fates、ap、bootstrap 的选项（`eval/ink.py`），不是另一条流水线。
-- 整道题的批量预标注不读第一篇 44 名测试书写者的任何一页（按书写者排除，374 页），只用了他们的编号；用存档的 OCR 文本而不是重跑模型（两者在 205 页验证页上逐位相同，重跑 5,002 页要 3 小时以上）。
+- 2026-10-03 用户要求整页流水线跑全部页（外部集 1,026 页除外：那是同门的另一种标注，第一篇的行级数据只是整页数据集的小子集，以后并进来），包括第一篇 44 名测试书写者的 292 页。只做推理，预测不用于训练或选择；输出和网页里标了每页书写者在第一篇的划分（`tags.json`），第二篇定划分时可以据此留出。
+- 页的字数过滤：字数 = 学生手写解答转写的字数（`data/ocr_lines.answer_chars`：去掉标记和空白后的长度），转写用旧标注流水线的 Qwen3-VL-8B 结果（只转写学生手写的、不含印刷题干和被划掉的内容）。不用 Unlimited-OCR 的文字数：它含印刷的题干，几乎空白的页也有十来个字，而且「严格行」会漏掉整块的多行区域。旧的去重文件漏了 71 页的转写，改读四个分片文件、每页取第一条非空记录；46 页的转写全是空，字数记 0（它们的 OCR 文字只剩印刷题干，约 9 个字）。阈值 10（`--min-chars`）。
+- 之前那次批量（`paper2_pages_nontest_stored_ocr`，4,628 页，含外部集的页）不含第一篇 44 名测试书写者的任何一页，已被 `paper2_pages_unlabeled3976`（3,976 页，不含外部集、含测试书写者的页）取代；两次都用存档的 OCR 文本而不是重跑模型（两者在 205 页验证页上逐位相同，重跑要 3 小时以上）。
 - 整道题的行用目录当年的规则切：只留「严格行」（一个区域一行、有框、不是页码和图）。OCR 返回的「一个区域多行」（候选行的 11.7%）第一篇没有用，流水线也不切它们；要切要另定规则（区域框等高均分是近似）。
 - 922（线性探针）要抽模型特征，这次不搬；923 里旧的消融变体（rvr_coarse、nofine_nodense、nocontext）不搬，只比八个主模型。
 

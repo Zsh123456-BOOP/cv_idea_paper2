@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root { --bg:#f5f5f2; --panel:#fff; --ink:#1e1e1c; --muted:#6c6c66; --line:#dcdcd6; --red:#c62828; --blue:#1565c0; --tag:#ecece6; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#151515; --panel:#1f1f1f; --ink:#ececea; --muted:#9d9d97; --line:#343430; --red:#ff6b6b; --blue:#64b5f6; --tag:#2b2b28; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+a { color:var(--blue); }
+header { position:sticky; top:0; z-index:10; background:var(--panel); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; }
+header h1 { font-size:16px; margin:0; }
+header .count { color:var(--muted); }
+header label { display:inline-flex; gap:5px; align-items:center; white-space:nowrap; }
+select, input[type=search] { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--ink); }
+#grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(480px, 1fr)); gap:14px; padding:14px 16px; align-items:start; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.head { padding:8px 10px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.id { font:12px ui-monospace, Menlo, monospace; color:var(--muted); word-break:break-all; }
+.tag { background:var(--tag); border-radius:10px; padding:0 8px; font-size:12px; white-space:nowrap; }
+.tag.n { background:var(--red); color:#fff; }
+.tag.zero { background:var(--tag); color:var(--muted); }
+.tag.test { outline:1px solid var(--blue); }
+.stage { position:relative; width:100%; background:#fff; cursor:zoom-in; }
+.stage img { display:block; width:100%; height:auto; }
+.stage img.mask { position:absolute; left:0; top:0; pointer-events:none; }
+.stage .linebox { position:absolute; border:1px solid var(--blue); pointer-events:none; display:none; }
+.stage .inst { position:absolute; border:1.5px dashed var(--red); display:none; }
+body.show-lines .stage .linebox { display:block; }
+body.show-boxes .stage .inst { display:block; }
+body.hide-mask .stage img.mask { display:none; }
+.foot { padding:6px 10px 9px; color:var(--muted); font-size:12px; }
+.foot .why { color:var(--red); font-weight:600; }
+.foot .text { white-space:pre-wrap; word-break:break-word; margin-top:4px; max-height:11em; overflow:auto; background:var(--tag); border-radius:6px; padding:4px 8px; color:var(--ink); display:none; }
+body.show-text .foot .text { display:block; }
+#lb { position:fixed; inset:0; background:rgba(0,0,0,.82); z-index:50; overflow:auto; display:none; padding:16px; }
+#lb .stage { max-width:1500px; margin:0 auto; cursor:zoom-out; }
+#sentinel { height:1px; }
+.empty { padding:40px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body class="__MODE__">
+<header>
+  <h1>__TITLE__</h1>
+  <span class="count" id="count"></span>
+  <label>排序 <select id="sort">
+    <option value="default">默认顺序</option>
+    <option value="n-desc">检出涂改 多→少</option>
+    <option value="n-asc">检出涂改 少→多</option>
+    <option value="chars-asc">字数 少→多</option>
+    <option value="chars-desc">字数 多→少</option></select></label>
+  <label>检出 <select id="count-filter">
+    <option value="all">全部</option><option value="none">没有检出</option><option value="1-2">1–2 处</option><option value="3+">3 处及以上</option></select></label>
+  <label>题号 <select id="q"><option value="all">全部</option></select></label>
+  <label>来源 <select id="source"><option value="all">全部</option><option value="main">主扫描</option><option value="supp">补充资料包</option></select></label>
+  <label>第一篇 <select id="split">
+    <option value="all">全部</option><option value="train">训练书写者</option><option value="dev">验证书写者</option><option value="test">测试书写者</option><option value="none">没用到</option></select></label>
+  <label><input type="checkbox" id="gold"> 只看含第一篇行级金标</label>
+  <label><input type="search" id="search" placeholder="页 id 包含…" size="16"></label>
+  <label><input type="checkbox" id="mask" checked> 识别结果</label>
+  <label><input type="checkbox" id="boxes"> 每处的框和分数</label>
+  <label><input type="checkbox" id="lines"> 切出的行</label>
+  <label><input type="checkbox" id="text"> 转写文字</label>
+  <a href="index.html">汇总</a>
+</header>
+<main id="grid"></main>
+<div id="sentinel"></div>
+<div id="lb"></div>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const CARDS = DATA.cards, MODE = DATA.mode, STEP = 36;
+const $ = id => document.getElementById(id);
+let view = [], shown = 0;
+
+for (const q of [...new Set(CARDS.map(c => c.q))].sort((a, b) => a - b)) {
+  const o = document.createElement('option'); o.value = q; o.textContent = '第 ' + q + ' 题'; $('q').appendChild(o);
+}
+
+function matches(c) {
+  const n = c.n, f = $('count-filter').value;
+  if (f === 'none' && n !== 0) return false;
+  if (f === '1-2' && !(n >= 1 && n <= 2)) return false;
+  if (f === '3+' && n < 3) return false;
+  if ($('q').value !== 'all' && String(c.q) !== $('q').value) return false;
+  const src = $('source').value;
+  if (src !== 'all' && (src === 'supp') !== c.supp) return false;
+  const sp = $('split').value;
+  if (sp !== 'all' && c.split !== sp) return false;
+  if ($('gold').checked && !(c.rows && Object.keys(c.rows).length)) return false;
+  const s = $('search').value.trim();
+  if (s && !c.id.includes(s)) return false;
+  return true;
+}
+
+function apply() {
+  view = CARDS.filter(matches);
+  const k = $('sort').value;
+  const keys = {'n-desc': (a, b) => b.n - a.n, 'n-asc': (a, b) => a.n - b.n, 'chars-asc': (a, b) => a.chars - b.chars, 'chars-desc': (a, b) => b.chars - a.chars};
+  if (keys[k]) view.sort(keys[k]);
+  $('grid').replaceChildren(); shown = 0;
+  $('count').textContent = '显示 ' + view.length + ' / 共 ' + CARDS.length + ' 页';
+  if (!view.length) { const d = document.createElement('div'); d.className = 'empty'; d.textContent = '没有符合条件的页'; $('grid').appendChild(d); }
+  more();
+}
+
+function stage(c) {
+  const s = document.createElement('div'); s.className = 'stage'; s.style.aspectRatio = c.w + ' / ' + c.h;
+  const page = document.createElement('img'); page.className = 'page'; page.loading = 'lazy'; page.src = 'assets/' + c.id + '.jpg'; page.alt = c.id; s.appendChild(page);
+  if (c.mask) { const m = document.createElement('img'); m.className = 'mask'; m.loading = 'lazy'; m.src = 'assets/' + c.id + '.png'; s.appendChild(m); }
+  for (const b of c.lines) {
+    const d = document.createElement('div'); d.className = 'linebox';
+    d.style.cssText = 'left:' + b[0] / 10 + '%;top:' + b[1] / 10 + '%;width:' + (b[2] - b[0]) / 10 + '%;height:' + (b[3] - b[1]) / 10 + '%';
+    s.appendChild(d);
+  }
+  c.boxes.forEach((b, i) => {
+    const d = document.createElement('div'); d.className = 'inst'; d.title = '分数 ' + c.scores[i].toFixed(2);
+    d.style.cssText = 'left:' + 100 * b[0] / c.w + '%;top:' + 100 * b[1] / c.h + '%;width:' + 100 * (b[2] - b[0]) / c.w + '%;height:' + 100 * (b[3] - b[1]) / c.h + '%';
+    s.appendChild(d);
+  });
+  s.addEventListener('click', () => openLightbox(c));
+  return s;
+}
+
+function tag(text, cls) { const t = document.createElement('span'); t.className = 'tag ' + (cls || ''); t.textContent = text; return t; }
+const SPLIT = {train: '训练书写者', dev: '验证书写者', test: '测试书写者', none: '第一篇没用到'};
+
+function card(c) {
+  const el = document.createElement('div'); el.className = 'card';
+  const head = document.createElement('div'); head.className = 'head';
+  const id = document.createElement('span'); id.className = 'id'; id.textContent = c.id; head.appendChild(id);
+  head.appendChild(tag('第 ' + c.q + ' 题')); head.appendChild(tag(c.supp ? '补充资料包' : '主扫描'));
+  head.appendChild(tag('检出 ' + c.n + ' 处', c.n ? 'n' : 'zero'));
+  head.appendChild(tag('字数 ' + c.chars));
+  head.appendChild(tag('第一篇：' + SPLIT[c.split], c.split === 'test' ? 'test' : ''));
+  const rows = c.rows ? Object.values(c.rows).reduce((a, b) => a + b, 0) : 0;
+  if (rows) head.appendChild(tag('含行级金标 ' + rows + ' 行'));
+  el.appendChild(head); el.appendChild(stage(c));
+  const foot = document.createElement('div'); foot.className = 'foot';
+  foot.append(c.lines.length + ' 行已切出');
+  if (MODE === 'filtered') { const w = document.createElement('div'); w.className = 'why'; w.textContent = '学生只写了 ' + c.chars + ' 个字，少于 ' + DATA.min_chars + ' 个字，被过滤'; foot.appendChild(w); }
+  const t = document.createElement('div'); t.className = 'text'; t.textContent = c.text || '（没有转写文字）'; foot.appendChild(t);
+  el.appendChild(foot);
+  return el;
+}
+
+function more() {
+  const end = Math.min(view.length, shown + STEP), frag = document.createDocumentFragment();
+  for (let i = shown; i < end; i++) frag.appendChild(card(view[i]));
+  $('grid').appendChild(frag); shown = end;
+}
+new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && shown < view.length) more(); }, {rootMargin: '1200px'}).observe($('sentinel'));
+
+function openLightbox(c) { const lb = $('lb'); lb.replaceChildren(stage(c)); lb.style.display = 'block'; lb.scrollTop = 0; }
+$('lb').addEventListener('click', () => { $('lb').style.display = 'none'; $('lb').replaceChildren(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('lb').click(); });
+
+for (const id of ['sort', 'count-filter', 'q', 'source', 'split', 'gold']) $(id).addEventListener('change', apply);
+$('search').addEventListener('input', apply);
+const toggle = (id, cls, invert) => { const f = () => document.body.classList.toggle(cls, invert ? !$(id).checked : $(id).checked); $(id).addEventListener('change', f); f(); };
+toggle('mask', 'hide-mask', true); toggle('boxes', 'show-boxes'); toggle('lines', 'show-lines'); toggle('text', 'show-text');
+$('sort').value = MODE === 'kept' ? 'n-desc' : 'chars-asc';           // the pages with the most recognised revisions first; the emptiest pages first
+if (MODE === 'filtered') { $('text').checked = true; document.body.classList.add('show-text'); }
+apply();
+</script>
+</body>
+</html>
