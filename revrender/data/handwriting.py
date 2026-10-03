@@ -5,9 +5,9 @@ equal heights), skips a line now and then and stops short of a stroke that runs 
 handwriting is.  A question's pages are all cut to one size, so what is printed (the question, its labels, the dashed answer box) is the
 same ink on every page of the group and is what at least half of the group's pages have at a pixel (``printed_templates``);
 what is left inside the answer box, off the figures, is the student's (``handwriting``).  ``split_by_ink`` puts the cuts of a
-multi-line region where the ink has gaps; ``leftover_units`` cuts out the handwriting no line box covers, each piece in its own shape
-(the ink of the blob, thickened: the crop shows that and nothing around it) and a piece that runs over several lines is cut into
-lines at the gaps of its ink.
+multi-line region where the ink has gaps; ``leftover_boxes`` boxes the handwriting no line box covers, a piece that runs over several
+lines cut into lines at the gaps of its ink.  (Cutting a piece out in the shape of its ink, the rest of the box whitened, was tried
+on the validation lines and read a little worse than the plain box, 167 against 171 of 265 gold revisions: pieces are plain boxes.)
 
     python -m revrender.data.handwriting --pages DIR [--pages DIR ...] --output templates.npz
 """
@@ -30,7 +30,6 @@ MIN_PAGES = 8              # a template needs this many pages of the group
 BLOCK = 4                  # joining of leftover strokes works on blocks of 4 x 4 pixels
 MIN_INK = 150              # a leftover blob with less ink than this (pixels) is dust
 MAX_BOX_HEIGHT = 140       # a taller leftover blob is cut into lines of at most this height, at the gaps of its ink
-SHAPE_THICKEN = 7          # the shape of a leftover piece is its ink thickened by this many pixels (3 on each side)
 BOX_INSET = 12             # ink this close to the answer box's own line is the line's, not the student's
 THIN = 7                   # marks this thin, alone or repeated (a rule, dashes, a stray line), are not writing
 WORD_GAP = 80              # leftover blobs on one row this close (pixels) are the words of one line
@@ -180,11 +179,10 @@ def row_pieces(blobs):
     return boxes
 
 
-def leftover_units(ink, boxes, pad=4, join=(1, 6)):
-    """The handwriting no box covers, cut out piece by piece: [(box, shape)] with the box in pixels and the shape a boolean map of the
-    box's size, the piece's ink thickened.  The leftover ink is joined into blobs (strokes of a word), the blobs of one row into pieces
-    (words of a line); a piece that is little ink or does not look written (``looks_written``) is dropped, a piece over several lines is
-    cut into lines at the gaps of its ink, and each box is grown by ``pad``."""
+def leftover_boxes(ink, boxes, pad=4, join=(1, 6)):
+    """Boxes (left, top, right, bottom in pixels) for the handwriting no box covers.  The leftover ink is joined into blobs (strokes of a
+    word), the blobs of one row into pieces (words of a line); a piece that is little ink or does not look written (``looks_written``) is
+    dropped, a piece over several lines is cut into lines at the gaps of its ink, and each box is grown by ``pad``."""
     left = ink & ~boxes_mask(boxes, ink.shape)
     h, w = left.shape
     h4, w4 = -(-h//BLOCK), -(-w//BLOCK)
@@ -198,7 +196,6 @@ def leftover_units(ink, boxes, pad=4, join=(1, 6)):
         ys, xs = np.nonzero(left[y0:y1, x0:x1])
         if len(ys):
             blobs.append([x0+int(xs.min()), y0+int(ys.min()), x0+int(xs.max())+1, y0+int(ys.max())+1])
-    thick = np.ones((SHAPE_THICKEN, SHAPE_THICKEN), bool)
     out = []
     for lft, top, rgt, bottom in row_pieces(blobs):
         piece = left[top:bottom, lft:rgt]
@@ -209,10 +206,7 @@ def leftover_units(ink, boxes, pad=4, join=(1, 6)):
             by, bx = np.nonzero(band)
             l, r = lft+int(bx.min()), lft+int(bx.max())+1
             t, b = top+lo+int(by.min()), top+lo+int(by.max())+1
-            box = [max(0, l-pad), max(0, t-pad), min(w, r+pad), min(h, b+pad)]
-            rows = np.zeros((box[3]-box[1], box[2]-box[0]), bool)
-            rows[max(0, t-box[1]):b-box[1]] = True
-            out.append((box, ndimage.binary_dilation(left[box[1]:box[3], box[0]:box[2]] & rows, thick)))
+            out.append([max(0, l-pad), max(0, t-pad), min(w, r+pad), min(h, b+pad)])
     return out
 
 

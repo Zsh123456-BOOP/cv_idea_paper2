@@ -56,7 +56,7 @@ def test_a_region_of_several_lines_is_cut_where_the_ink_has_gaps_not_in_equal_he
     assert H.split_by_ink([0, 0, 400, 200], 2, np.zeros((200, 400), bool)) == [None, None]
 
 
-def test_handwriting_no_box_covers_is_cut_out_in_its_own_shape_and_a_tall_piece_into_lines():
+def test_handwriting_no_box_covers_gets_a_box_and_a_tall_piece_is_cut_into_lines():
     ink = np.zeros((300, 400), bool)
     ink[20:40, 30:200] = True                            # covered by a line box
     ink[100:120, 50:250] = True                          # a line the OCR missed
@@ -65,12 +65,9 @@ def test_handwriting_no_box_covers_is_cut_out_in_its_own_shape_and_a_tall_piece_
     ink[234:290, 50:150] = True
     ink[250:252, 270:395] = True                         # a thin long rule
     ink[10:12, 10:13] = True                             # dust
-    units = H.leftover_units(ink, [[20, 15, 220, 45]])
-    boxes = [u[0] for u in units]
+    boxes = H.leftover_boxes(ink, [[20, 15, 220, 45]])
     assert any(b[1] <= 100 and b[3] >= 120 and b[0] <= 50 and b[2] >= 250 for b in boxes)
-    assert not any(b[0] >= 280 for b in boxes) and not any(b[1] <= 11 for b in boxes)                  # no rule, no dust
-    for box, shape in units:
-        assert shape.shape == (box[3]-box[1], box[2]-box[0]) and shape.any()
+    assert not any(b[0] >= 260 for b in boxes) and not any(b[1] <= 11 for b in boxes)                  # no rule, no dust
     assert sum(1 for b in boxes if b[1] >= 195) >= 1 and all(b[3]-b[1] <= H.MAX_BOX_HEIGHT+2*4 for b in boxes)
 
 

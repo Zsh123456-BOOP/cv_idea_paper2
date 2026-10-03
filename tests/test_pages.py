@@ -16,8 +16,8 @@ def page_with_bar():
     return Image.fromarray(image)
 
 
-def line(box, source='ocr', shape=None):
-    return {'box': box, 'source': source, 'ocr_type': 'text', 'ocr_text': 'x = 1', 'shape': shape}
+def line(box, source='ocr'):
+    return {'box': box, 'source': source, 'ocr_type': 'text', 'ocr_text': 'x = 1'}
 
 
 LINES = [line([6, 10, 594, 50]), line([6, 100, 594, 140])]
@@ -54,24 +54,6 @@ def test_instances_are_pasted_back_where_the_stroke_is(monkeypatch):
     assert instances[0]['box'] == [6, 100, 594, 140]
 
 
-def test_a_piece_in_its_own_shape_shows_only_its_ink_to_the_model(monkeypatch):
-    seen = []
-
-    def spy(model, strips, point, batch_size=8):
-        seen.extend(np.asarray(s) for s in strips)
-        return [[] for _ in strips]
-
-    monkeypatch.setattr(pages.infer, 'predict_lines', spy)
-    image = np.full((100, 300), 255, np.uint8)
-    image[40:50, 20:120] = 10                            # the piece
-    image[40:50, 160:260] = 10                           # another mark in the same box: not the piece's
-    shape = np.zeros((100, 300), bool)
-    shape[36:54, 16:124] = True
-    pages.read_page(None, {}, Image.fromarray(image), [line([0, 0, 300, 100], 'ink', shape)])
-    dark = np.nonzero(seen[0] < 128)
-    assert dark[1].max() < seen[0].shape[1]*.6          # only the left mark is on the strip, the right one was whitened
-
-
 def test_the_same_mark_seen_from_two_pieces_is_one_instance_and_apart_marks_are_two():
     mask = np.ones((10, 40), bool)
     a = {'line': 0, 'score': .9, 'box': [0, 0, 40, 10], 'mask': mask}
@@ -96,8 +78,7 @@ def test_a_page_is_cut_into_ocr_lines_ink_split_lines_and_leftover_handwriting()
     assert [s for s, _ in sources] == ['ocr', 'split', 'split', 'ink']
     assert sources[1][1][1] < 100 < sources[2][1][1] and sources[1][1][3] < sources[2][1][1]      # the split falls in the gap, not at the middle
     leftover = lines[3]
-    assert leftover['shape'] is not None and leftover['shape'].shape == (leftover['box'][3]-leftover['box'][1], leftover['box'][2]-leftover['box'][0])
-    assert leftover['box'][1] <= 170 and leftover['box'][3] >= 185
+    assert leftover['box'][1] <= 170 and leftover['box'][3] >= 185 and leftover['box'][0] <= 40 and leftover['box'][2] >= 200
 
 
 def test_the_page_files_are_written_and_read_back(tmp_path, monkeypatch):

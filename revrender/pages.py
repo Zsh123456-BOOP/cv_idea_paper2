@@ -7,10 +7,9 @@ A page is cut into pieces and each piece is read the way paper 1 read a line: cr
 at the checkpoint's frozen point (mask threshold, NMS, score cut), every delivered instance resized back and pasted into the page.  The
 pieces (``page_lines``): the OCR model's own lines (``ocr``: the catalogue's lines, which paper 1 trained on); the lines of a region the
 OCR returned as one block of several lines, cut where the ink has gaps (``split``); and the handwriting no line covers -- a line the OCR
-skipped, a stroke that ran past the end of a line, a note in the margin -- cut out in its own shape, the crop showing that ink and nothing
-around it, a piece over several lines cut into lines (``ink``).  Where the handwriting is comes from the page against the printed
-template of its question (``--templates``, made by ``python -m revrender.data.handwriting``).  Per page OUT/<image_id>.json lists the
-pieces and the instances (piece, score, box in pixels) and OUT/<image_id>.npz holds each instance's mask on its box (packed bits,
+skipped, a stroke that ran past the end of a line, a note in the margin (``ink``).  Where the handwriting is comes from the page against
+the printed template of its question (``--templates``, made by ``python -m revrender.data.handwriting``).  Per page OUT/<image_id>.json
+lists the pieces and the instances (piece, score, box in pixels) and OUT/<image_id>.npz holds each instance's mask on its box (packed bits,
 ``mask_<n>``); ``--overlay`` also writes <image_id>.png.  ``--ocr-text`` takes OCR text the model already produced (jsonl of {image_id,
 text}) instead of running it.  Only the pages named by ``--ids`` (default: every jpg in ``--pages``) are read.
 """
@@ -46,13 +45,13 @@ def pixel_box(box, size):
 
 
 def page_lines(text, size, ink):
-    """The pieces a page is cut into: [{box (pixels), source, ocr_type, ocr_text, shape}] -- see the module's docstring.  ``ink`` is the
-    page's handwriting (``data.handwriting.handwriting``); ``shape`` is a boolean map of the box for an ``ink`` piece, else None."""
+    """The pieces a page is cut into: [{box (pixels), source, ocr_type, ocr_text}] -- see the module's docstring.  ``ink`` is the page's
+    handwriting (``data.handwriting.handwriting``)."""
     out = []
     for line in ocr_lines.strict_lines(text):
         box = pixel_box(line['box'], size)
         if box:
-            out.append({'box': box, 'source': 'ocr', 'ocr_type': line['ocr_type'], 'ocr_text': line['ocr_text'], 'shape': None})
+            out.append({'box': box, 'source': 'ocr', 'ocr_type': line['ocr_type'], 'ocr_text': line['ocr_text']})
     groups = {}
     for line in ocr_lines.reorder(ocr_lines.parse_regions(text)):
         if line['inferred'] and line['student'] and line['box']:
@@ -62,30 +61,21 @@ def page_lines(text, size, ink):
         if box:
             for part, cut in zip(parts, handwriting.split_by_ink(box, parts[0]['parts'], ink)):
                 if cut:
-                    out.append({'box': cut, 'source': 'split', 'ocr_type': part['ocr_type'], 'ocr_text': part['ocr_text'], 'shape': None})
-    for box, shape in handwriting.leftover_units(ink, [line['box'] for line in out]):
-        out.append({'box': box, 'source': 'ink', 'ocr_type': None, 'ocr_text': '', 'shape': shape})
+                    out.append({'box': cut, 'source': 'split', 'ocr_type': part['ocr_type'], 'ocr_text': part['ocr_text']})
+    for box in handwriting.leftover_boxes(ink, [line['box'] for line in out]):
+        out.append({'box': box, 'source': 'ink', 'ocr_type': None, 'ocr_text': ''})
     return out
 
 
 def read_page(model, point, image, lines, batch_size=infer.BATCH_SIZE):
     """The instances RevRender delivers on a grey page cut into ``lines`` (``page_lines``):
     [{line, score, box (left, top, right, bottom in pixels), mask (on the box)}], overlapping duplicates dropped."""
-    strips = []
-    for line in lines:
-        crop = image.crop(tuple(line['box']))
-        if line['shape'] is not None:                      # a piece in its own shape: the crop shows that ink only
-            grey = np.asarray(crop).copy()
-            grey[~line['shape']] = 255
-            crop = Image.fromarray(grey)
-        strips.append(np.asarray(letterbox(crop, STRIP_W, STRIP_H, 255)))
+    strips = [np.asarray(letterbox(image.crop(tuple(line['box'])), STRIP_W, STRIP_H, 255)) for line in lines]
     instances = []
     for k, (line, delivered) in enumerate(zip(lines, infer.predict_lines(model, strips, point, batch_size))):
         box = line['box']
         for mask, score in delivered:
             crop = unletterbox(mask, box[2]-box[0], box[3]-box[1])
-            if line['shape'] is not None:
-                crop &= line['shape']
             if crop.any():
                 instances.append({'line': k, 'score': float(score), 'box': list(box), 'mask': crop})
     return merge_duplicates(instances)
