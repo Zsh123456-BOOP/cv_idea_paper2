@@ -7,6 +7,7 @@ from PIL import Image
 
 from revrender import recognize
 from revrender.data import recognition_pack as pack
+from revrender.tools import recognition_view
 from revrender.util import RefusedError
 
 
@@ -62,3 +63,14 @@ def test_a_test_page_is_rejected_before_its_image_or_masks_are_read(tmp_path):
                    '--ids', str(tmp_path/'ids.txt'), '--tags', str(tmp_path/'tags.json'),
                    '--page-index', str(tmp_path/'index.json'), '--output-dir', str(tmp_path/'out')])
     assert not (tmp_path/'out').exists()
+
+
+def test_comparison_refuses_duplicate_or_unrelated_predictions(tmp_path):
+    path = tmp_path/'predictions.jsonl'
+    item = {'row_id': 'writer:L001', 'mode': 'B', 'text': '', 'truncated': False}
+    path.write_text(json.dumps(item)+'\n')
+    assert recognition_view.predictions([path], {'writer:L001'})['writer:L001']['B']['text'] == ''
+    with pytest.raises(RefusedError, match='duplicate prediction'):
+        recognition_view.predictions([path, path], {'writer:L001'})
+    with pytest.raises(RefusedError, match='does not belong'):
+        recognition_view.predictions([path], {'another:L001'})

@@ -5,7 +5,7 @@
 - 移植自旧仓库 `~/Desktop/cv_idea_claude`，分支 `codex/claude-three-mechanisms`，提交 `aa8e2e01`（只读，未改动）；三个分析工具后来补搬自同一分支的 `47293cdd`。
 - **已复现第一篇验证集数字**，三项等价验证的结果见 [等价验证](#等价验证)。
 - 远端：GitHub 私有库 `Zsh123456-BOOP/cv_idea_paper2`（`origin`，分支 `main`）。
-- 第二篇的数据划分、整道题的数据管线不在这里（由用户在另一个窗口讨论，定了再接）。本仓库只放第一篇已经证实的东西，不含研究决定。
+- 已接入整题清洁、优化切块、掩膜收紧，以及用户授权的 40 页逐行识别与标注试验；第二篇正式数据划分和训练方案尚未确定。
 
 ## 结构
 
@@ -27,6 +27,7 @@ revrender/
   ocr.py             Unlimited-OCR 的调用（切行的那个模型，设置与当年相同）
   pages.py           整道题：OCR 的行 + 按墨迹切开的多行区域 + 补切的手写 → 每块过 RevRender → 实例拼回整页；命令行；`write_page` / `read_output` 是整页输出的唯一读写；`--frames` 丢掉框外的块
   tighten.py         掩膜收紧到非白像素（墨迹 + 紧贴的软边）：整页输出和放回整页的金标都能收；命令行
+  recognize.py       已有整题切块的 B/C/D 识别（Qwen；原图 / 掩膜遮白 / 原图加掩膜提示）
   eval/              pages_score.py（整页输出对放回整页的金标：找到 / 画对）、matching.py（组件匹配 + F1 + 前沿 + 误报预算）、ap.py（掩膜 AP）、bootstrap.py（按书写者自助法）、
                      freeze.py（阈值冻结；`read_frozen` 是各读数共用的「读一份冻结」）、fates.py（找到 / 画对）、speed.py（推理计速）、
                      inloop.py（训练中验证读数）、report.py（重新打分、与已记录数字和另一份存档比对）、
@@ -37,7 +38,8 @@ revrender/
   tools/             annotate/（标注页 editor.html + 单文件打包）、compare_trace.py / compare_curve.py / compare_checkpoint.py（两份训练轨迹 / 验证曲线 / 检查点张量逐项比对）、
                      pages_view.py + pages_view.html（整页结果的静态 HTML：识别完拼回的、被字数过滤掉的）、
                      tighten_view.py + tighten_view.html（掩膜收紧前后的静态对比页：模型的和金标的）、
-                     clean_view.py + clean_view.html（整页清洁前后的静态对比页）
+                     clean_view.py + clean_view.html（整页清洁前后的静态对比页）、
+                     recognition_view.py + recognition_view.html（逐块文本标注、整题上下文、B/C/D 对比与导入导出）
 scripts/             deploy.sh、launch_gpu_job.sh、launch_queue_runner.sh、launch_train_arm.sh、launch_native_arm.sh、
                      verify_equivalence.sh、verify_thresholds.sh、verify_analysis.sh、_common.sh
 docs/                data_location.md（题目图在哪、怎么对上 image_id：只读调查）
@@ -83,6 +85,37 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 原生环境 | `baselines/native/environment.sh`（建 `native_baselines_v1`；服务器上已建好，只读使用） |
 
 消融：`--variant control|nofine|nocontext|nodense`（第一篇用到的三个消融）。其余旧脚本里的调参模式、历史分支不搬。
+
+## 40 页逐行识别与标注试验
+
+入口 `revrender.data.recognition_pack` 只接受已声明的开发页，沿用原有字数过滤，从中按预测掩膜的未检出、细长、块状、其他形状各抽 10 页，种子 42，优先不同书写者。当前样本为 **40 页、40 位书写者、448 块**（OCR 397、细分 30、补充墨迹 21）。预测形状仅用于保证试验样本多样，不能代替人工判断真实涂改类别。保留所有原切块的坐标及索引，只调整展示顺序，不重新切分。
+
+- A：供人工校对的清洁原图，保留本题涂改。只转写学生最终保留的有效作答，数学错误照录；印刷文字、图形和作废内容排除。
+- B：原图直接识别；C：收紧后的候选掩膜并集精确涂白后识别；D：原图识别并额外提供红色候选掩膜图。C 不扩大掩膜，D 不直接替换原图。现有掩膜不等于纯划线层，因此 C 可能同时擦除仍有效笔画。
+- 三组使用同一 Qwen3-VL-8B-Instruct、切块、任务说明和解码设置：BF16、贪心、种子 42、输出上限 384 tokens。每次输入为蓝框定位的整题上下文和当前切块；D 额外输入标记切块及提示。D 包含额外图像和说明，属于整套提示方案的比较，不能把差异直接归因于掩膜单一因素。
+- 人工答案初始为空，模型结果默认折叠。“采用”只复制到待确认答案，不自动成为金标。按块确认，无法判断或切分问题另记待复核；支持整题遗漏补充、公式预览、浏览器自动保存、JSON 导入导出。人工校对尚未完成，不报告识别准确率。
+
+```bash
+python3 -m revrender.data.recognition_pack \
+  --pages-output work/tighten/clean_run_tight_dev171 --images work/clean_server \
+  --ids work/tighten/dev171_ids.txt --tags work/paper1_tags.json \
+  --page-index work/pages_view_clean/pages.json --output-dir work/recognition_pilot40/pack
+
+# 服务器：在已提交快照内持锁启动，每组一个独立输出目录。
+# 当前 vLLM 不接受 UUID 形式的 CUDA_VISIBLE_DEVICES；先核对显卡 UUID 与 PCI 顺序，
+# 然后在启动命令中显式设置 CUDA_DEVICE_ORDER=PCI_BUS_ID 和对应整数编号。
+python -m revrender.recognize --pack PACK --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct \
+  --mode B --output-dir OUT
+
+python3 -m revrender.tools.recognition_view --pack work/recognition_pilot40/pack \
+  --predictions work/recognition_pilot40/results/B/predictions.jsonl \
+  --predictions work/recognition_pilot40/results/C/predictions.jsonl \
+  --predictions work/recognition_pilot40/results/D/predictions.jsonl \
+  --mathjax work/recognition_pilot40/vendor/tex-svg.js --output-dir work/recognition_pilot40/site
+python3 -m http.server 8767 --bind 127.0.0.1 --directory work/recognition_pilot40/site
+```
+
+输出均为 create-only 并记录 manifest。识别输出含原始文本、切块编号、截断标记和完成文件；HTML 构建时拒绝重复、外来或缺失的 B/C/D 结果。省略全部 `--predictions` 可生成待识别的校对预览页。MathJax 为本地保存的 3.2.2 `tex-svg.js` 与许可证，跟随页面资源一起移动；省略 `--mathjax` 则使用纯文本。标注与图片只保存在本机工作产物中，不进 Git。
 
 ## 数据
 
