@@ -15,15 +15,18 @@ def page_with_a_stroke():
     grey[32:34, 40:160] = 225
     grey[24:26, 40:160] = 250                          # the JPEG halo beyond it: paper to the eye
     grey[10, 100] = 225                                # a speck of noise far from any ink
+    grey[29, 161] = 225                                # a faint speck two pixels from the stroke's end, a white pixel between: not edge
+    grey[34, 100] = 225                                # faint and joined to the edge, but a third step from the ink
     return grey
 
 
-def test_the_ink_and_its_soft_edge_are_non_white_and_the_paper_and_its_noise_are_not():
+def test_the_ink_and_its_soft_edge_are_non_white_and_the_paper_and_its_stray_specks_are_not():
     white = tighten.non_white(page_with_a_stroke())
     assert white[28:32, 40:160].all()
     assert white[26:28, 40:160].all() and white[32:34, 40:160].all()
     assert not white[24:26, 40:160].any()                              # 250 is paper
     assert not white[10, 100] and not white[:20].any() and not white[40:].any()
+    assert not white[29, 161] and not white[34, 100]                   # faint pixels that do not touch the stroke, or are too far along it
     assert white.sum() == 8*120
 
 

@@ -120,7 +120,7 @@ function card(c) {
   el.appendChild(panel(c, '擦除后（把收紧后的掩膜涂白）', 'e', true));
   el.appendChild(panel(c, '对照：只取墨迹（灰度 < 200，不带软边）擦除后', 'k', true));
   const foot = document.createElement('div'); foot.className = 'foot';
-  foot.textContent = '掩膜 ' + c.before + ' 像素 → ' + c.after + ' 像素，去掉 ' + (100 * removed(c)).toFixed(1) + '%（外框 ' + c.w + '×' + c.h + '，含四周 12 像素的页面）';
+  foot.textContent = '掩膜 ' + c.before + ' 像素 → ' + c.after + ' 像素，去掉 ' + (100 * removed(c)).toFixed(1) + '%，孤立的小杂点 ' + c.specks + ' 个（外框 ' + c.w + '×' + c.h + '，含四周 12 像素的页面）';
   el.appendChild(foot);
   return el;
 }

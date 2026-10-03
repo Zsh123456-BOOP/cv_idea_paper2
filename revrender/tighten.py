@@ -6,9 +6,11 @@ keeps of each mask the page's non-white pixels (``non_white``): the ink and the 
 or erasing it leaves a grey outline behind.  Nothing is grown: a tightened mask is always a part of the mask it came from, and one with
 no ink left is dropped (and counted).
 
-Scans are white-levelled (blank paper is exactly 255) but the JPEG leaves a speckle of 240-254 beside every stroke that the eye takes for
-white, so "not pure white" cannot be ``grey < 255``: that keeps nearly the whole region.  Ink is grey below ``eval.ink.INK_BELOW`` (the
-ink of the paper-1 ink view); its soft edge is grey below ``EDGE_BELOW`` within ``EDGE_PX`` pixels of ink.
+Scans are white-levelled (blank paper is exactly 255) but the JPEG leaves a speckle of 220-254 beside every stroke, so "not pure white"
+cannot be ``grey < 255``: that keeps nearly the whole region.  Ink is grey below ``eval.ink.INK_BELOW`` (the ink of the paper-1 ink view);
+its soft edge is what grey below ``EDGE_BELOW`` reaches from the ink in at most ``EDGE_PX`` steps through such pixels.  A faint pixel that
+does not touch a stroke is a stray speck of the JPEG, not edge, and stays out; a lower grey cut would not do that (it takes the edge of the
+stroke before the specks beside it).
 
     python -m revrender.tighten --pages-output OUT --images DIR [--images DIR ...] [--ids FILE] --output-dir NEW
 
@@ -27,16 +29,15 @@ from .eval.ink import INK_BELOW
 from .util import digest, make_output_dir, require, to_jsonable, write_manifest
 
 EDGE_BELOW = 240           # a pixel this light or lighter is paper
-EDGE_PX = 2                # the soft edge of a stroke reaches this far from its ink
+EDGE_PX = 2                # the soft edge of a stroke reaches this many pixels from its ink, through pixels below EDGE_BELOW
 QUANTILES = (.1, .25, .5, .75, .9)
 
 
 def non_white(grey):
-    """The page's non-white pixels (a boolean array): ink, and the soft edge of its strokes."""
+    """The page's non-white pixels (a boolean array): ink, and the soft edge of its strokes (faint pixels joined to the ink)."""
     grey = np.asarray(grey)
     ink = grey < INK_BELOW
-    reach = ndimage.binary_dilation(ink, np.ones((3, 3), bool), iterations=EDGE_PX)
-    return ink | (reach & (grey < EDGE_BELOW))
+    return ink | ndimage.binary_dilation(ink, np.ones((3, 3), bool), iterations=EDGE_PX, mask=grey < EDGE_BELOW)
 
 
 def tighten_instance(instance, white):

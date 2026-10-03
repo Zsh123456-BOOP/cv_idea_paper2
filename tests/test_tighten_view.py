@@ -54,6 +54,7 @@ def test_there_is_a_card_per_mask_with_its_layers_and_the_one_without_ink_is_mar
     assert model[0]['shape'] != 'gone' and 0 < model[0]['after'] < model[0]['before'] and model[0]['score'] == .9
     assert model[1]['shape'] == 'gone' and model[1]['after'] == 0 and model[1]['before'] == 8*40
     assert model[0]['ghost'] <= model[0]['ghost_ink']                      # erasing the tightened mask leaves no more behind than erasing the ink only
+    assert model[0]['specks'] == 0 and model[1]['specks'] == 0             # one piece, and nothing
 
 
 def test_a_layer_is_red_where_the_ink_is_kept_blue_where_the_paper_is_given_up_and_white_where_it_is_erased(tmp_path):

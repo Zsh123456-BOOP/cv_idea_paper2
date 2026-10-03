@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 from .. import pages
 from ..eval.ink import INK_BELOW
@@ -30,6 +31,7 @@ MARGIN = 12                                  # pixels of page around a mask
 RED, BLUE, WHITE = (220, 0, 0), (30, 100, 255), (255, 255, 255)
 LINE_ASPECT, BLOCK_FILL = 5., .55            # a long thin mark is a line; a mark that fills its box is a block
 VISIBLE = 235                                # a pixel darker than this is seen as not white
+SPECK = 3                                    # a connected piece of a tightened mask this small (pixels) is a speck
 LABELS = {'model': '模型', 'gold': '金标'}
 
 
@@ -85,6 +87,7 @@ def cards_of(name, before_dir, after_dir, ids, files, assets):
             new = window(cut[n], region) if n in cut else np.zeros_like(old)
             crop = grey[region[1]:region[3], region[0]:region[2]]
             core = old & (crop < INK_BELOW)
+            pieces, count = ndimage.label(new, np.ones((3, 3), bool))
             stem = f'{name}_{image_id}_{n}'
             Image.fromarray(crop).save(assets/f'{stem}_c.png', optimize=True)
             layer(old.shape, (old, RED, 120)).save(assets/f'{stem}_b.png', optimize=True)
@@ -94,6 +97,7 @@ def cards_of(name, before_dir, after_dir, ids, files, assets):
             cards.append({'set': name, 'id': image_id, 'n': n, 'file': stem, 'w': region[2]-region[0], 'h': region[3]-region[1],
                           'score': round(float(instance['score']), 4), 'before': int(old.sum()), 'after': int(new.sum()),
                           'ghost_ink': int((old & ~core & (crop < VISIBLE)).sum()), 'ghost': int((old & ~new & (crop < VISIBLE)).sum()),
+                          'specks': int((ndimage.sum(new, pieces, range(1, count+1)) <= SPECK).sum()) if count else 0,
                           'shape': shape_of(new) if new.any() else 'gone'})
     return cards
 
@@ -110,7 +114,8 @@ def summary_rows(name, cards):
             (f'{label}：每个掩膜白纸占比 中位数 / 第 90 百分位', f'{np.quantile(shares, .5):.1%} / {np.quantile(shares, .9):.1%}'),
             (f'{label}：白纸占比 ≥ 30% 的掩膜', f'{int((shares >= .3).sum())}（{(shares >= .3).mean():.1%}）'),
             (f'{label}：擦除后还看得见（灰度 &lt; {VISIBLE}）的残留，占原掩膜像素 只取墨迹 → 收紧后',
-             f'{sum(c["ghost_ink"] for c in cards)/before:.1%} → {sum(c["ghost"] for c in cards)/before:.1%}')]
+             f'{sum(c["ghost_ink"] for c in cards)/before:.1%} → {sum(c["ghost"] for c in cards)/before:.1%}'),
+            (f'{label}：收紧后孤立的小杂点（≤ {SPECK} 像素的连通块），每个掩膜平均', f'{sum(c["specks"] for c in cards)/len(cards):.2f} 个')]
 
 
 def score_rows(before, after):
