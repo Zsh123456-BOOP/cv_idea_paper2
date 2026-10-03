@@ -115,7 +115,7 @@ def main(argv=None):
         cards['kept' if chars >= args.min_chars else 'filtered'].append({
             'id': image_id, 'w': record['size'][0], 'h': record['size'][1], 'q': question, 'supp': supplementary, 'chars': chars,
             'n': len(boxes), 'scores': [round(i['score'], 4) for i in record['instances']], 'boxes': boxes, 'mask': union is not None,
-            'lines': [line['box_1000'] for line in record['lines']], 'text': texts[image_id][:TEXT_LIMIT],
+            'lines': [[line['box'], line['source']] for line in record['lines']], 'text': texts[image_id][:TEXT_LIMIT],
             'split': tag.get('split', 'none'), 'rows': tag.get('rows') or {}})
     template = TEMPLATE.read_text(encoding='utf-8')
     titles = {'kept': '识别完并拼回整页的', 'filtered': '被过滤掉的（学生写得太少）'}

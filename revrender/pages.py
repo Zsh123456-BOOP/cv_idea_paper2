@@ -1,14 +1,18 @@
-"""Whole-question images end to end: cut the lines with the OCR model, read each line with RevRender, paste the instances back.
+"""Whole-question images end to end: cut the page, read every piece with RevRender, paste the instances back.
 
     python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages DIR [--pages DIR ...] --output-dir OUT
-        (--ocr-model MODEL_DIR | --ocr-text ocr.jsonl [--ocr-text ...]) [--ids FILE] [--limit N] [--overlay]
+        (--ocr-model MODEL_DIR | --ocr-text ocr.jsonl [--ocr-text ...]) [--templates templates.npz] [--ids FILE] [--limit N] [--overlay]
 
-A page takes the route paper 1 trained for: Unlimited-OCR cuts it into regions (``ocr.py``), ``data.ocr_lines`` into the lines of the
-catalogue, each line is cropped by its box and letterboxed to the 96x768 strip, RevRender reads the strip at the checkpoint's frozen
-point (mask threshold, NMS, score cut), and every delivered instance is resized back to its crop and pasted into the page.  Per page
-OUT/<image_id>.json lists the lines and the instances (line, score, box in pixels) and OUT/<image_id>.npz holds each instance's mask on
-its crop (packed bits, ``mask_<n>``); ``--overlay`` also writes <image_id>.png.  ``--ocr-text`` takes OCR text already produced by the
-model (jsonl of {image_id, text}) instead of running it.  Only the pages named by ``--ids`` (default: every jpg in ``--pages``) are read.
+A page is cut into pieces and each piece is read the way paper 1 read a line: cropped, letterboxed to the 96x768 strip, read by RevRender
+at the checkpoint's frozen point (mask threshold, NMS, score cut), every delivered instance resized back and pasted into the page.  The
+pieces (``page_lines``): the OCR model's own lines (``ocr``: the catalogue's lines, which paper 1 trained on); the lines of a region the
+OCR returned as one block of several lines, cut where the ink has gaps (``split``); and the handwriting no line covers -- a line the OCR
+skipped, a stroke that ran past the end of a line, a note in the margin -- cut out in its own shape, the crop showing that ink and nothing
+around it, a piece over several lines cut into lines (``ink``).  Where the handwriting is comes from the page against the printed
+template of its question (``--templates``, made by ``python -m revrender.data.handwriting``).  Per page OUT/<image_id>.json lists the
+pieces and the instances (piece, score, box in pixels) and OUT/<image_id>.npz holds each instance's mask on its box (packed bits,
+``mask_<n>``); ``--overlay`` also writes <image_id>.png.  ``--ocr-text`` takes OCR text the model already produced (jsonl of {image_id,
+text}) instead of running it.  Only the pages named by ``--ids`` (default: every jpg in ``--pages``) are read.
 """
 import argparse
 import json
@@ -19,9 +23,10 @@ import numpy as np
 from PIL import Image
 
 from . import infer
+from .data import handwriting
 from .data import lines as lines_module
+from .data import ocr_lines
 from .data.gold import CANVAS, letterbox, unletterbox
-from .data.ocr_lines import strict_lines
 from .eval.freeze import frozen_point
 from .util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
@@ -34,23 +39,77 @@ def clamped(box):
     return [x0, y0, x1, y1] if x0 < x1 and y0 < y1 else None
 
 
-def read_page(model, point, image, lines, batch_size=infer.BATCH_SIZE):
-    """The instances RevRender delivers on a grey page cut into ``lines`` (``strict_lines``):
-    [{line, score, box (left, top, right, bottom in pixels), mask (on the crop)}]."""
-    width, height = image.size
-    cuts = []
-    for k, line in enumerate(lines):
-        box = clamped(line['box'])
+def pixel_box(box, size):
+    """A thousandths box as pixels (left, top, right, bottom) on a page of this size, or None."""
+    box = clamped(box)
+    return list(lines_module.crop_box(box, *size)) if box else None
+
+
+def page_lines(text, size, ink):
+    """The pieces a page is cut into: [{box (pixels), source, ocr_type, ocr_text, shape}] -- see the module's docstring.  ``ink`` is the
+    page's handwriting (``data.handwriting.handwriting``); ``shape`` is a boolean map of the box for an ``ink`` piece, else None."""
+    out = []
+    for line in ocr_lines.strict_lines(text):
+        box = pixel_box(line['box'], size)
         if box:
-            cuts.append((k, lines_module.crop_box(box, width, height)))
-    strips = [np.asarray(letterbox(image.crop(box), STRIP_W, STRIP_H, 255)) for _, box in cuts]
+            out.append({'box': box, 'source': 'ocr', 'ocr_type': line['ocr_type'], 'ocr_text': line['ocr_text'], 'shape': None})
+    groups = {}
+    for line in ocr_lines.reorder(ocr_lines.parse_regions(text)):
+        if line['inferred'] and line['student'] and line['box']:
+            groups.setdefault(tuple(line['region']), []).append(line)
+    for region, parts in groups.items():
+        box = pixel_box(region, size)
+        if box:
+            for part, cut in zip(parts, handwriting.split_by_ink(box, parts[0]['parts'], ink)):
+                if cut:
+                    out.append({'box': cut, 'source': 'split', 'ocr_type': part['ocr_type'], 'ocr_text': part['ocr_text'], 'shape': None})
+    for box, shape in handwriting.leftover_units(ink, [line['box'] for line in out]):
+        out.append({'box': box, 'source': 'ink', 'ocr_type': None, 'ocr_text': '', 'shape': shape})
+    return out
+
+
+def read_page(model, point, image, lines, batch_size=infer.BATCH_SIZE):
+    """The instances RevRender delivers on a grey page cut into ``lines`` (``page_lines``):
+    [{line, score, box (left, top, right, bottom in pixels), mask (on the box)}], overlapping duplicates dropped."""
+    strips = []
+    for line in lines:
+        crop = image.crop(tuple(line['box']))
+        if line['shape'] is not None:                      # a piece in its own shape: the crop shows that ink only
+            grey = np.asarray(crop).copy()
+            grey[~line['shape']] = 255
+            crop = Image.fromarray(grey)
+        strips.append(np.asarray(letterbox(crop, STRIP_W, STRIP_H, 255)))
     instances = []
-    for (k, box), delivered in zip(cuts, infer.predict_lines(model, strips, point, batch_size)):
+    for k, (line, delivered) in enumerate(zip(lines, infer.predict_lines(model, strips, point, batch_size))):
+        box = line['box']
         for mask, score in delivered:
             crop = unletterbox(mask, box[2]-box[0], box[3]-box[1])
+            if line['shape'] is not None:
+                crop &= line['shape']
             if crop.any():
                 instances.append({'line': k, 'score': float(score), 'box': list(box), 'mask': crop})
-    return instances
+    return merge_duplicates(instances)
+
+
+def overlap(a, b):
+    """IoU of two instances on the page, computed where their boxes meet."""
+    left, top = max(a['box'][0], b['box'][0]), max(a['box'][1], b['box'][1])
+    right, bottom = min(a['box'][2], b['box'][2]), min(a['box'][3], b['box'][3])
+    if right <= left or bottom <= top:
+        return 0.
+    part = lambda i: i['mask'][top-i['box'][1]:bottom-i['box'][1], left-i['box'][0]:right-i['box'][0]]
+    inter = float((part(a) & part(b)).sum())
+    return inter/(float(a['mask'].sum())+float(b['mask'].sum())-inter)
+
+
+def merge_duplicates(instances, level=.5):
+    """Instances in descending score; one that overlaps a kept instance by more than ``level`` (IoU on the page) is the same mark
+    seen from a neighbouring piece and is dropped."""
+    kept = []
+    for instance in sorted(instances, key=lambda i: -i['score']):
+        if all(overlap(instance, k) <= level for k in kept):
+            kept.append(instance)
+    return sorted(kept, key=lambda i: (i['line'], -i['score']))
 
 
 def paste(instance, size):
@@ -71,10 +130,10 @@ def overlay(image, instances, alpha=.5):
 
 
 def write_page(out, image_id, size, lines, instances):
-    """OUT/<image_id>.json and .npz: the lines the page was cut into and what RevRender delivered on them."""
+    """OUT/<image_id>.json and .npz: the pieces the page was cut into and what RevRender delivered on them."""
     write_json(Path(out)/f'{image_id}.json', {
         'image_id': image_id, 'size': list(size),
-        'lines': [{'index': k, 'box_1000': line['box'], 'ocr_type': line['ocr_type'], 'ocr_text': line['ocr_text']}
+        'lines': [{'index': k, 'box': line['box'], 'source': line['source'], 'ocr_type': line['ocr_type'], 'ocr_text': line['ocr_text']}
                   for k, line in enumerate(lines)],
         'instances': [{'line': i['line'], 'score': i['score'], 'box': i['box']} for i in instances]})
     np.savez_compressed(Path(out)/f'{image_id}.npz', **{f'mask_{n}': np.packbits(i['mask'], axis=-1) for n, i in enumerate(instances)})
@@ -110,6 +169,7 @@ def main(argv=None):
     parser.add_argument('--ids', type=Path, help='a file of image ids, one per line (default: every jpg in --pages)')
     parser.add_argument('--ocr-model', type=Path, help='the Unlimited-OCR folder: run the model on pages without stored text')
     parser.add_argument('--ocr-text', type=Path, action='append', default=[], help='jsonl of {image_id, text} the model already produced')
+    parser.add_argument('--templates', type=Path, help='printed templates (python -m revrender.data.handwriting): without them the printed ink counts as handwriting')
     parser.add_argument('--limit', type=int, default=0, help='only the first N pages')
     parser.add_argument('--overlay', action='store_true', help='also write <image_id>.png')
     parser.add_argument('--output-dir', type=Path, required=True)
@@ -123,7 +183,8 @@ def main(argv=None):
     point = frozen_point(args.freeze, None)
     model, payload = infer.load_checkpoint(args.checkpoint, expected_sha=args.checkpoint_sha)
     ocr = None
-    totals = {'pages': 0, 'lines': 0, 'instances': 0, 'ocr_seconds': 0., 'read_seconds': 0.}
+    templates = dict(np.load(args.templates)) if args.templates else {}
+    totals = {'pages': 0, 'lines': 0, 'lines_ocr': 0, 'lines_split': 0, 'lines_ink': 0, 'instances': 0, 'ocr_seconds': 0., 'read_seconds': 0.}
     for image_id in names:
         started = time.monotonic()
         if image_id in stored:
@@ -138,7 +199,9 @@ def main(argv=None):
         started = time.monotonic()
         with Image.open(files[image_id]) as opened:
             image = opened.convert('L')
-        lines = strict_lines(text)
+        figures = [pixel_box(box, image.size) for kind, box in ocr_lines.regions(text) if kind in ocr_lines.PRINTED]
+        ink = handwriting.handwriting(image, templates.get(handwriting.group_key(image_id, image.size)), [b for b in figures if b])
+        lines = page_lines(text, image.size, ink)
         instances = read_page(model, point, image, lines)
         write_page(out, image_id, image.size, lines, instances)
         if args.overlay:
@@ -146,13 +209,16 @@ def main(argv=None):
         totals['read_seconds'] += time.monotonic()-started
         totals['pages'] += 1
         totals['lines'] += len(lines)
+        for source in ('ocr', 'split', 'ink'):
+            totals[f'lines_{source}'] += sum(line['source'] == source for line in lines)
         totals['instances'] += len(instances)
         if totals['pages'] % 25 == 0:
             print(json.dumps({'pages_done': totals['pages'], **{k: round(v, 1) for k, v in totals.items()}}), flush=True)
     weights = sorted(Path(args.ocr_model).glob('*.safetensors')) if ocr is not None else []
     write_manifest(out, config=to_jsonable(args),
                    inputs={str(args.checkpoint): digest(args.checkpoint), str(args.freeze): digest(args.freeze),
-                           **{str(p): digest(p) for p in args.ocr_text}, **{str(p): digest(p) for p in weights}},
+                           **{str(p): digest(p) for p in args.ocr_text}, **{str(p): digest(p) for p in weights},
+                           **({str(args.templates): digest(args.templates)} if args.templates else {})},
                    point={k: point[k] for k in ('mask_threshold', 'nms', 'score_threshold')}, checkpoint_step=payload.get('step'),
                    **totals)
     print(json.dumps({k: round(v, 1) if isinstance(v, float) else v for k, v in totals.items()}))

@@ -68,8 +68,23 @@ def split_region(content):
     return lines
 
 
+def regions(text):
+    """Every region of the OCR text as (type, 0-1000 box) with a real box: figures and page numbers included."""
+    out = []
+    parts = REGION.split(text or '')
+    for index in range(1, len(parts)-1, 3):
+        try:
+            box = [float(v) for v in parts[index+1].split(',')]
+        except ValueError:
+            continue
+        if len(box) == 4 and box[2] > box[0] and box[3] > box[1]:
+            out.append((parts[index].strip(), box))
+    return out
+
+
 def parse_regions(text):
-    """Every visual line of the OCR text with its 0-1000 box: [{ocr_type, box, ocr_text, student, inferred}]."""
+    """Every visual line of the OCR text with its 0-1000 box: [{ocr_type, box, ocr_text, student, inferred, region, parts}]; the lines
+    of a multi-line region (``inferred``) also carry the region's own box and how many lines it holds."""
     out = []
     parts = REGION.split(text or '')
     for index in range(1, len(parts)-1, 3):
@@ -86,7 +101,7 @@ def parse_regions(text):
                 height = (box[3]-box[1])/len(lines)
                 part = [box[0], box[1]+k*height, box[2], box[1]+(k+1)*height]
             out.append({'ocr_type': ocr_type, 'box': part, 'ocr_text': line, 'student': ocr_type not in PRINTED,
-                        'inferred': len(lines) > 1})
+                        'inferred': len(lines) > 1, 'region': box, 'parts': len(lines)})
     return out
 
 

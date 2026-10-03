@@ -55,3 +55,11 @@ def test_the_answer_length_is_read_from_the_first_non_empty_transcription_of_a_p
     texts = O.answer_texts([tmp_path/'a.jsonl', tmp_path/'b.jsonl'])
     assert texts == {'p1': r'\( \angle A = 36^{\circ} \)', 'p2': 'x = 3', 'p3': ''}
     assert [O.answer_chars(texts[k]) for k in ('p1', 'p2', 'p3')] == [6, 3, 0]
+
+
+def test_regions_list_every_boxed_region_and_a_split_line_knows_its_region():
+    text = ('<|det|>image [600, 100, 900, 400]<|/det|>\n<|det|>equation [100, 100, 500, 400]<|/det|>\\[\na = 1 \\\\\nb = 2\n\\]\n'
+            '<|det|>text [100, 300, 400, 300]<|/det|>flat x=1')
+    assert [t for t, _ in O.regions(text)] == ['image', 'equation']                    # the flat region has no area
+    lines = [l for l in O.parse_regions(text) if l['inferred']]
+    assert [l['parts'] for l in lines] == [2, 2] and all(l['region'] == [100., 100., 500., 400.] for l in lines)

@@ -29,6 +29,8 @@ select, input[type=search] { font:inherit; padding:3px 6px; border:1px solid var
 .stage img { display:block; width:100%; height:auto; }
 .stage img.mask { position:absolute; left:0; top:0; pointer-events:none; }
 .stage .linebox { position:absolute; border:1px solid var(--blue); pointer-events:none; display:none; }
+.stage .linebox.split { border-color:#2e7d32; }
+.stage .linebox.ink { border-color:#ef6c00; border-style:dashed; }
 .stage .inst { position:absolute; border:1.5px dashed var(--red); display:none; }
 body.show-lines .stage .linebox { display:block; }
 body.show-boxes .stage .inst { display:block; }
@@ -63,7 +65,7 @@ body.show-text .foot .text { display:block; }
   <label><input type="search" id="search" placeholder="页 id 包含…" size="16"></label>
   <label><input type="checkbox" id="mask" checked> 识别结果</label>
   <label><input type="checkbox" id="boxes"> 每处的框和分数</label>
-  <label><input type="checkbox" id="lines"> 切出的行</label>
+  <label><input type="checkbox" id="lines"> 切出的块（蓝：OCR 行，绿：拆出的，橙虚线：补切的）</label>
   <label><input type="checkbox" id="text"> 转写文字</label>
   <a href="index.html">汇总</a>
 </header>
@@ -113,9 +115,9 @@ function stage(c) {
   const s = document.createElement('div'); s.className = 'stage'; s.style.aspectRatio = c.w + ' / ' + c.h;
   const page = document.createElement('img'); page.className = 'page'; page.loading = 'lazy'; page.src = 'assets/' + c.id + '.jpg'; page.alt = c.id; s.appendChild(page);
   if (c.mask) { const m = document.createElement('img'); m.className = 'mask'; m.loading = 'lazy'; m.src = 'assets/' + c.id + '.png'; s.appendChild(m); }
-  for (const b of c.lines) {
-    const d = document.createElement('div'); d.className = 'linebox';
-    d.style.cssText = 'left:' + b[0] / 10 + '%;top:' + b[1] / 10 + '%;width:' + (b[2] - b[0]) / 10 + '%;height:' + (b[3] - b[1]) / 10 + '%';
+  for (const [b, source] of c.lines) {
+    const d = document.createElement('div'); d.className = 'linebox ' + source;
+    d.style.cssText = 'left:' + 100 * b[0] / c.w + '%;top:' + 100 * b[1] / c.h + '%;width:' + 100 * (b[2] - b[0]) / c.w + '%;height:' + 100 * (b[3] - b[1]) / c.h + '%';
     s.appendChild(d);
   }
   c.boxes.forEach((b, i) => {
@@ -142,7 +144,8 @@ function card(c) {
   if (rows) head.appendChild(tag('含行级金标 ' + rows + ' 行'));
   el.appendChild(head); el.appendChild(stage(c));
   const foot = document.createElement('div'); foot.className = 'foot';
-  foot.append(c.lines.length + ' 行已切出');
+  const by = k => c.lines.filter(l => l[1] === k).length;
+  foot.append(c.lines.length + ' 块已切出（OCR 的行 ' + by('ocr') + '，多行区域按墨迹拆出 ' + by('split') + '，补切的手写 ' + by('ink') + '）');
   if (MODE === 'filtered') { const w = document.createElement('div'); w.className = 'why'; w.textContent = '学生只写了 ' + c.chars + ' 个字，少于 ' + DATA.min_chars + ' 个字，被过滤'; foot.appendChild(w); }
   const t = document.createElement('div'); t.className = 'text'; t.textContent = c.text || '（没有转写文字）'; foot.appendChild(t);
   el.appendChild(foot);

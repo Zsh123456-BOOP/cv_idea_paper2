@@ -13,7 +13,7 @@ from revrender.tools import pages_view
 def build(tmp_path, min_chars='10'):
     out = tmp_path/'pages_out'
     out.mkdir()
-    lines = [{'box': [10., 50., 990., 250.], 'ocr_type': 'text', 'ocr_text': 'x = 1'}]
+    lines = [{'box': [10, 50, 190, 90], 'source': 'ocr', 'ocr_type': 'text', 'ocr_text': 'x = 1', 'shape': None}]
     instance = {'line': 0, 'score': .91, 'box': [10, 20, 110, 60], 'mask': np.zeros((40, 100), bool)}
     instance['mask'][10:30, 20:80] = True
     pages.write_page(out, 'w1_3_1', (200, 100), lines, [instance])
@@ -46,7 +46,7 @@ def test_a_page_with_too_little_writing_is_set_aside_and_the_rest_are_kept(tmp_p
     assert kept['mode'] == 'kept' and filtered['mode'] == 'filtered' and kept['min_chars'] == 10
     card = kept['cards'][0]
     assert (card['q'], card['supp'], card['n'], card['mask'], card['split'], card['rows']) == (3, False, 1, True, 'test', {'test': 2})
-    assert card['chars'] >= 10 and card['scores'] == [.91] and card['boxes'] == [[30, 30, 90, 50]] and card['lines'] == [[10., 50., 990., 250.]]
+    assert card['chars'] >= 10 and card['scores'] == [.91] and card['boxes'] == [[30, 30, 90, 50]] and card['lines'] == [[[10, 50, 190, 90], 'ocr']]
     other = filtered['cards'][0]
     assert (other['q'], other['supp'], other['n'], other['mask'], other['chars']) == (4, True, 0, False, 1)
     assert 'kept.html' in (site/'index.html').read_text(encoding='utf-8')
