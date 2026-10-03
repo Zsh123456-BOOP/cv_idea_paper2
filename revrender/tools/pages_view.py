@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
+from .. import pages
 from ..data.ocr_lines import answer_chars, answer_texts
 from ..util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
@@ -32,16 +33,14 @@ TEXT_LIMIT = 1200
 
 def read_page(output_dir, image_id):
     """(the page's record, the union of its instances in the page frame or None, each instance's tight box (l, t, r, b))."""
-    record = json.loads((Path(output_dir)/f'{image_id}.json').read_text())
-    masks = np.load(Path(output_dir)/f'{image_id}.npz')
+    record, instances = pages.read_output(output_dir, image_id)
     width, height = record['size']
     union, boxes = np.zeros((height, width), bool), []
-    for n, instance in enumerate(record['instances']):
+    for instance in instances:
         left, top, right, bottom = instance['box']
-        crop = np.unpackbits(masks[f'mask_{n}'], axis=-1)[:, :right-left].astype(bool)
-        ys, xs = np.nonzero(crop)
+        ys, xs = np.nonzero(instance['mask'])
         boxes.append([int(left+xs.min()), int(top+ys.min()), int(left+xs.max()+1), int(top+ys.max()+1)])
-        union[top:bottom, left:right] |= crop
+        union[top:bottom, left:right] |= instance['mask']
     return record, (union if boxes else None), boxes
 
 

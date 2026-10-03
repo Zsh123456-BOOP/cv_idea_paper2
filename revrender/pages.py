@@ -120,13 +120,27 @@ def overlay(image, instances, alpha=.5):
 
 
 def write_page(out, image_id, size, lines, instances):
-    """OUT/<image_id>.json and .npz: the pieces the page was cut into and what RevRender delivered on them."""
+    """OUT/<image_id>.json and .npz: the pieces the page was cut into and what RevRender delivered on them.  An instance that was
+    made from another (``tighten``) also names it: ``from_instance``, its index in the output it came from."""
     write_json(Path(out)/f'{image_id}.json', {
         'image_id': image_id, 'size': list(size),
         'lines': [{'index': k, 'box': line['box'], 'source': line['source'], 'ocr_type': line['ocr_type'], 'ocr_text': line['ocr_text']}
                   for k, line in enumerate(lines)],
-        'instances': [{'line': i['line'], 'score': i['score'], 'box': i['box']} for i in instances]})
+        'instances': [{'line': i['line'], 'score': i['score'], 'box': i['box'], **({'from_instance': i['from_instance']} if 'from_instance' in i else {})}
+                      for i in instances]})
     np.savez_compressed(Path(out)/f'{image_id}.npz', **{f'mask_{n}': np.packbits(i['mask'], axis=-1) for n, i in enumerate(instances)})
+
+
+def read_output(directory, image_id):
+    """(the page's record, its instances) from OUT/<image_id>.json and .npz: each instance is its entry of the record with ``mask``, a
+    boolean array on its ``box``, added."""
+    record = json.loads((Path(directory)/f'{image_id}.json').read_text())
+    instances = []
+    with np.load(Path(directory)/f'{image_id}.npz') as masks:
+        for n, entry in enumerate(record['instances']):
+            width = entry['box'][2]-entry['box'][0]
+            instances.append({**entry, 'mask': np.unpackbits(masks[f'mask_{n}'], axis=-1)[:, :width].astype(bool)})
+    return record, instances
 
 
 def read_ocr_text(files):
