@@ -83,3 +83,28 @@ def test_a_tall_piece_is_cut_at_the_emptiest_rows_and_a_short_one_is_left_whole(
     cuts = H.lines_by_ink(window)
     assert cuts[0][0] == 0 and cuts[-1][1] == 300 and all(b-a <= H.MAX_BOX_HEIGHT for a, b in cuts) and len(cuts) >= 3
     assert any(98 <= a <= 104 for a, _ in cuts[1:])
+
+
+def test_marks_that_are_only_thin_strokes_are_not_writing():
+    rule = np.zeros((20, 200), bool)
+    rule[9:11, :] = True
+    dashes = np.zeros((20, 200), bool)
+    for x in range(0, 190, 14):
+        dashes[9:11, x:x+9] = True
+    stray = np.zeros((100, 20), bool)
+    stray[:, 8:11] = True
+    words = np.zeros((30, 200), bool)
+    for x in (10, 60, 110):
+        words[5:25, x:x+14] = True
+    blot = np.zeros((60, 80), bool)
+    blot[10:50, 10:70] = True
+    assert not H.looks_written(rule) and not H.looks_written(dashes) and not H.looks_written(stray) and not H.looks_written(np.zeros((9, 9), bool))
+    assert H.looks_written(words) and H.looks_written(blot)
+
+
+def test_blobs_on_one_row_are_the_words_of_a_line_and_blobs_on_other_rows_stay_apart():
+    near = H.row_pieces([[10, 100, 60, 130], [100, 105, 150, 135]])
+    assert near == [[10, 100, 150, 135]]
+    assert len(H.row_pieces([[10, 100, 60, 130], [100, 140, 150, 170]])) == 2                  # another row
+    assert len(H.row_pieces([[10, 100, 60, 130], [200, 100, 250, 130]])) == 2                  # a gap wider than a word
+    assert len(H.row_pieces([[10, 100, 60, 130], [70, 100, 120, 130], [130, 102, 180, 128]])) == 1

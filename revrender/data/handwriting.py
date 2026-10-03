@@ -31,6 +31,9 @@ BLOCK = 4                  # joining of leftover strokes works on blocks of 4 x 
 MIN_INK = 150              # a leftover blob with less ink than this (pixels) is dust
 MAX_BOX_HEIGHT = 140       # a taller leftover blob is cut into lines of at most this height, at the gaps of its ink
 SHAPE_THICKEN = 7          # the shape of a leftover piece is its ink thickened by this many pixels (3 on each side)
+BOX_INSET = 12             # ink this close to the answer box's own line is the line's, not the student's
+THIN = 7                   # marks this thin, alone or repeated (a rule, dashes, a stray line), are not writing
+WORD_GAP = 80              # leftover blobs on one row this close (pixels) are the words of one line
 
 
 def group_key(image_id, size):
@@ -76,7 +79,7 @@ def handwriting(grey, template=None, figures=()):
     ink = ink_map(grey)
     top, bottom, left, right = answer_box(ink)
     inside = np.zeros_like(ink)
-    inside[top+6:bottom-6, left+6:right-6] = True
+    inside[top+BOX_INSET:bottom-BOX_INSET, left+BOX_INSET:right-BOX_INSET] = True
     ink &= inside
     if template is not None and template.shape == ink.shape:
         ink &= ~template
@@ -145,10 +148,43 @@ def lines_by_ink(window, limit=MAX_BOX_HEIGHT):
     return cuts
 
 
-def leftover_units(ink, boxes, pad=4, join=(2, 9)):
+def looks_written(piece):
+    """Whether a piece of leftover ink is writing or a scribble and not a rule, dashes or a stray line: it holds a mark that is 14 pixels
+    or more in both directions (a character, a blot), or at least two marks of which the typical one is more than a stroke wide."""
+    marks, count = ndimage.label(ndimage.binary_dilation(piece, np.ones((3, 3), bool)))
+    if not count:
+        return False
+    areas = ndimage.sum(piece, marks, range(1, count+1))
+    thin = [min(r[0].stop-r[0].start, r[1].stop-r[1].start) for r, a in zip(ndimage.find_objects(marks), areas) if a >= 15]
+    return bool(thin) and (max(thin) >= 14 or (len(thin) >= 2 and float(np.median(thin)) > THIN))
+
+
+def row_pieces(blobs):
+    """Blobs [l, t, r, b] on one row (half of the shorter one's height shared) and a word's gap apart or less are one line: merged."""
+    boxes = [list(b) for b in blobs]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i+1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                shared = min(a[3], b[3])-max(a[1], b[1])
+                gap = max(a[0], b[0])-min(a[2], b[2])
+                if shared >= .5*min(a[3]-a[1], b[3]-b[1]) and gap <= WORD_GAP:
+                    boxes[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+                    del boxes[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return boxes
+
+
+def leftover_units(ink, boxes, pad=4, join=(1, 6)):
     """The handwriting no box covers, cut out piece by piece: [(box, shape)] with the box in pixels and the shape a boolean map of the
-    box's size, the piece's ink thickened.  The leftover ink is joined into blobs (strokes of a word, words of a line); a blob with little
-    ink or a long thin rule is dropped; a blob over several lines is cut into lines at the gaps of its ink; each box is grown by ``pad``."""
+    box's size, the piece's ink thickened.  The leftover ink is joined into blobs (strokes of a word), the blobs of one row into pieces
+    (words of a line); a piece that is little ink or does not look written (``looks_written``) is dropped, a piece over several lines is
+    cut into lines at the gaps of its ink, and each box is grown by ``pad``."""
     left = ink & ~boxes_mask(boxes, ink.shape)
     h, w = left.shape
     h4, w4 = -(-h//BLOCK), -(-w//BLOCK)
@@ -156,36 +192,28 @@ def leftover_units(ink, boxes, pad=4, join=(2, 9)):
     padded[:h, :w] = left
     blocks = padded.reshape(h4, BLOCK, w4, BLOCK).any((1, 3))
     labels, _ = ndimage.label(ndimage.binary_dilation(blocks, np.ones(join, bool)))
-    thick = np.ones((SHAPE_THICKEN, SHAPE_THICKEN), bool)
-    out = []
+    blobs = []
     for region in ndimage.find_objects(labels):
         y0, y1, x0, x1 = region[0].start*BLOCK, min(h, region[0].stop*BLOCK), region[1].start*BLOCK, min(w, region[1].stop*BLOCK)
-        window = left[y0:y1, x0:x1]
-        if window.sum() < MIN_INK:
-            continue
-        ys, xs = np.nonzero(window)
-        top, bottom, lft, rgt = y0+int(ys.min()), y0+int(ys.max())+1, x0+int(xs.min()), x0+int(xs.max())+1
-        if (bottom-top <= 10 and rgt-lft >= 100) or (rgt-lft <= 10 and bottom-top >= 100):
-            continue
+        ys, xs = np.nonzero(left[y0:y1, x0:x1])
+        if len(ys):
+            blobs.append([x0+int(xs.min()), y0+int(ys.min()), x0+int(xs.max())+1, y0+int(ys.max())+1])
+    thick = np.ones((SHAPE_THICKEN, SHAPE_THICKEN), bool)
+    out = []
+    for lft, top, rgt, bottom in row_pieces(blobs):
         piece = left[top:bottom, lft:rgt]
         for lo, hi in lines_by_ink(piece):
             band = piece[lo:hi]
-            if band.sum() < MIN_INK:
+            if band.sum() < MIN_INK or not looks_written(band):
                 continue
             by, bx = np.nonzero(band)
             l, r = lft+int(bx.min()), lft+int(bx.max())+1
             t, b = top+lo+int(by.min()), top+lo+int(by.max())+1
             box = [max(0, l-pad), max(0, t-pad), min(w, r+pad), min(h, b+pad)]
-            shape = ndimage.binary_dilation(left[box[1]:box[3], box[0]:box[2]] & _in_rows(box, t, b), thick)
-            out.append((box, shape))
+            rows = np.zeros((box[3]-box[1], box[2]-box[0]), bool)
+            rows[max(0, t-box[1]):b-box[1]] = True
+            out.append((box, ndimage.binary_dilation(left[box[1]:box[3], box[0]:box[2]] & rows, thick)))
     return out
-
-
-def _in_rows(box, top, bottom):
-    """A boolean map of the box that is true on the rows between ``top`` and ``bottom`` (pixels of the page)."""
-    rows = np.zeros((box[3]-box[1], box[2]-box[0]), bool)
-    rows[max(0, top-box[1]):bottom-box[1]] = True
-    return rows
 
 
 def main(argv=None):
