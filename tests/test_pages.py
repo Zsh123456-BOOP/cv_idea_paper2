@@ -104,3 +104,9 @@ def test_pages_are_found_by_id_and_stored_ocr_text_is_read(tmp_path):
         pages.page_files([tmp_path], ['c'])
     (tmp_path/'ocr.jsonl').write_text(json.dumps({'image_id': 'a', 'text': 'x'})+'\n'+json.dumps({'image_id': 'b', 'text': None})+'\n')
     assert pages.read_ocr_text([tmp_path/'ocr.jsonl']) == {'a': 'x', 'b': ''}
+
+
+def test_a_piece_is_the_questions_when_its_centre_is_in_the_frame():
+    frame = [10, 20, 500, 180]
+    assert pages.inside(frame, [6, 100, 594, 140]) and pages.inside(frame, [100, 150, 300, 200])
+    assert not pages.inside(frame, [6, 185, 594, 199]) and not pages.inside(frame, [0, 0, 30, 10])

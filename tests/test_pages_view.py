@@ -10,7 +10,7 @@ from revrender import pages
 from revrender.tools import pages_view
 
 
-def build(tmp_path, min_chars='10'):
+def build(tmp_path, min_chars='10', png=()):
     out = tmp_path/'pages_out'
     out.mkdir()
     lines = [{'box': [10, 50, 190, 90], 'source': 'ocr', 'ocr_type': 'text', 'ocr_text': 'x = 1', 'shape': None}]
@@ -22,7 +22,7 @@ def build(tmp_path, min_chars='10'):
     images = tmp_path/'images'
     images.mkdir()
     for name in ('w1_3_1', 'w2_s4_1'):
-        Image.new('L', (200, 100), 255).save(images/f'{name}.jpg')
+        Image.new('L', (200, 100), 255).save(images/f'{name}.png' if name in png else images/f'{name}.jpg')
     texts = tmp_path/'qwen.jsonl'
     texts.write_text(json.dumps({'image_id': 'w1_3_1', 'text': r'\( x = 3 \) 所以 y = 2 ，因此 z = 5'})+'\n'+
                      json.dumps({'image_id': 'w2_s4_1', 'text': 'x'})+'\n')
@@ -55,9 +55,9 @@ def test_a_page_with_too_little_writing_is_set_aside_and_the_rest_are_kept(tmp_p
 def test_the_threshold_decides_and_the_mask_is_red_only_on_the_recognised_revision(tmp_path):
     site = build(tmp_path, min_chars='1000')
     assert embedded(site/'kept.html')['cards'] == [] and len(embedded(site/'filtered.html')['cards']) == 2
-    mask = np.asarray(Image.open(site/'assets'/'w1_3_1.png'))
+    mask = np.asarray(Image.open(site/'assets'/'w1_3_1_mask.png'))
     assert mask.shape == (100, 200, 4) and mask[40, 60, 3] > 0 and mask[40, 60, 0] > 200 and mask[5, 5, 3] == 0
-    assert not (site/'assets'/'w2_s4_1.png').exists() and (site/'assets'/'w2_s4_1.jpg').is_file()
+    assert not (site/'assets'/'w2_s4_1_mask.png').exists() and (site/'assets'/'w2_s4_1.jpg').is_file()
 
 
 def test_the_site_is_create_only_and_refuses_a_page_without_a_transcription(tmp_path):
@@ -74,3 +74,11 @@ def test_the_site_is_create_only_and_refuses_a_page_without_a_transcription(tmp_
 def test_question_numbers_and_embedded_json_are_read_safely():
     assert pages_view.question_of('abc_7_1') == (7, False) and pages_view.question_of('abc_s9_2') == (9, True)
     assert '</script>' not in pages_view.embed({'text': '</script><b>'}) and json.loads(pages_view.embed({'a': '中文'}).replace('<\\/', '</')) == {'a': '中文'}
+
+
+def test_a_cleaned_page_is_a_png_and_its_mask_does_not_take_its_name(tmp_path):
+    site = build(tmp_path, png=('w1_3_1',))
+    card = embedded(site/'kept.html')['cards'][0]
+    assert card['ext'] == 'png' and (site/'assets'/'w1_3_1.png').is_file() and (site/'assets'/'w1_3_1_mask.png').is_file()
+    assert np.asarray(Image.open(site/'assets'/'w1_3_1.png')).ndim == 2 and np.asarray(Image.open(site/'assets'/'w1_3_1_mask.png')).ndim == 3
+    assert embedded(site/'filtered.html')['cards'][0]['ext'] == 'jpg'

@@ -8,7 +8,7 @@ A page is set aside when the student wrote fewer than ``--min-chars`` characters
 student-only transcription (no printed question, no crossed-out writing), which a page that is blank apart from its printed question
 gets 0 or a few for.  SITE/kept.html shows the other pages with every recognised revision drawn over the page, SITE/filtered.html the pages
 set aside with their character count and transcription, SITE/index.html the counts.  A page and, when something was recognised on it, a
-transparent mask are copied to SITE/assets, so the folder opens from anywhere without a server.  SITE/kept_ids.txt and filtered_ids.txt
+transparent mask (<id>_mask.png) are copied to SITE/assets, so the folder opens from anywhere without a server.  SITE/kept_ids.txt and filtered_ids.txt
 list the two sets.  ``--tags`` is a json {image_id: {split, rows}}, shown as badges (the writer's split in paper 1 and its line rows).
 """
 import argparse
@@ -59,14 +59,6 @@ def question_of(image_id):
     return int(middle.lstrip('s')), middle.startswith('s')
 
 
-def page_file(directories, image_id):
-    for directory in directories:
-        path = Path(directory)/f'{image_id}.jpg'
-        if path.is_file():
-            return path
-    raise FileNotFoundError(f'page image {image_id} not found')
-
-
 def embed(payload):
     """JSON for a <script type="application/json"> block."""
     return json.dumps(payload, ensure_ascii=False).replace('</', '<\\/')
@@ -100,19 +92,20 @@ def main(argv=None):
     missing = [i for i in ids if i not in texts]
     require(not missing, f'{len(missing)} page(s) have no transcription record, e.g. {missing[:2]}')
     tags = json.loads(args.tags.read_text()) if args.tags else {}
+    files = pages.page_files(args.images, ids)
     out = make_output_dir(args.output_dir)
     (out/'assets').mkdir()
     cards = {'kept': [], 'filtered': []}
     for image_id in ids:
         record, union, boxes = read_page(args.pages_output, image_id)
-        shutil.copyfile(page_file(args.images, image_id), out/'assets'/f'{image_id}.jpg')
+        shutil.copyfile(files[image_id], out/'assets'/f'{image_id}{files[image_id].suffix}')
         if union is not None:
-            mask_image(union).save(out/'assets'/f'{image_id}.png', optimize=True)
+            mask_image(union).save(out/'assets'/f'{image_id}_mask.png', optimize=True)
         chars = answer_chars(texts[image_id])
         question, supplementary = question_of(image_id)
         tag = tags.get(image_id, {})
         cards['kept' if chars >= args.min_chars else 'filtered'].append({
-            'id': image_id, 'w': record['size'][0], 'h': record['size'][1], 'q': question, 'supp': supplementary, 'chars': chars,
+            'id': image_id, 'ext': files[image_id].suffix[1:], 'w': record['size'][0], 'h': record['size'][1], 'q': question, 'supp': supplementary, 'chars': chars,
             'n': len(boxes), 'scores': [round(i['score'], 4) for i in record['instances']], 'boxes': boxes, 'mask': union is not None,
             'lines': [[line['box'], line['source']] for line in record['lines']], 'text': texts[image_id][:TEXT_LIMIT],
             'split': tag.get('split', 'none'), 'rows': tag.get('rows') or {}})

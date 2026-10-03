@@ -1,14 +1,16 @@
 """Whole-question images end to end: cut the page, read every piece with RevRender, paste the instances back.
 
     python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages DIR [--pages DIR ...] --output-dir OUT
-        (--ocr-model MODEL_DIR | --ocr-text ocr.jsonl [--ocr-text ...]) [--templates templates.npz] [--ids FILE] [--limit N] [--overlay]
+        (--ocr-model MODEL_DIR | --ocr-text ocr.jsonl [--ocr-text ...]) [--templates templates.npz] [--frames frames.json] [--ids FILE] [--limit N] [--overlay]
 
 A page is cut into pieces and each piece is read the way paper 1 read a line: cropped, letterboxed to the 96x768 strip, read by RevRender
 at the checkpoint's frozen point (mask threshold, NMS, score cut), every delivered instance resized back and pasted into the page.  The
 pieces (``page_lines``): the OCR model's own lines (``ocr``: the catalogue's lines, which paper 1 trained on); the lines of a region the
 OCR returned as one block of several lines, cut where the ink has gaps (``split``); and the handwriting no line covers -- a line the OCR
 skipped, a stroke that ran past the end of a line, a note in the margin (``ink``).  Where the handwriting is comes from the page against
-the printed template of its question (``--templates``, made by ``python -m revrender.data.handwriting``).  Per page OUT/<image_id>.json
+the printed template of its question (``--templates``, made by ``python -m revrender.data.handwriting``).  On pages cleaned by
+``python -m revrender.data.clean_pages`` (``--pages`` the cleaned folder, ``--frames`` its frames.json) a piece whose centre lies outside the
+page's frame is not the question's and is dropped.  Per page OUT/<image_id>.json
 lists the pieces and the instances (piece, score, box in pixels) and OUT/<image_id>.npz holds each instance's mask on its box (packed bits,
 ``mask_<n>``); ``--overlay`` also writes <image_id>.png.  ``--ocr-text`` takes OCR text the model already produced (jsonl of {image_id,
 text}) instead of running it.  Only the pages named by ``--ids`` (default: every jpg in ``--pages``) are read.
@@ -65,6 +67,12 @@ def page_lines(text, size, ink):
     for box in handwriting.leftover_boxes(ink, [line['box'] for line in out]):
         out.append({'box': box, 'source': 'ink', 'ocr_type': None, 'ocr_text': ''})
     return out
+
+
+def inside(frame, box):
+    """Whether the centre of a piece ``box`` (left, top, right, bottom) lies in ``frame`` (left, top, right, bottom)."""
+    x, y = (box[0]+box[2])/2, (box[1]+box[3])/2
+    return frame[0] <= x <= frame[2] and frame[1] <= y <= frame[3]
 
 
 def read_page(model, point, image, lines, batch_size=infer.BATCH_SIZE):
@@ -155,8 +163,12 @@ def read_ocr_text(files):
 
 
 def page_files(directories, ids=None):
-    """{image_id: file} for the ids (default: every jpg) found in the directories."""
-    found = {path.stem: path for directory in directories for path in sorted(Path(directory).glob('*.jpg'))}
+    """{image_id: file} for the ids (default: every page) found in the directories: a page is a jpg (the scan) or a png (a cleaned page)."""
+    found = {}
+    for directory in directories:
+        for suffix in ('*.jpg', '*.png'):
+            for path in sorted(Path(directory).glob(suffix)):
+                found.setdefault(path.stem, path)
     if ids is None:
         return found
     missing = [i for i in ids if i not in found]
@@ -174,6 +186,7 @@ def main(argv=None):
     parser.add_argument('--ocr-model', type=Path, help='the Unlimited-OCR folder: run the model on pages without stored text')
     parser.add_argument('--ocr-text', type=Path, action='append', default=[], help='jsonl of {image_id, text} the model already produced')
     parser.add_argument('--templates', type=Path, help='printed templates (python -m revrender.data.handwriting): without them the printed ink counts as handwriting')
+    parser.add_argument('--frames', type=Path, help='frames.json of data.clean_pages: pieces whose centre is outside their page\'s frame are dropped')
     parser.add_argument('--limit', type=int, default=0, help='only the first N pages')
     parser.add_argument('--overlay', action='store_true', help='also write <image_id>.png')
     parser.add_argument('--output-dir', type=Path, required=True)
@@ -188,7 +201,8 @@ def main(argv=None):
     model, payload = infer.load_checkpoint(args.checkpoint, expected_sha=args.checkpoint_sha)
     ocr = None
     templates = dict(np.load(args.templates)) if args.templates else {}
-    totals = {'pages': 0, 'lines': 0, 'lines_ocr': 0, 'lines_split': 0, 'lines_ink': 0, 'instances': 0, 'ocr_seconds': 0., 'read_seconds': 0.}
+    frames = json.loads(args.frames.read_text()) if args.frames else {}
+    totals = {'pages': 0, 'lines': 0, 'lines_ocr': 0, 'lines_split': 0, 'lines_ink': 0, 'lines_outside': 0, 'instances': 0, 'ocr_seconds': 0., 'read_seconds': 0.}
     for image_id in names:
         started = time.monotonic()
         if image_id in stored:
@@ -206,6 +220,10 @@ def main(argv=None):
         figures = [pixel_box(box, image.size) for kind, box in ocr_lines.regions(text) if kind in ocr_lines.PRINTED]
         ink = handwriting.handwriting(image, templates.get(handwriting.group_key(image_id, image.size)), [b for b in figures if b])
         lines = page_lines(text, image.size, ink)
+        if frames.get(image_id):
+            kept = [line for line in lines if inside(frames[image_id], line['box'])]
+            totals['lines_outside'] += len(lines)-len(kept)
+            lines = kept
         instances = read_page(model, point, image, lines)
         write_page(out, image_id, image.size, lines, instances)
         if args.overlay:
@@ -222,7 +240,8 @@ def main(argv=None):
     write_manifest(out, config=to_jsonable(args),
                    inputs={str(args.checkpoint): digest(args.checkpoint), str(args.freeze): digest(args.freeze),
                            **{str(p): digest(p) for p in args.ocr_text}, **{str(p): digest(p) for p in weights},
-                           **({str(args.templates): digest(args.templates)} if args.templates else {})},
+                           **({str(args.templates): digest(args.templates)} if args.templates else {}),
+                           **({str(args.frames): digest(args.frames)} if args.frames else {})},
                    point={k: point[k] for k in ('mask_threshold', 'nms', 'score_threshold')}, checkpoint_step=payload.get('step'),
                    **totals)
     print(json.dumps({k: round(v, 1) if isinstance(v, float) else v for k, v in totals.items()}))

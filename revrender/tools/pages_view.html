@@ -113,8 +113,8 @@ function apply() {
 
 function stage(c) {
   const s = document.createElement('div'); s.className = 'stage'; s.style.aspectRatio = c.w + ' / ' + c.h;
-  const page = document.createElement('img'); page.className = 'page'; page.loading = 'lazy'; page.src = 'assets/' + c.id + '.jpg'; page.alt = c.id; s.appendChild(page);
-  if (c.mask) { const m = document.createElement('img'); m.className = 'mask'; m.loading = 'lazy'; m.src = 'assets/' + c.id + '.png'; s.appendChild(m); }
+  const page = document.createElement('img'); page.className = 'page'; page.loading = 'lazy'; page.src = 'assets/' + c.id + '.' + c.ext; page.alt = c.id; s.appendChild(page);
+  if (c.mask) { const m = document.createElement('img'); m.className = 'mask'; m.loading = 'lazy'; m.src = 'assets/' + c.id + '_mask.png'; s.appendChild(m); }
   for (const [b, source] of c.lines) {
     const d = document.createElement('div'); d.className = 'linebox ' + source;
     d.style.cssText = 'left:' + 100 * b[0] / c.w + '%;top:' + 100 * b[1] / c.h + '%;width:' + 100 * (b[2] - b[0]) / c.w + '%;height:' + 100 * (b[3] - b[1]) / c.h + '%';
