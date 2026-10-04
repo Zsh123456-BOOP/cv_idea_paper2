@@ -21,6 +21,7 @@ revrender/
                      augment.py（增广）、gold.py（金标栅格化 / letterbox 与它的逆 / 笔宽校正）、lines.py（行目录）、
                      ocr_lines.py（整页 OCR 文本 → 目录里的那些行）、handwriting.py（整页的手写墨迹：印刷模板、答题框、按墨迹切多行区域、给没被框的手写补框）、
                      page_gold.py（第一篇的金标放回整页坐标，写成与整页输出同一布局）、clean_pages.py（整页清洁：只留本题自己的虚线框、去杂点）、
+                     prior_annotations.py（旧项目已有的人工前后对、盲判无涂改行、三个模型的行转写，按行 id 合并）、
                      journal.py（写作者子集、合成阳性）
   train.py           训练循环：smoke → 精确重放 → 仅训练集学习门槛 → formal（早停、挑步）
   infer.py           推理与后处理：packed 预测存档、deliver（掩膜阈值 / NMS / 分数线）、predict_lines（把冻结点用到一批灰度行上）、命令行
@@ -28,7 +29,7 @@ revrender/
   pages.py           整道题：OCR 的行 + 按墨迹切开的多行区域 + 补切的手写 → 每块过 RevRender → 实例拼回整页；命令行；`write_page` / `read_output` 是整页输出的唯一读写；`--frames` 丢掉框外的块
   tighten.py         掩膜收紧到非白像素（墨迹 + 紧贴的软边）：整页输出和放回整页的金标都能收；命令行
   recognize.py       已有整题切块的 B/C/D 识别（Qwen；原图 / 掩膜遮白 / 原图加掩膜提示）
-  eval/              pages_score.py（整页输出对放回整页的金标：找到 / 画对）、matching.py（组件匹配 + F1 + 前沿 + 误报预算）、ap.py（掩膜 AP）、bootstrap.py（按书写者自助法）、
+  eval/              fragments.py（人工标的划掉 / 重写的文字在不在模型读数里）、pages_score.py（整页输出对放回整页的金标：找到 / 画对）、matching.py（组件匹配 + F1 + 前沿 + 误报预算）、ap.py（掩膜 AP）、bootstrap.py（按书写者自助法）、
                      freeze.py（阈值冻结；`read_frozen` 是各读数共用的「读一份冻结」）、fates.py（找到 / 画对）、speed.py（推理计速）、
                      inloop.py（训练中验证读数）、report.py（重新打分、与已记录数字和另一份存档比对）、
                      ink.py（只算墨迹的视图：金标和交付掩膜都裁到墨迹；fates、ap、bootstrap 的 `--ink-only`）、
@@ -67,6 +68,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 冻结 | `python -m revrender.eval.freeze --bundle B --bundle-sha S --run OUT/formal --output freeze.json`（原生基线加 `--model maskdino` 等） |
 | 掩膜 AP / 找到画对 / 自助法 / 计速 | `python -m revrender.eval.ap / .fates / .bootstrap / .speed`；三者加 `--ink-only` 就只在墨迹上读（金标和交付掩膜都裁到墨迹） |
 | 看整页结果（HTML） | `python -m revrender.tools.pages_view --pages-output OUT --images 图片目录 --answer-text qwen_shard0.jsonl [...] --tags tags.json --min-chars 10 --output-dir SITE`：学生手写解答转写少于 `--min-chars` 个字的页被过滤；`SITE/kept.html` 是识别完并拼回整页的，`SITE/filtered.html` 是被过滤掉的，`SITE/index.html` 是汇总；图片拷进 `SITE/assets`，文件夹拷到哪都能打开（浏览器直接开 html，或 `python3 -m http.server`）。只含学生手写图，别提交 |
+| 旧项目已有的人工标注和模型转写 | `python -m revrender.data.prior_annotations [--tags tags.json] --output-dir OUT`：按行 id 合并人工前后对、盲判无涂改行和三个模型的行转写，写 `OUT/pairs.jsonl`（每行一条）和 `OUT/summary.json`；只读旧项目，文字只放本机 |
 | 整页清洁 | `python -m revrender.data.clean_pages --pages 图片目录 [...] [--ids 页id文件] --output-dir OUT`：同一道题、同一尺寸的页共用一个虚线框（按该组各页共有的虚线定，不是每页自己的最外两条）；框外的一切（相邻题的虚线和字、页脚、页角黑块）涂白，去杂点和浅灰雾；页的尺寸不变；`OUT/<image_id>.png` 和 `OUT/frames.json`。只用 CPU，3,976 页约 7 分钟 |
 | 清洁前后的对比页 | `python -m revrender.tools.clean_view --before 扫描目录 [...] --after 清洁输出 --per-question 30 --output-dir SITE`：每题抽若干页，左扫描（绿框 = 保留的范围）右清洁后；只含学生手写图，别提交 |
 | 整道题：切行 → 标涂改 → 拼回 | `python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages 图片目录 --ocr-model /home/zsh/hme/models/Unlimited-OCR --templates templates.npz --output-dir OUT [--ids 页id文件] [--frames frames.json] [--overlay]`；`templates.npz`（每道题一个印刷模板，用来分出手写墨迹）由 `python -m revrender.data.handwriting --pages 图片目录 --output templates.npz` 生成；已有 OCR 文本时用 `--ocr-text ulocr.jsonl` 代替 `--ocr-model`（不占 OCR 的显存和时间）。每页写 `OUT/<image_id>.json`（切出的行、每个实例的行号 / 分数 / 框）和 `.npz`（每个实例在它的行裁图上的掩膜）。需要 GPU，约 16 GB（OCR 模型 14 GB + RevRender）；在清洁后的页上跑：`--pages` 指清洁输出，`--frames` 给它的 frames.json（框外的块丢掉） |
@@ -86,62 +88,34 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 消融：`--variant control|nofine|nocontext|nodense`（第一篇用到的三个消融）。其余旧脚本里的调参模式、历史分支不搬。
 
-## 涂改阳性切块：两任务识别与关键字符校对
+## 识别试验（第二篇的第一步）
 
-本轮取代旧的「整页上下文 + 只保留最终答案」识别设计。旧 40 页、448 块的输出与标注页保留在 `work/recognition_pilot40`，不能作为本轮证据。复用那批开发页及 Claude 的优化切块坐标、索引、清洁图像与收紧掩膜，不重新切行，不读取测试页。
+第二篇的方向（2026-10-04 用户定，面向计算机方向，不做教育评分）：涂改感知的多模态识别。上游是第一篇的涂改掩膜（`tighten` 之后只含墨迹）；问题是 VLM 读手写数学作答时，划掉的被读成有效（泄漏）、有效的被读坏（误删）。第一步先量问题有多大，再决定做方法。
 
-**样本固定为 80 个检测阳性候选，覆盖 30 页。** 原 448 块实际有 98 块的掩膜像素数大于零；种子 42，按页轮转抽取 80 个（OCR 73、细分 5、补充墨迹 2），剩余 18 个编号记在 `pack.json`。选择不读取本轮模型输出，10 页无检测对照全部排除。检测阳性不是人工金标，评估前须确认真实涂改；误检、不确定、重复块不进入分母。
+**旧项目（`~/Desktop/cv_idea`）已经有的，不用再标。** 都以目录里的行 id（`<image_id>:L<nnnn>`）为键，和本项目切页用的是同一个 id；读取用 `python -m revrender.data.prior_annotations --tags tags.json --output-dir OUT`（`configs/paths.toml` 的 `[prior] root`），文件清单和字段见 [docs/data_location.md](docs/data_location.md) 第 8 节：
 
-| 条件 | 每次模型收到的图像 |
-|---|---|
-| B | 原切块，一张 |
-| C | 在收紧候选掩膜并集内精确遮白的同一切块，一张 |
-| D | 原切块 + 同切块的红色候选掩膜辅助图，两张 |
+| 内容 | 行数 | 说明 |
+|---|---:|---|
+| 人工前后对（划掉的原文 `text_before`、重写的新文 `text_after`、涂改类型） | 327 | 其中 294 行不是第一篇测试书写者的；类型：划掉重写、只划掉、覆盖改写、整行 |
+| 人工盲判「这一行没有涂改」 | 433 | 400 行不是测试书写者的；做对照块 |
+| 人工判「有涂改」但没写前后文 | 67 | |
+| 三个模型对每一行（46,902 行）的转写 | 46,902 | Qwen3.5-35B-A3B-LaTeX-OCR（`FutureMa`，即印象里的「32B」）、Infinity-Parser2-Pro，加 Unlimited-OCR 的文字；提示要求保留划掉的字 |
 
-三组均不发送整页。标注页左侧整页只供人工定位。C 不扩张掩膜；D 保留原图并说明红色是检测候选，不把检测当金标。D 含额外图像和说明，比较的是这套提示方案，不能据此把效果归因于掩膜单一因素。
+在 294 个人工确认的涂改行上，两个强模型读得很不一致：Qwen3.5-35B 与 Infinity 的相似度中位数 0.44、不低于 0.9 的占 30%；400 个无涂改行是 0.94 和 54%。要求「保留划掉的字」时，划掉的文字出现在读数里的比例：Unlimited-OCR 42%、Infinity 53%、Qwen3.5-35B 59%；重写的文字：60% / 67% / 73%。
 
-同一 Qwen3-VL-8B-Instruct，BF16、贪心、种子 42、输出上限 384 tokens，各条件分别跑两个任务，共 **80 × 2 × 3 = 480 条**：
+**Codex 做过的两轮（只是记录，没有人工答案，不当证据；代码是 `recognize.py`、`data/recognition_pack.py`、`eval/recognition_score.py`、`tools/recognition_view`）。** 都是 Qwen3-VL-8B 读我们的整题切块，B 原图 / C 掩膜遮白 / D 原图加红色掩膜图：
 
-1. 全墨迹转写：`请转写图中的所有手写字符和公式。无论是否有划线、涂黑，只要有墨迹就请如实还原，不要主观过滤。`
-2. 作废标注：`请完整识别图像中的全部内容。若内容属于正常作答，直接输出；若文字被划除或涂抹覆盖，请用 <del>被划掉的内容</del> 标签包裹。`
+- 第一轮（`work/recognition_pilot40`，40 页 448 块）：提示要求「划掉、涂黑的不输出」，带整页上下文；其中 98 块有检测掩膜。
+- 第二轮（`work/recognition_revision80`，80 个检测阳性块）：不提这句，分「全部墨迹如实转写」和「正常直接输出、作废的用 `<del>` 包裹」两个任务。
+- 对着输出审计：在 80 个阳性块上，遮白与原图的读数只有 39% 一致，其余 368 块是 88%，第一轮「三组差不多」是被无涂改块稀释；「划掉的不输出」这句基本没改变输出（长度差不多的 41/80，变短的 19/80），抽看 12 块，整行划掉的被原样读出来；`<del>` 标签 B 10/80、C 5、D 19；C 有空输出 6/80 和幻觉；D 是两张图输入，模型会复述辅助说明（deletion 任务 6/80）。检测阳性不等于人工涂改。
 
-共同格式规则仅要求保留换行、公式用 LaTeX、看不清写 □、不猜测/解题/纠错/补全和输出容器。系统指令、实际用户消息及模型模板渲染后的请求都保存在各条件 `run_manifest.json`；网页显示实际消息。没有「忽略涂改 / 只输出最终有效答案」指令。结果保留原文、空输出、重复和未闭合标签，不按预期修订模型答案。
+**第一步的设计（先量大小，不训练）：**
 
-本次六组均为 80 条，完成文件和输入哈希核对通过。测试 2 有 `<del>` 的块数为 B 10、C 5、D 19，**标签数量不是准确率**。达到生成上限：测试 1 的 B/C/D 为 2/1/1，测试 2 为 1/1/1；其中 C 的测试 2 有一条 `<del>` 未闭合。D 也有重复转写或复述提示的输出，须结合原图核对，不能预先认定优胜。
-
-人工标注页支持：原切块/C 遮白/D 掩膜切换、逐字符拖框、三个对应局部放大、两套任务的 B/C/D 原文、LaTeX 预览、是否真实涂改、不可辨认标记、自动保存、JSON 导入导出。每个框代表一个可见字符/数学符号，不按 LaTeX 字符串长度计数。先完整覆盖可辨认作废字符及相邻有效字符，包含未受损者，避免只挑出错位置；同一字符跨切块只标一次。更新字符或判断后须重新确认本块。人工标注仍为空。
-
-只计算两个关键字符指标，**不计算整句 CER**：
-
-- **作废字符溢出率（仅测试 2）**：在人工确认阳性块中，以 B/C/D 都已明确核对的同一批可辨认作废字符为共同分母；正确读出或误读后仍放在 `<del>` 外均计入分子。同时出现在标签内外也计溢出；缺失不算溢出，但这不表示识别正确。测试 1 要求读出作废字符，该行为本身不是错误。
-- **有效字符截断率（分别报告两个测试的 C 相对 B）**：分母为关键区域中 B 识别正确、B/C 均已核对且物理损伤状态明确的有效字符。分子还要求 C 漏掉/误读（测试 2 也含错误删除），且人工对比像素确认有效笔画确实被遮白擦损；不能仅由 B 对、C 错推断损伤。报告数量、分母和比例，仅代表已标关键区域。
-
-完全不可辨认的 □、判断不确定或未配齐的字符不进入相应分母，并单列覆盖数。分母为零显示「待评估」，不显示零错误率。浏览器读数与 `revrender.eval.recognition_score` 使用同一口径，并以固定边界案例核对一致性。
-
-```bash
-# 在旧 40 页包上冻结阳性子集（所有输出目录都必须尚不存在）
-python3 -m revrender.data.recognition_pack --source-pack work/recognition_pilot40/pack \
-  --count 80 --output-dir work/recognition_revision80/pack
-
-# 服务器已提交快照内持锁运行。分别传 B、C、D；每组一次加载模型，运行两个任务。
-# 当前 vLLM 不接受 UUID 形式的 CUDA_VISIBLE_DEVICES；先核对 UUID 与 PCI 顺序，
-# 再在持锁启动命令中设置 CUDA_DEVICE_ORDER=PCI_BUS_ID 和对应整数编号。
-python -m revrender.recognize --pack PACK --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct \
-  --mode B --tests verbatim deletion --output-dir OUT
-
-python3 -m revrender.tools.recognition_view --pack work/recognition_revision80/pack \
-  --predictions work/recognition_revision80/results/B/predictions.jsonl \
-  --predictions work/recognition_revision80/results/C/predictions.jsonl \
-  --predictions work/recognition_revision80/results/D/predictions.jsonl \
-  --mathjax work/recognition_pilot40/vendor/tex-svg.js --output-dir work/recognition_revision80/site
-python3 -m http.server 8768 --bind 127.0.0.1 --directory work/recognition_revision80/site
-
-# 人工导出 JSON 后复算，不读模型输出替代人工金标
-python3 -m revrender.eval.recognition_score --pack work/recognition_revision80/pack \
-  --annotations 标注.json --output-dir 尚未存在的评分目录
-```
-
-输出均为 create-only，并记录配置、提交和输入哈希。HTML 构建拒绝旧协议、不同包哈希、重复/缺失的任务条件。MathJax 为本地 3.2.2 `tex-svg.js` 与许可证，省略 `--mathjax` 则使用纯文本。图像、模型结果和标注在本机工作产物中，不进 Git；新版使用独立存储键与端口，不覆盖旧 40 页标注。
+- 样本：人工前后对里不是测试书写者的 294 行，加人工盲判无涂改的 400 行（对照）；不读测试书写者的行；不用新标。
+- 条件（单图、同一提示骨架）：原图 + 中性提示；原图 + 「只转写最终有效内容」；擦除（收紧掩膜）；红色叠加（合成一张图）；把涂改位置写进文字提示；之后加免训练的视觉 token 屏蔽。
+- 模型：先 Qwen3-VL-8B，再加服务器上已有的 Qwen3-VL-32B-FP8、InternVL3.5-8B、Qwen2.5-VL-7B、GLM-4.1V、MiniCPM-V-4、Gemma-3-12B 等。
+- 指标：划掉的文字泄漏率（`eval/fragments.contains(读数, text_before)`）、重写的文字保留率（`text_after`）、对照块上输出相对原图读数的改变；按涂改类型分层，配对自助法给区间；不算整句 CER。
+- 放行：原图中性读法的泄漏率约 20% 以上、最好的免训练基线仍留约 10% 以上，才做方法；否则改成「基准 + 分析」。
 
 ## 数据
 

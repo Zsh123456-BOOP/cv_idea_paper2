@@ -7,6 +7,11 @@ labeled   = "~/Desktop/cv_idea/标注好数据"
 # Row catalogue: one record per line (image_id, box_1000, question_no, ocr_text); the bridge to whole questions.
 line_catalogue = "~/Desktop/cv_idea_claude/gold/line_edit_all5002_policy_decisions_20260814_v1/canonical/exact_crops_46902.jsonl"
 
+[prior]
+# The earlier project (read-only): human before/after revision pairs, blind no-edit judgements and the line readings of three models;
+# the files used are listed in revrender/data/prior_annotations.py.
+root = "~/Desktop/cv_idea"
+
 [server]
 # ssh 4090x4
 host         = "4090x4"
