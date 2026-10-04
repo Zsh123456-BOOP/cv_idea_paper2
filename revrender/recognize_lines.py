@@ -143,6 +143,7 @@ def main(argv=None):
                    backend=args.backend, rows=len(jobs), lines=len(rows),
                    conditions={c: {'image': CONDITIONS[c][0], 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0])} for c in args.conditions},
                    system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'dtype': 'bfloat16'})
+    name = args.model.name+(f'+{args.adapter.parent.name}' if args.adapter else '')      # the reading of a model with an adapter is another model's
     started, done = time.monotonic(), 0
     with (out/'predictions.jsonl').open('x', encoding='utf-8') as stream:
         for start in range(0, len(jobs), args.batch_size):
@@ -160,7 +161,7 @@ def main(argv=None):
                 results = [{'text': g.outputs[0].text, 'tokens': len(g.outputs[0].token_ids), 'finish': g.outputs[0].finish_reason} for g in generated]
             require(len(results) == len(batch), 'missing generation results')
             for (condition, row), result in zip(batch, results):
-                stream.write(json.dumps({'condition': condition, 'id': row['id'], 'line_id': row['line_id'], 'model': args.model.name, 'text': reading_of(result['text']),
+                stream.write(json.dumps({'condition': condition, 'id': row['id'], 'line_id': row['line_id'], 'model': name, 'text': reading_of(result['text']),
                                          'raw': result['text'], 'generated_tokens': result['tokens'], 'finish_reason': result['finish']}, ensure_ascii=False)+'\n')
             stream.flush()
             done += len(batch)

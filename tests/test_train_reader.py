@@ -1,0 +1,62 @@
+"""The reader's training samples: what is drawn from a recipe, the answer it is taught and that only the answer carries the loss."""
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from revrender import train_reader as T
+
+
+def page(tmp_path):
+    """A white page with two lines of 'writing' (blocks of ink) at known places."""
+    array = np.full((400, 800, 3), 255, np.uint8)
+    for top in (50, 250):
+        for left in (40, 200, 380):
+            array[top:top+40, left:left+100] = 20
+    folder = tmp_path/'pages'
+    folder.mkdir()
+    Image.fromarray(array).save(folder/'w1_3_1.jpg', quality=95)
+    return folder
+
+
+def row(kind, line, donors, text='x = 3'):
+    return {'id': f'{line}#{kind}', 'split': 'train', 'kind': kind, 'line_id': line, 'image_id': 'w1_3_1', 'writer': 'w1', 'text': text if kind != 'whole' else '', 'host_text': text,
+            'box_1000': [30, 100, 900, 300] if line.endswith('L1') else [30, 600, 900, 800], 'donors': donors, 'seed': 42}
+
+
+def test_the_answer_is_the_text_between_the_tags_and_nothing_is_written_as_the_empty_mark():
+    assert T.target_of(' x = 3 \n') == '<transcription>x = 3</transcription>' and T.target_of('') == '<transcription>[空]</transcription>'
+    assert T.target_of('  ') == '<transcription>[空]</transcription>'
+
+
+def test_a_recipe_is_drawn_into_an_image_and_the_text_it_should_be_read_as(tmp_path):
+    folder = page(tmp_path)
+    rows = [row('clean', 'w1_3_1:L1', []), row('whole', 'w1_3_1:L1', []), row('paste', 'w1_3_1:L1', ['w1_3_1:L2']), row('paste', 'w1_3_1:L1', [])]
+    crops = T.Crops([folder], rows+[row('clean', 'w1_3_1:L2', [])])
+    (clean, text_clean), (whole, text_whole), (paste, text_paste), (alone, text_alone) = (T.render(r, crops) for r in rows)
+    assert text_clean == text_paste == text_alone == 'x = 3' and text_whole == ''
+    assert paste.width > clean.width and alone.size == clean.size                  # a paste with no donor comes out clean, with the host's text
+    assert np.asarray(whole).min() < np.asarray(clean).min()+1 and np.array_equal(np.asarray(T.render(rows[2], crops)[0]), np.asarray(paste))
+
+
+def test_the_corpus_rows_are_read_by_kind_and_split(tmp_path):
+    path = tmp_path/'corpus.jsonl'
+    rows = [row('clean', 'w1_3_1:L1', []), {**row('whole', 'w1_3_1:L1', []), 'split': 'val'}, row('paste', 'w1_3_1:L1', ['w1_3_1:L2'])]
+    path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    assert len(T.read_rows(path)) == 3 and [r['kind'] for r in T.read_rows(path, ['clean', 'paste'])] == ['clean', 'paste']
+    assert [r['kind'] for r in T.read_rows(path, split='val')] == ['whole']
+
+
+@pytest.mark.skipif(not os.environ.get('RVR_VLM_DIR'), reason='needs a Qwen3-VL folder in RVR_VLM_DIR')
+def test_only_the_answer_carries_the_loss():
+    from transformers import AutoProcessor
+    from revrender.recognize_lines import prompt
+    processor = AutoProcessor.from_pretrained(os.environ['RVR_VLM_DIR'])
+    processor.tokenizer.padding_side = 'right'
+    batch = T.Collate(processor, prompt('raw_final', {'boxes': []}))([(Image.new('RGB', (200, 40), 'white'), 'x = 3 + 4'), (Image.new('RGB', (120, 50), 'white'), '')])
+    for b, answer in enumerate(('<transcription>x = 3 + 4</transcription><|im_end|>\n', '<transcription>[空]</transcription><|im_end|>\n')):
+        kept = batch['input_ids'][b][batch['labels'][b] != -100]
+        assert processor.tokenizer.decode(kept) == answer
