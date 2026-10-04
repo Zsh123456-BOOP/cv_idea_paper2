@@ -53,6 +53,8 @@ def test_the_tool_writes_the_corpus_and_refuses_an_existing_directory(tmp_path, 
     pack.mkdir()
     (pack/'pack.json').write_text(json.dumps({'rows': [{'image_id': 'e1_3_1'}]}))
     monkeypatch.setattr(C, 'read_line_text', lambda root, wanted=None: {'qwen35_35b': QWEN, 'infinity': INFINITY})
+    twin = tmp_path/'same.json'
+    twin.write_text(json.dumps({'pairs': [{'a': 'e1', 'b': 'w9'}]}))
     out = tmp_path/'out'
     assert C.main(['--catalogue', str(catalogue), '--root', str(tmp_path), '--mapping', str(mapping), '--exclude-pack', str(pack), '--output-dir', str(out)]) == 0
     rows = [json.loads(line) for line in (out/'corpus.jsonl').read_text(encoding='utf-8').splitlines()]
@@ -61,3 +63,20 @@ def test_the_tool_writes_the_corpus_and_refuses_an_existing_directory(tmp_path, 
     assert summary['hosts'] == 2 and summary['excluded_writers'] == 1 and json.loads((out/'run_manifest.json').read_text())['seed'] == 42
     with pytest.raises(FileExistsError):
         C.main(['--catalogue', str(catalogue), '--root', str(tmp_path), '--mapping', str(mapping), '--output-dir', str(out)])
+
+
+def test_the_other_id_of_an_evaluation_writer_is_left_out_too(tmp_path, monkeypatch):
+    catalogue = tmp_path/'catalogue.jsonl'
+    more = [record('w2_3_1:L1', 'w2'), record('w2_3_1:L2', 'w2')]
+    catalogue.write_text(''.join(json.dumps(r)+'\n' for r in CATALOGUE+more))
+    mapping = tmp_path/'index_manifest.json'
+    mapping.write_text(json.dumps({'rows': [{'group_uuid': w, 'split': s} for w, s in {**WRITERS, 'w2': 'train'}.items()]}))
+    twin = tmp_path/'same.json'
+    twin.write_text(json.dumps({'pairs': [{'a': 'e1', 'b': 'w2'}]}))
+    pack = tmp_path/'pack'
+    pack.mkdir()
+    (pack/'pack.json').write_text(json.dumps({'rows': [{'image_id': 'e1_3_1'}]}))
+    monkeypatch.setattr(C, 'read_line_text', lambda root, wanted=None: {'qwen35_35b': {**QWEN, 'w2_3_1:L1': 'x = 3 + 4', 'w2_3_1:L2': 'x = 3 + 4'}, 'infinity': {**INFINITY, 'w2_3_1:L1': 'x = 3 + 4', 'w2_3_1:L2': 'x = 3 + 4'}})
+    out = tmp_path/'out'
+    assert C.main(['--catalogue', str(catalogue), '--root', str(tmp_path), '--mapping', str(mapping), '--same-student', str(twin), '--exclude-pack', str(pack), '--output-dir', str(out)]) == 0
+    assert {json.loads(line)['writer'] for line in (out/'corpus.jsonl').read_text(encoding='utf-8').splitlines()} == {'w1'}

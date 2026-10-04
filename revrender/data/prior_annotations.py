@@ -104,14 +104,22 @@ def read_line_text(root, wanted=None):
     return out
 
 
+def twins(same_student):
+    """{writer id: the student's other writer id} from the json of students with two ids (empty without it)."""
+    out = {}
+    if same_student:
+        for pair in json.loads(Path(same_student).read_text(encoding='utf-8'))['pairs']:
+            a, b = pair.values()
+            out[a], out[b] = b, a
+    return out
+
+
 def writer_splits(mapping, same_student=None):
     """{writer: split} from paper 1's split mapping (``index_manifest.json``); of two ids of one student, one a test writer, both are."""
     splits = {row['group_uuid']: row['split'] for row in json.loads(Path(mapping).read_text(encoding='utf-8'))['rows']}
-    if same_student:
-        for pair in json.loads(Path(same_student).read_text(encoding='utf-8'))['pairs']:
-            ids = list(pair.values())
-            if any(splits.get(i) == 'test' for i in ids):
-                splits.update({i: 'test' for i in ids})
+    for a, b in twins(same_student).items():
+        if splits.get(a) == 'test' or splits.get(b) == 'test':
+            splits.update({a: 'test', b: 'test'})
     return splits
 
 

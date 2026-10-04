@@ -5,7 +5,7 @@
 A host is a line of the catalogue that a person or a consensus of models judged to have no edit, of a writer in paper 1's training split,
 whose text two strong models read alike (``AGREE``; the reading of the first is the text the reader is taught to give).  A host is never
 a test writer's, nor a writer of any line of the evaluation pack (``--exclude-pack``: a reader taught on the writer's own hand reads that
-writer's lines better for it).  Each host is made into one recipe per entry of ``VARIANTS``: ``clean`` (the line itself), ``whole`` (the
+writer's lines better for it), nor the other id of a student who has two (``--same-student``).  Each host is made into one recipe per entry of ``VARIANTS``: ``clean`` (the line itself), ``whole`` (the
 whole line struck out: the target is nothing), ``paste`` (struck writing of the same writer's other lines put in: the target is the
 host's text) and ``stack`` (the same, above or below a word of the host).  A recipe says which lines, which kind, which seed; the image is drawn when it is read (``data.paste_strikes.compose``), so
 the corpus is a file of text.  A small share of the writers, chosen by hash, is the corpus's own validation split.
@@ -24,7 +24,7 @@ from ..config import expand, load_paths
 from ..eval.coverage import prepare, similarity
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 from . import lines as lines_module
-from .prior_annotations import read_line_text, writer_splits
+from .prior_annotations import read_line_text, twins, writer_splits
 
 AGREE = .9                 # the two readings of a host are at least this alike (difflib's ratio after normalising)
 MIN_CHARS = 4              # and the text has at least this many characters
@@ -89,6 +89,7 @@ def main(argv=None):
     require(root and Path(root).is_dir(), 'give --root or set [prior] root in configs/paths.toml')
     writers = writer_splits(args.mapping, args.same_student)
     excluded = {r['image_id'].split('_')[0] for pack in args.exclude_pack for r in json.loads((pack/'pack.json').read_text())['rows']}
+    excluded |= {twin for w, twin in twins(args.same_student).items() if w in excluded}      # a student with two writer ids has one hand
     readings = read_line_text(root, {r['representative_line_id'] for r in catalogue})
     chosen = hosts(catalogue, readings, writers, excluded)
     require(chosen, 'no host line')
