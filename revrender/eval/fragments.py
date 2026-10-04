@@ -20,10 +20,12 @@ def similarity(a, b):
 
 
 def contains(reading, fragment, level=LEVEL):
-    """True or False: the fragment is in the reading; None when it cannot be told (the fragment is too short or the reading empty)."""
+    """True or False: the fragment is in the reading (an empty reading has nothing in it); None when it cannot be told (the fragment is too short)."""
     text, piece = normalise(reading), normalise(fragment)
-    if len(piece) < MIN_LENGTH or not text:
+    if len(piece) < MIN_LENGTH:
         return None
+    if not text:
+        return False
     if piece in text:
         return True
     width = len(piece)

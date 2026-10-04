@@ -58,7 +58,7 @@ def test_the_readings_of_the_wanted_lines_are_read_for_every_model(tmp_path):
 
 def test_a_struck_fragment_is_in_a_reading_when_it_is_there_to_a_few_characters():
     assert fragments.contains('$x = 3$ so $x = -3$', 'x=3') is True and fragments.contains('x = - 3', 'x=3') is False
-    assert fragments.contains('y = 2 + z', 'y=2') is True and fragments.contains('', 'y=2') is None and fragments.contains('abc', 'a') is None
+    assert fragments.contains('y = 2 + z', 'y=2') is True and fragments.contains('', 'y=2') is False and fragments.contains('abc', 'a') is None
     assert fragments.contains('∴ ∠ABC = 60°', '\\therefore \\angle ABC = 60^\\circ') is True       # LaTeX and Unicode agree
     assert fragments.similarity('x = 3', 'x=3') == 1. and fragments.similarity('x=3', 'q') < .5
 
