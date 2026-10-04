@@ -4,7 +4,6 @@ import json
 import pytest
 
 from revrender.data import prior_annotations as P
-from revrender.eval import fragments
 
 
 def write(path, value):
@@ -56,14 +55,7 @@ def test_the_readings_of_the_wanted_lines_are_read_for_every_model(tmp_path):
     assert texts['ulocr']['w1_3_1:L0002'] == 'u w1_3_1:L0002' and len(P.read_line_text(root)['qwen35_35b']) == 4
 
 
-def test_a_struck_fragment_is_in_a_reading_when_it_is_there_to_a_few_characters():
-    assert fragments.contains('$x = 3$ so $x = -3$', 'x=3') is True and fragments.contains('x = - 3', 'x=3') is False
-    assert fragments.contains('y = 2 + z', 'y=2') is True and fragments.contains('', 'y=2') is False and fragments.contains('abc', 'a') is None
-    assert fragments.contains('∴ ∠ABC = 60°', '\\therefore \\angle ABC = 60^\\circ') is True       # LaTeX and Unicode agree
-    assert fragments.similarity('x = 3', 'x=3') == 1. and fragments.similarity('x=3', 'q') < .5
-
-
-def test_the_tool_writes_the_table_and_what_the_models_read_of_the_labelled_fragments(tmp_path):
+def test_the_tool_writes_the_table_and_how_much_of_the_labelled_text_the_models_read(tmp_path):
     root = earlier_project(tmp_path)
     tags = tmp_path/'tags.json'
     tags.write_text(json.dumps({'w1_3_1': {'split': 'train'}, 'w2_4_1': {'split': 'test'}, 'w3_5_1': {'split': 'dev'}}))
@@ -73,8 +65,8 @@ def test_the_tool_writes_the_table_and_what_the_models_read_of_the_labelled_frag
     assert rows['w2_4_1:L0001']['split'] == 'test' and rows['w1_3_1:L0002']['kind'] == 'pair' and rows['w1_3_1:L0002']['qwen35_35b'] == 'x = - 3'
     summary = json.loads((out/'summary.json').read_text())
     assert summary['revised_non_test_lines'] == 2 and summary['no_edit_non_test_lines'] == 1           # the test writer's line is left out
-    q = summary['readings_of_labelled_fragments']['qwen35_35b']
-    assert q['before_labelled'] == 1 and q['before_in_reading'] == 0 and q['after_labelled'] == 1 and q['after_in_reading'] == 1   # a one-character fragment cannot be looked for
+    q = summary['readings_by_coverage']['qwen35_35b']
+    assert q['leak'] == {'lines': 1, 'mean': 0.} and q['rewrite'] == {'lines': 2, 'mean': 1.} and q['valid'] == {'lines': 1, 'mean': 1.}   # 'x=3' -> 'x=-3' strikes nothing, '5' -> '6' keeps nothing
     assert summary['qwen35_35b_vs_infinity']['revised']['lines'] == 2
     manifest = json.loads((out/'run_manifest.json').read_text())
     assert manifest['lines'] == 6 and manifest['seed'] == 42

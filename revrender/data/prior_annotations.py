@@ -5,7 +5,8 @@ Every record is keyed by the catalogue's line id (``<image_id>:L<nnnn>``), the i
 mapped.  The sources are files of the earlier project (``configs/paths.toml`` ``[prior] root``; read-only, never copied, the text is
 student work and stays out of Git):
 
-  revision pair annotation (300 lines)   text_before = the struck text, text_after = what replaced it, ink_kind, and the escapes
+  revision pair annotation (300 lines)   text_before = the whole line as it read before the strike, text_after = the whole line as it reads
+                                         after it (nothing, when the line was struck out), ink_kind, and the escapes
                                          no_revision / illegible / before_unreadable / no_rewrite
   combined task B (200 lines, 103 filled) the same fields with edit_kind (strike_rewrite, strike_only, whole_line, overwrite)
   combined task A (500 lines, blind)     has_edit true / false: the human-confirmed no-edit lines are the controls
@@ -27,7 +28,7 @@ from pathlib import Path
 from statistics import median
 
 from ..config import expand, load_paths
-from ..eval.fragments import contains, similarity
+from ..eval.coverage import coverage, prepare, similarity
 from ..util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 FILES = {
@@ -122,8 +123,8 @@ def split_of(record, tags, writers=None):
 
 
 def summarise(pairs, texts, tags, writers=None):
-    """Counts by kind and split, and for the revised lines of the non-test writers what each model's reading holds of the labelled
-    fragments; the agreement of the two models on revised lines against the no-edit lines."""
+    """Counts by kind and split, and for the revised lines of the non-test writers how much of the struck, rewritten and valid text each
+    model's reading holds (``eval.coverage``); the agreement of the two models on revised lines against the no-edit lines."""
     counts = defaultdict(Counter)
     for r in pairs.values():
         counts[kind_of(r)][split_of(r, tags, writers)] += 1
@@ -131,25 +132,22 @@ def summarise(pairs, texts, tags, writers=None):
     controls = [r for r in pairs.values() if kind_of(r) == 'no_edit' and split_of(r, tags, writers) != 'test']
     readings = {}
     for model in MODELS:
-        seen = Counter()
+        got = defaultdict(list)
         for r in revised:
             reading = texts[model].get(r['line_id'])
-            if reading is None:
+            if reading is None or r.get('before_unreadable') or not prepare(r.get('text_before')):
                 continue
-            before = contains(reading, r['text_before']) if r.get('text_before') else None
-            after = contains(reading, r['text_after']) if r.get('text_after') else None
-            seen['before_labelled'] += before is not None
-            seen['before_in_reading'] += bool(before)
-            seen['after_labelled'] += after is not None
-            seen['after_in_reading'] += bool(after)
-        readings[model] = dict(seen)
+            for name, share in coverage(reading, r['text_before'], r.get('text_after')).items():
+                if share is not None:
+                    got[name].append(share)
+        readings[model] = {name: {'lines': len(v), 'mean': sum(v)/len(v)} for name, v in sorted(got.items())}
     agree = {}
     for label, group in (('revised', revised), ('no_edit', controls)):
         s = [similarity(texts['qwen35_35b'][r['line_id']], texts['infinity'][r['line_id']]) for r in group
              if r['line_id'] in texts['qwen35_35b'] and r['line_id'] in texts['infinity']]
         agree[label] = {'lines': len(s), 'median': median(s) if s else None, 'share_at_least_0.9': sum(x >= .9 for x in s)/len(s) if s else None}
     return {'by_kind_and_split': {k: dict(v) for k, v in counts.items()}, 'revised_non_test_lines': len(revised), 'no_edit_non_test_lines': len(controls),
-            'ink_kinds_of_revised': dict(Counter(str(r.get('ink_kind')) for r in revised)), 'readings_of_labelled_fragments': readings,
+            'ink_kinds_of_revised': dict(Counter(str(r.get('ink_kind')) for r in revised)), 'readings_by_coverage': readings,
             'qwen35_35b_vs_infinity': agree}
 
 

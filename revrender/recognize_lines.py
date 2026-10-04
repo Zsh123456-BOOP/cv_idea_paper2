@@ -1,6 +1,6 @@
 """Read the lines of a ``data.line_pack`` pack with one VLM under several conditions, one image per request.
 
-    python -m revrender.recognize_lines --pack PACK --model MODEL_DIR [--conditions NAME ...] [--tp N] --output-dir OUT
+    python -m revrender.recognize_lines --pack PACK --model MODEL_DIR [--conditions NAME ...] [--backend vllm|hf] [--tp N] --output-dir OUT
 
 A condition is an image of the line and the words that go with it (``CONDITIONS``).  The words are one skeleton -- transcribe, LaTeX for
 formulas, □ for what cannot be read, no solving or correcting -- and what a condition adds to it:
@@ -14,8 +14,18 @@ formulas, □ for what cannot be read, no solving or correcting -- and what a co
   overlay_final    the revision tinted red in the one image, said to be a marker and not writing, and the instruction above
   hint_final       the scan, the places of the masks in words (thousandths of the width and height), and the instruction above
 
-Greedy decoding, seed 42, vLLM; every request carries one image, so nothing in the words can be read back as text.  OUT/predictions.jsonl
-has a row per (condition, line): the reading (the text inside <transcription>), the raw output, its length and why it stopped.
+Token conditions (``--backend hf``, Qwen3-VL; ``models.vlm_tokens``) leave the image alone and hide visual tokens from the text, each
+token keeping its position:
+
+  hide_band_neutral          the scan; the tokens with at least ``--cell-threshold`` of their area in the columns of the masks are hidden
+  hide_ink_neutral           the scan; the tokens with at least ``--ink-threshold`` of their area on masked ink are hidden
+  soft_band_neutral          the scan; the same tokens as hide_band, their attention logits lowered by ``--soft`` instead of removed
+  blanked_hide_band_neutral  the columns whited out and the tokens over them hidden as well
+
+Greedy decoding, seed 42; every request carries one image, so nothing in the words can be read back as text.  The backend is vLLM (the
+default, for the plain conditions) or transformers (``hf``, for all of them: the plain conditions read the same to the precision of another
+kernel).  OUT/predictions.jsonl has a row per (condition, line): the reading (the text inside <transcription>), the raw output, its
+length and why it stopped.
 """
 import argparse
 import base64
@@ -27,6 +37,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from .data.line_pack import band_mask, ink_mask
 from .util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 SYSTEM = 'You are an OCR transcription assistant.'
@@ -35,15 +46,20 @@ SKELETON = ('请转写图中的手写数学作答。保留原来的换行；公�
 FINAL = '只转写学生最终保留的有效作答：被划掉、涂黑或作废的内容不要输出，保留替换后的内容。'
 OVERLAY = '图中的红色是已检测出的涂改位置，是辅助标记，不是学生的笔迹。'
 CONDITIONS = {
-    'raw_neutral': ('raw', ()),
-    'raw_final': ('raw', (FINAL,)),
-    'erased_neutral': ('erased', ()),
-    'erased_final': ('erased', (FINAL,)),
-    'blanked_neutral': ('blanked', ()),
-    'blanked_final': ('blanked', (FINAL,)),
-    'overlay_final': ('overlay', (OVERLAY, FINAL)),
-    'hint_final': ('raw', ('hint', FINAL)),
+    'raw_neutral': ('raw', (), None),
+    'raw_final': ('raw', (FINAL,), None),
+    'erased_neutral': ('erased', (), None),
+    'erased_final': ('erased', (FINAL,), None),
+    'blanked_neutral': ('blanked', (), None),
+    'blanked_final': ('blanked', (FINAL,), None),
+    'overlay_final': ('overlay', (OVERLAY, FINAL), None),
+    'hint_final': ('raw', ('hint', FINAL), None),
+    'hide_band_neutral': ('raw', (), 'band'),
+    'hide_ink_neutral': ('raw', (), 'ink'),
+    'soft_band_neutral': ('raw', (), 'soft_band'),
+    'blanked_hide_band_neutral': ('blanked', (), 'band'),
 }
+TOKEN_RULES = {c for c, (_, _, rule) in CONDITIONS.items() if rule}
 
 
 def hint_text(boxes):
@@ -56,7 +72,7 @@ def hint_text(boxes):
 
 def prompt(condition, row):
     """The words of a condition for a row of the pack."""
-    _, parts = CONDITIONS[condition]
+    _, parts, _ = CONDITIONS[condition]
     return '\n'.join([SKELETON, *(hint_text(row['boxes']) if part == 'hint' else part for part in parts)])
 
 
@@ -75,46 +91,74 @@ def reading_of(raw):
     return '' if text in ('[空]', '空', '【空】') else text
 
 
+def hidden_flags(reader, rule, row, image, root, args):
+    """The bool flags of the image's tokens a token rule hides in a row (None when the rule hides nothing there)."""
+    from .models.vlm_tokens import cell_shares, hidden_tokens
+    rows, cols = reader.grid(image)
+    if rule == 'ink':
+        with Image.open(root/row['images']['raw']) as raw, Image.open(root/row['images']['erased']) as erased:
+            mask, threshold = ink_mask(raw, erased), args.ink_threshold
+    else:
+        mask, threshold = band_mask(row['boxes'], row['size']), args.cell_threshold
+    flags = hidden_tokens(cell_shares(mask, rows, cols), threshold)
+    return flags if flags.any() else None
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     p.add_argument('--pack', type=Path, required=True)
     p.add_argument('--model', type=Path, required=True)
-    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=list(CONDITIONS))
-    p.add_argument('--tp', type=int, default=1, help='tensor parallel size (the 32B model needs two cards)')
-    p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint')
+    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES])
+    p.add_argument('--backend', choices=('vllm', 'hf'), default='vllm')
+    p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')
+    p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
     p.add_argument('--max-new-tokens', type=int, default=256)
+    p.add_argument('--cell-threshold', type=float, default=.25, help='token rules: share of a token cell under the band that hides it')
+    p.add_argument('--ink-threshold', type=float, default=.05, help='token rules: share of a token cell on masked ink that hides it')
+    p.add_argument('--soft', type=float, default=4., help='soft_band: bias subtracted from the attention logits of the hidden tokens')
     p.add_argument('--trust-remote-code', action='store_true')
     p.add_argument('--limit', type=int, default=0, help='only the first N lines (a smoke test)')
     p.add_argument('--output-dir', type=Path, required=True)
     args = p.parse_args(argv)
     require(len(set(args.conditions)) == len(args.conditions), 'duplicate condition')
+    require(args.backend == 'hf' or not TOKEN_RULES & set(args.conditions), 'token conditions need --backend hf')
     pack = json.loads((args.pack/'pack.json').read_text())
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
     rows = pack['rows'][:args.limit or None]
     jobs = [(c, row) for c in args.conditions for row in rows]
     out = make_output_dir(args.output_dir)
-    from vllm import LLM, SamplingParams
-    model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=4096, max_num_seqs=16, gpu_memory_utilization=.90,
-                limit_mm_per_prompt={'image': 1}, tensor_parallel_size=args.tp, trust_remote_code=args.trust_remote_code, disable_log_stats=True)
-    sampling = SamplingParams(temperature=0, max_tokens=args.max_new_tokens, seed=SEED)
+    if args.backend == 'hf':
+        from .models.vlm_tokens import Reader
+        reader = Reader(args.model)
+    else:
+        from vllm import LLM, SamplingParams
+        model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=4096, max_num_seqs=16, gpu_memory_utilization=.90,
+                    limit_mm_per_prompt={'image': 1}, tensor_parallel_size=args.tp, trust_remote_code=args.trust_remote_code, disable_log_stats=True)
+        sampling = SamplingParams(temperature=0, max_tokens=args.max_new_tokens, seed=SEED)
     write_manifest(out, config=to_jsonable(args), inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'),
                                                            **{str(w): digest(w) for w in sorted(args.model.glob('*.safetensors'))}},
-                   backend='vllm', rows=len(jobs), lines=len(rows), conditions={c: {'image': CONDITIONS[c][0], 'example_prompt': prompt(c, rows[0])} for c in args.conditions},
+                   backend=args.backend, rows=len(jobs), lines=len(rows),
+                   conditions={c: {'image': CONDITIONS[c][0], 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0])} for c in args.conditions},
                    system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'dtype': 'bfloat16'})
     started, done = time.monotonic(), 0
     with (out/'predictions.jsonl').open('x', encoding='utf-8') as stream:
         for start in range(0, len(jobs), args.batch_size):
             batch = jobs[start:start+args.batch_size]
-            requests = []
+            images = []
             for condition, row in batch:
                 with Image.open(args.pack/row['images'][CONDITIONS[condition][0]]) as opened:
-                    requests.append(messages(opened.convert('RGB'), prompt(condition, row)))
-            generated = model.chat(requests, sampling, use_tqdm=False)
-            require(len(generated) == len(batch), 'missing generation results')
-            for (condition, row), result in zip(batch, generated):
-                output = result.outputs[0]
-                stream.write(json.dumps({'condition': condition, 'id': row['id'], 'line_id': row['line_id'], 'model': args.model.name, 'text': reading_of(output.text),
-                                         'raw': output.text, 'generated_tokens': len(output.token_ids), 'finish_reason': output.finish_reason}, ensure_ascii=False)+'\n')
+                    images.append(opened.convert('RGB'))
+            if args.backend == 'hf':
+                requests = [(image, prompt(c, row), hidden_flags(reader, CONDITIONS[c][2], row, image, args.pack, args) if CONDITIONS[c][2] else None,
+                             args.soft if CONDITIONS[c][2] == 'soft_band' else 0.) for (c, row), image in zip(batch, images)]
+                results = reader.read(requests, SYSTEM, args.max_new_tokens)
+            else:
+                generated = model.chat([messages(image, prompt(c, row)) for (c, row), image in zip(batch, images)], sampling, use_tqdm=False)
+                results = [{'text': g.outputs[0].text, 'tokens': len(g.outputs[0].token_ids), 'finish': g.outputs[0].finish_reason} for g in generated]
+            require(len(results) == len(batch), 'missing generation results')
+            for (condition, row), result in zip(batch, results):
+                stream.write(json.dumps({'condition': condition, 'id': row['id'], 'line_id': row['line_id'], 'model': args.model.name, 'text': reading_of(result['text']),
+                                         'raw': result['text'], 'generated_tokens': result['tokens'], 'finish_reason': result['finish']}, ensure_ascii=False)+'\n')
             stream.flush()
             done += len(batch)
             print(json.dumps({'completed': done, 'total': len(jobs), 'seconds': round(time.monotonic()-started, 1)}), flush=True)

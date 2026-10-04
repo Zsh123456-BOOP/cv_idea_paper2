@@ -61,6 +61,20 @@ def blank(rgb, masks, pad=BAND_PAD):
     return Image.fromarray(out)
 
 
+def band_mask(boxes, size, pad=BAND_PAD):
+    """The columns ``blank`` whites out, as a [height, width] mask, from the boxes stored in the pack (thousandths of the crop)."""
+    width, height = size
+    out = np.zeros((height, width), bool)
+    for left, _, right, _ in boxes:
+        out[:, max(0, round(left*width/1000)-pad):min(width, round(right*width/1000)+pad)] = True
+    return out
+
+
+def ink_mask(raw, erased):
+    """The masked ink, as a [height, width] mask: what differs between the crop and its erased copy (both PIL images)."""
+    return (np.asarray(raw.convert('L')) != np.asarray(erased.convert('L')))
+
+
 def tint(rgb, mask):
     out = np.array(rgb, np.float32)
     out[mask] = (1-ALPHA)*out[mask]+ALPHA*np.array(RED, np.float32)
