@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>读数对比</title>
+<style>
+:root { --bg:#f5f5f2; --panel:#fff; --ink:#1e1e1c; --muted:#6c6c66; --line:#dcdcd6; --red:#c62828; --green:#2e7d32; --blue:#1565c0; --tag:#ecece6; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#151515; --panel:#1f1f1f; --ink:#ececea; --muted:#9d9d97; --line:#343430; --red:#ff6b6b; --green:#6fcf79; --blue:#64b5f6; --tag:#2b2b28; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+header { position:sticky; top:0; z-index:10; background:var(--panel); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; }
+header h1 { font-size:16px; margin:0; }
+header .count { color:var(--muted); }
+select, input[type=search] { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--ink); }
+#grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 620px), 1fr)); gap:14px; padding:14px 16px; align-items:start; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.head { padding:8px 10px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.tag { background:var(--tag); border-radius:10px; padding:0 8px; font-size:12px; white-space:nowrap; }
+.id { font:12px ui-monospace, Menlo, monospace; color:var(--muted); }
+.imgs { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:0 8px 6px; }
+.imgs div { background:#fff; border:1px solid var(--line); }
+.imgs img { display:block; width:100%; height:auto; }
+.cap { color:var(--muted); font-size:12px; padding:0 10px; }
+.text { padding:2px 10px; font:13px ui-monospace, Menlo, monospace; white-space:pre-wrap; word-break:break-all; }
+.run { border-top:1px solid var(--line); padding:6px 10px; }
+.run b { display:inline-block; min-width:5em; }
+.share { font-size:12px; margin-left:6px; border-radius:8px; padding:0 6px; background:var(--tag); }
+.share.bad { color:#fff; background:var(--red); }
+.share.good { color:#fff; background:var(--green); }
+.empty { padding:40px; text-align:center; color:var(--muted); }
+#sentinel { height:1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>读数对比</h1>
+  <span class="count" id="count"></span>
+  <label>划法 <select id="kind"><option value="all">全部</option></select></label>
+  <label>掩膜 <select id="masked"><option value="all">全部</option><option value="yes">有掩膜</option><option value="no">没有掩膜</option></select></label>
+  <label>整行划掉 <select id="whole"><option value="all">全部</option><option value="yes">没有重写</option><option value="no">有重写</option></select></label>
+  <label>排序 <select id="sort"><option value="id">行号</option><option value="gap-desc">第一个与最后一个的泄漏差 大→小</option><option value="gap-asc">小→大</option></select></label>
+  <label><input type="search" id="search" placeholder="行号或文字…" size="14"></label>
+</header>
+<main id="grid"></main>
+<div id="sentinel"></div>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const CARDS = DATA.cards, RUNS = DATA.runs, STEP = 16;
+const $ = id => document.getElementById(id);
+let view = [], shown = 0;
+for (const k of [...new Set(CARDS.map(c => c.kind))].sort()) { const o = document.createElement('option'); o.value = k; o.textContent = k; $('kind').appendChild(o); }
+
+function matches(c) {
+  if ($('kind').value !== 'all' && c.kind !== $('kind').value) return false;
+  if ($('masked').value !== 'all' && c.masked !== ($('masked').value === 'yes')) return false;
+  if ($('whole').value !== 'all' && c.no_rewrite !== ($('whole').value === 'yes')) return false;
+  const s = $('search').value.trim();
+  if (s && !(c.id.includes(s) || c.before.includes(s) || c.after.includes(s) || RUNS.some(r => c.runs[r] && c.runs[r].text.includes(s)))) return false;
+  return true;
+}
+function apply() {
+  view = CARDS.filter(matches);
+  const sorts = {'gap-desc': (a, b) => b.gap - a.gap, 'gap-asc': (a, b) => a.gap - b.gap};
+  if (sorts[$('sort').value]) view.sort(sorts[$('sort').value]);
+  $('grid').replaceChildren(); shown = 0;
+  $('count').textContent = '显示 ' + view.length + ' / 共 ' + CARDS.length + ' 行';
+  if (!view.length) { const d = document.createElement('div'); d.className = 'empty'; d.textContent = '没有符合条件的行'; $('grid').appendChild(d); }
+  more();
+}
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+function share(name, v, goodLow) {
+  if (v === null || v === undefined) return null;
+  const s = el('span', 'share' + ((goodLow ? v <= .1 : v >= .9) ? ' good' : (goodLow ? v >= .5 : v <= .5) ? ' bad' : ''), name + ' ' + Math.round(100 * v) + '%');
+  return s;
+}
+function card(c) {
+  const d = el('div', 'card'), head = el('div', 'head');
+  head.appendChild(el('span', 'id', c.id)); head.appendChild(el('span', 'tag', c.kind));
+  head.appendChild(el('span', 'tag', c.masked ? '有掩膜' : '没有掩膜')); if (c.no_rewrite) head.appendChild(el('span', 'tag', '整行划掉，没有重写'));
+  d.appendChild(head);
+  const imgs = el('div', 'imgs');
+  for (const [kind, cap] of [['raw', '原图'], ['blanked', '掩膜下整列涂白']]) {
+    const w = el('div'); w.appendChild(el('div', 'cap', cap)); const i = el('img'); i.loading = 'lazy'; i.src = 'assets/' + c.id + '_' + kind + '.png'; w.appendChild(i); imgs.appendChild(w);
+  }
+  d.appendChild(imgs);
+  d.appendChild(el('div', 'cap', '划掉前（标注）')); d.appendChild(el('div', 'text', c.before));
+  d.appendChild(el('div', 'cap', '划掉后（标注）')); d.appendChild(el('div', 'text', c.after || '（空）'));
+  for (const r of RUNS) {
+    const run = el('div', 'run'), v = c.runs[r];
+    run.appendChild(el('b', '', r));
+    if (v) { for (const s of [share('泄漏', v.leak, true), share('有效', v.valid, false), share('重写', v.rewrite, false)]) if (s) run.appendChild(s); run.appendChild(el('div', 'text', v.text || '（空）')); }
+    else run.appendChild(el('span', 'cap', ' 没有这一行的读数'));
+    d.appendChild(run);
+  }
+  return d;
+}
+function more() {
+  const end = Math.min(view.length, shown + STEP), frag = document.createDocumentFragment();
+  for (let i = shown; i < end; i++) frag.appendChild(card(view[i]));
+  $('grid').appendChild(frag); shown = end;
+}
+new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && shown < view.length) more(); }, {rootMargin: '1200px'}).observe($('sentinel'));
+for (const id of ['kind', 'masked', 'whole', 'sort']) $(id).addEventListener('change', apply);
+$('search').addEventListener('input', apply);
+apply();
+</script>
+</body>
+</html>

@@ -44,7 +44,8 @@ revrender/
   tools/             annotate/（标注页 editor.html + 单文件打包）、compare_trace.py / compare_curve.py / compare_checkpoint.py（两份训练轨迹 / 验证曲线 / 检查点张量逐项比对）、
                      pages_view.py + pages_view.html（整页结果的静态 HTML：识别完拼回的、被字数过滤掉的）、
                      tighten_view.py + tighten_view.html（掩膜收紧前后的静态对比页：模型的和金标的）、
-                     clean_view.py + clean_view.html（整页清洁前后的静态对比页）
+                     clean_view.py + clean_view.html（整页清洁前后的静态对比页）、
+                     reader_view.py + reader_view.html（有标注的行：原图、涂白图、划掉前后的标注、每个运行的读数和它的泄漏 / 有效 / 重写占比）
 scripts/             deploy.sh、launch_gpu_job.sh、launch_queue_runner.sh、launch_train_arm.sh、launch_native_arm.sh、
                      verify_equivalence.sh、verify_thresholds.sh、verify_analysis.sh、_common.sh
 docs/                data_location.md（题目图在哪、怎么对上 image_id：只读调查）
