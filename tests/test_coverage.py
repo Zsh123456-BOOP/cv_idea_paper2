@@ -30,3 +30,10 @@ def test_the_alignment_keeps_equal_characters_in_order():
     assert C.alignment('abc', 'axc') == ({0, 2}, {0, 2})
     assert C.alignment('', 'abc') == (set(), set()) and C.alignment('ab', 'ab') == ({0, 1}, {0, 1})
     assert C.similarity('x = 3', 'x=3') == 1. and C.similarity('x=3', 'q') < .5
+
+
+def test_a_stutter_in_the_labels_is_held_under_one_alignment_and_not_the_other():
+    got = C.counts('b=85', 'b=8585', 'b=85')                       # a reading of the final text: which copy of "85" was struck?
+    assert got['leak'] == {'total': 2, 'held': 2, 'strict': 0, 'lenient': 2} and got['valid']['strict'] == got['valid']['total'] == 4
+    got = C.counts('b=8585', 'b=8585', 'b=85')
+    assert got['leak']['strict'] == 2 and 'rewrite' not in got

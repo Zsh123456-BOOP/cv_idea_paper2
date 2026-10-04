@@ -63,6 +63,9 @@ def test_leakage_valid_loss_blank_and_harm_to_clean_lines_are_counted_per_model_
     assert erased['controls']['share_moved'] == 1. and erased['controls']['mean_change'] > leakage.MOVED
     assert erased['leak']['difference_from_raw_final'][0] == pytest.approx(-1/3) and 'difference_from_raw_final' not in final['leak']
     assert erased['by_ink_kind']['whole_line']['leak'] == 0. and raw['by_ink_kind']['strike_rewrite']['lines'] == 2
+    assert raw['leak']['pooled'] == 1. and raw['leak']['masked'] == {'n': 0, 'mean': None} and raw['leak']['unmasked']['n'] == 3 and raw['abstain'] == 0.
+    assert erased['abstain'] == 1/3 and erased['valid']['change_from_raw_final']['n'] == 2 and erased['valid']['change_from_raw_final']['lose'] == .5
+    assert raw['leak']['strict'] <= raw['leak']['mean'][0] <= raw['leak']['lenient']
     assert not leakage.labelled({'kind': 'pair', 'text_before': 'x=3', 'before_unreadable': True}) and not leakage.labelled({'kind': 'pair', 'text_before': ''})
     assert not leakage.labelled({'kind': 'no_edit'}) and leakage.labelled(PACK[0])
 
@@ -71,6 +74,8 @@ def test_the_references_are_what_the_labels_allow_not_what_a_model_reads():
     refs = leakage.references(PACK)
     assert refs['exactly_after']['leak']['mean'] == 0. and refs['exactly_after']['rewrite']['mean'] == 1. and refs['exactly_after']['valid']['mean'] == 1.
     assert refs['exactly_before']['leak']['mean'] == 1. and refs['empty']['valid']['mean'] == 0. and refs['empty']['leak']['mean'] == 0.
+    assert set(refs) == {'exactly_after', 'exactly_before', 'empty', 'other_line_of_the_same_length'}
+    assert refs['other_line_of_the_same_length']['leak']['n'] == 3 and 0. <= refs['other_line_of_the_same_length']['leak']['mean'] < 1.
 
 
 def test_the_tool_scores_files_and_is_create_only(tmp_path):

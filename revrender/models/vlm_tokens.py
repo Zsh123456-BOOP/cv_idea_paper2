@@ -62,6 +62,17 @@ def prefill_mask(bias):
     return mask
 
 
+def patch_embed_as_linear(embed):
+    """Run a Qwen3-VL patch embedding (a Conv3d whose stride is its kernel) as the matrix product it is.  torch 2.9 with cuDNN 9.10-9.14
+    runs that Conv3d in bf16 about 1.4 seconds per image; the product gives the same numbers and runs in milliseconds."""
+    import torch
+    weight, bias = embed.proj.weight, embed.proj.bias
+
+    def forward(hidden_states):
+        return torch.nn.functional.linear(hidden_states.reshape(-1, weight[0].numel()).to(weight.dtype), weight.reshape(weight.shape[0], -1), bias)
+    embed.forward = forward
+
+
 class Reader:
     """A Qwen3-VL model and its processor on one device, reading batches of lines with hidden visual tokens."""
 
@@ -72,6 +83,7 @@ class Reader:
         self.processor = AutoProcessor.from_pretrained(str(model_dir))
         self.processor.tokenizer.padding_side = 'left'
         self.model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa').to(device).eval()
+        patch_embed_as_linear(self.model.model.visual.patch_embed)
         self.merge = self.model.config.vision_config.spatial_merge_size
         self.image_token = self.model.config.image_token_id
         eos = self.model.generation_config.eos_token_id

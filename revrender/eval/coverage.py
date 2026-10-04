@@ -10,9 +10,13 @@ to that text keeps it (``alignment``), so a character is held in order, not mere
   rewrite  share of the rewritten characters the reading holds, aligned to ``after``
   valid    share of the valid characters the reading holds, aligned to ``after``: the higher the better (blanking harms it)
 
-A share is None when the line has no such characters.  Reading exactly ``after`` scores leak 0.01, rewrite 1, valid 1; reading exactly
-``before`` scores leak 1; an empty reading scores 0 everywhere; the reading of another line holds about 5% of anything (the characters
-digits and operators share), which is the level below which a leak cannot be told from chance.
+A share is None when the line has no such characters.  Equal-cost alignments differ in which copy of a repeated character they keep
+(a struck "85" in "8585" and the valid "85" are the same characters), so a count is made twice, the alignment read from the end of the
+line and from its start: ``coverage`` gives the first, ``counts`` also the characters held in both (strict) and in either (lenient)
+-- a share is only as precise as that spread (about 3 points on a mean).  Reading exactly ``after`` scores leak about 0.01 (three lines
+whose labels repeat a stutter), rewrite 1, valid 1; reading exactly ``before`` scores leak 1; an empty reading scores 0 everywhere; a
+reading of another line holds 4% of the struck characters when it is as long as the labelled text and about 10% when it is as long as a
+raw reading (struck text included): the level below which a leak cannot be told from chance (``eval.leakage.references`` measures it).
 """
 import re
 from difflib import SequenceMatcher
@@ -69,10 +73,22 @@ def split(before, after):
     return struck, rewritten, valid
 
 
-def coverage(reading, before, after):
-    """{'leak', 'rewrite', 'valid'}: the shares (or None) of one reading of a line labelled ``before`` -> ``after``."""
+def counts(reading, before, after):
+    """{'leak', 'rewrite', 'valid'}: for each, the number of labelled characters, how many the reading holds (alignment from the end of the
+    line), and how many under both alignments (``strict``) and under either (``lenient``).  Empty for a name when the line has none."""
     r, b, a = prepare(reading), prepare(before), prepare(after)
     struck, rewritten, valid = split(b, a)
     held_b, held_a = alignment(r, b)[1], alignment(r, a)[1]
-    share = lambda positions, held: len(positions & held)/len(positions) if positions else None
-    return {'leak': share(struck, held_b), 'rewrite': share(rewritten, held_a), 'valid': share(valid, held_a)}
+    mirrored_b = {len(b)-1-i for i in alignment(r[::-1], b[::-1])[1]}
+    mirrored_a = {len(a)-1-i for i in alignment(r[::-1], a[::-1])[1]}
+    out = {}
+    for name, positions, held, mirrored in (('leak', struck, held_b, mirrored_b), ('rewrite', rewritten, held_a, mirrored_a), ('valid', valid, held_a, mirrored_a)):
+        if positions:
+            out[name] = {'total': len(positions), 'held': len(positions & held), 'strict': len(positions & held & mirrored), 'lenient': len(positions & (held | mirrored))}
+    return out
+
+
+def coverage(reading, before, after):
+    """{'leak', 'rewrite', 'valid'}: the shares (or None) of one reading of a line labelled ``before`` -> ``after``."""
+    got = counts(reading, before, after)
+    return {name: got[name]['held']/got[name]['total'] if name in got else None for name in ('leak', 'rewrite', 'valid')}

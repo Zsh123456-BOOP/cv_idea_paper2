@@ -65,6 +65,11 @@ def test_with_nothing_hidden_the_loop_reads_what_generate_reads_and_hiding_the_w
     import torch
     from PIL import Image, ImageDraw
     reader = V.Reader(Path(os.environ['RVR_VLM_DIR']))
+    embed = reader.model.model.visual.patch_embed
+    patches = torch.randn(40, embed.in_channels*embed.temporal_patch_size*embed.patch_size**2, device=reader.device, dtype=reader.model.dtype)
+    with torch.backends.cudnn.flags(enabled=False):                           # the convolution as the library defines it
+        as_convolution = embed.proj(patches.view(-1, embed.in_channels, embed.temporal_patch_size, embed.patch_size, embed.patch_size)).view(-1, embed.embed_dim)
+    assert torch.allclose(embed(patches).float(), as_convolution.float(), atol=2e-2, rtol=2e-2)
     image = Image.new('RGB', (240, 48), 'white')
     ImageDraw.Draw(image).text((10, 12), 'x = 3 + 4', fill='black')
     words = '请转写图中的文字。仅返回 <transcription>转写结果</transcription>'

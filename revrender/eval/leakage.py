@@ -15,21 +15,29 @@ Per model and condition (``revrender.recognize_lines``), on the pack's lines lab
   change   on the controls (lines a person judged to have no revision) how far the reading moves from the same model's ``raw_neutral``
            reading: 1 - similarity, and the share of lines that move by more than ``MOVED``
 
-``references`` scores what no model reads: exactly the text after the strike (the ceiling), exactly the text before it (leak 1) and an
-empty reading, so a share can be read against what the labels allow.  Intervals are 95% by resampling writers (the lines of one writer
-are not independent), seed 42; ``difference`` is a condition's mean minus ``raw_final``'s on the lines both are told for, with the same
-resampling.  A share with no line to count is None.
+Beside each share's mean over lines (``mean``: [mean, 2.5th, 97.5th]) an entry has ``pooled`` (characters over characters, so a line
+of forty struck characters weighs forty times a line of one), ``strict`` and ``lenient`` (the mean when only the characters held under
+both alignments of ``eval.coverage`` count, and under either), ``masked`` and ``unmasked`` (the mean on lines RevRender gave a mask and
+on those it did not: a mask-conditioned reading cannot help the second), ``abstain`` (the share of lines read as nothing or as
+placeholders only: a leak is easily lowered by saying nothing, so read it with ``valid``) and ``change_from_raw_final`` (per line, the
+share that lose or gain more than ``MOVED_SHARE`` and the median change: the paired mean is carried by a few lines).
+
+``references`` scores what no model reads: exactly the text after the strike (the ceiling), exactly the text before it (leak 1), an
+empty reading and the reading of another line (the one with the nearest label length), so a share can be read against what the labels
+allow and against chance.  Intervals are 95% by resampling writers (the lines of one writer are not independent), seed 42; ``difference``
+is a condition's mean minus ``raw_final``'s on the lines both are told for, with the same resampling.  A share with no line to count is None.
 """
 import argparse
 import json
 import random
 from collections import defaultdict
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 
 from ..util import SEED, digest, require, to_jsonable, write_json, provenance
-from .coverage import coverage, prepare, similarity
+from .coverage import counts, prepare, similarity
 
+MOVED_SHARE = .05          # a line whose share moves by more than this from raw_final's has lost or gained
 MOVED = .2                 # a reading that moved by more than this (1 - similarity) from the raw neutral one has been changed
 BASELINE = 'raw_neutral'
 REFERENCE = 'raw_final'
@@ -42,11 +50,22 @@ def labelled(row):
     return row['kind'] == 'pair' and not row.get('before_unreadable') and bool(prepare(row.get('text_before')))
 
 
+def line_counts(row, reading):
+    """``eval.coverage.counts`` of one reading of a labelled line."""
+    return counts(reading, row['text_before'], row.get('text_after'))
+
+
 def flags(row, reading):
     """The shares of one reading of a labelled line (``eval.coverage``) and whether it is empty where the whole line was struck."""
-    shares = coverage(reading, row['text_before'], row.get('text_after'))
+    got = line_counts(row, reading)
+    shares = {name: got[name]['held']/got[name]['total'] if name in got else None for name in SHARES}
     shares['blank'] = (not reading.strip()) if row.get('no_rewrite') else None
     return shares
+
+
+def abstained(reading):
+    """Whether a reading is nothing or placeholders only (□)."""
+    return not prepare(reading).replace('□', '')
 
 
 def writer_of(row):
@@ -82,10 +101,17 @@ def difference(a, b, writers, rng, resamples=RESAMPLES):
 
 
 def references(pack_rows):
-    """The mean shares of three readings no model gives: the text after the strike, the text before it, nothing."""
+    """The mean shares of four readings no model gives: the text after the strike, the text before it, nothing, another line's text."""
+    labelled_rows = sorted((r for r in pack_rows if labelled(r)), key=lambda r: r['id'])
+    lengths = {r['id']: len(prepare(r.get('text_after'))) for r in labelled_rows}
+
+    def other(row):
+        rest = [o for o in labelled_rows if o['id'] != row['id']]
+        return min(rest, key=lambda o: (abs(lengths[o['id']]-lengths[row['id']]), o['id'])).get('text_after') or ''
     out = {}
-    for name, read in (('exactly_after', lambda r: r.get('text_after') or ''), ('exactly_before', lambda r: r.get('text_before') or ''), ('empty', lambda r: '')):
-        got = [flags(r, read(r)) for r in pack_rows if labelled(r)]
+    for name, read in (('exactly_after', lambda r: r.get('text_after') or ''), ('exactly_before', lambda r: r.get('text_before') or ''), ('empty', lambda r: ''),
+                       ('other_line_of_the_same_length', other)):
+        got = [flags(r, read(r)) for r in labelled_rows]
         out[name] = {k: {'n': len([g for g in got if g[k] is not None]), 'mean': mean(g[k] for g in got if g[k] is not None) if any(g[k] is not None for g in got) else None}
                      for k in SHARES}
     return out
@@ -105,14 +131,27 @@ def score(pack_rows, predictions, seed=SEED):
         for condition, texts in conditions.items():
             rng = random.Random(seed)
             pair_ids = sorted(i for i in texts if labelled(rows[i]))
+            tallies = {i: line_counts(rows[i], texts[i]) for i in pair_ids}
             got = {i: flags(rows[i], texts[i]) for i in pair_ids}
-            entry = {'lines': len(pair_ids)}
+            entry = {'lines': len(pair_ids), 'abstain': mean(abstained(texts[i]) for i in pair_ids) if pair_ids else None}
             for name in (*SHARES, 'blank'):
                 ids = [i for i in pair_ids if got[i][name] is not None]
                 entry[name] = {'n': len(ids), 'mean': interval([float(got[i][name]) for i in ids], [writer_of(rows[i]) for i in ids], rng)}
+                if name in SHARES:
+                    have = [i for i in pair_ids if name in tallies[i]]
+                    total = sum(tallies[i][name]['total'] for i in have)
+                    entry[name]['pooled'] = sum(tallies[i][name]['held'] for i in have)/total if total else None
+                    for bound in ('strict', 'lenient'):
+                        entry[name][bound] = mean(tallies[i][name][bound]/tallies[i][name]['total'] for i in have) if have else None
+                    for label, wanted in (('masked', True), ('unmasked', False)):
+                        part = [got[i][name] for i in ids if (rows[i].get('masked_pixels', 0) > 0) == wanted]
+                        entry[name][label] = {'n': len(part), 'mean': mean(part) if part else None}
                 if condition != REFERENCE and name != 'blank' and REFERENCE in conditions:
                     entry[name]['difference_from_raw_final'] = difference([got[i][name] for i in pair_ids], [ref[i][name] for i in pair_ids],
                                                                          [writer_of(rows[i]) for i in pair_ids], random.Random(seed))
+                    moves = [got[i][name]-ref[i][name] for i in pair_ids if got[i][name] is not None and ref[i][name] is not None]
+                    entry[name]['change_from_raw_final'] = {'n': len(moves), 'lose': sum(m < -MOVED_SHARE for m in moves)/len(moves) if moves else None,
+                                                            'gain': sum(m > MOVED_SHARE for m in moves)/len(moves) if moves else None, 'median': median(moves) if moves else None}
             groups = defaultdict(list)
             for i in pair_ids:
                 groups[rows[i].get('ink_kind') or 'unknown'].append(i)
@@ -146,8 +185,10 @@ def main(argv=None):
     for model, conditions in scores.items():
         for condition, e in conditions.items():
             share = lambda k: ('%.2f' % e[k]['mean'][0]) if e[k]['mean'] else '--'
-            print(f"{model} {condition:15} leak {share('leak')} (n={e['leak']['n']}) rewrite {share('rewrite')} (n={e['rewrite']['n']}) valid {share('valid')} (n={e['valid']['n']}) "
-                  f"blank {share('blank')} | controls change {e['controls']['mean_change'] if e['controls']['mean_change'] is None else round(e['controls']['mean_change'], 3)}")
+            pooled = lambda k: ('%.2f' % e[k]['pooled']) if e[k]['pooled'] is not None else '--'
+            print(f"{model} {condition:25} leak {share('leak')} (pooled {pooled('leak')}, n={e['leak']['n']}) rewrite {share('rewrite')} (n={e['rewrite']['n']}) "
+                  f"valid {share('valid')} (n={e['valid']['n']}) blank {share('blank')} abstain {e['abstain'] if e['abstain'] is None else round(e['abstain'], 2)} "
+                  f"| controls change {e['controls']['mean_change'] if e['controls']['mean_change'] is None else round(e['controls']['mean_change'], 3)}")
     return 0
 
 
