@@ -42,7 +42,7 @@ include = ["revrender*"]
 
 [tool.setuptools.package-data]
 "revrender.tools.annotate" = ["*.html"]
-"revrender.tools" = ["*.html", "*.js"]
+"revrender.tools" = ["*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

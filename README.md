@@ -28,7 +28,6 @@ revrender/
   ocr.py             Unlimited-OCR 的调用（切行的那个模型，设置与当年相同）
   pages.py           整道题：OCR 的行 + 按墨迹切开的多行区域 + 补切的手写 → 每块过 RevRender → 实例拼回整页；命令行；`write_page` / `read_output` 是整页输出的唯一读写；`--frames` 丢掉框外的块
   tighten.py         掩膜收紧到非白像素（墨迹 + 紧贴的软边）：整页输出和放回整页的金标都能收；命令行
-  recognize.py       已有整题切块的 B/C/D 识别（Qwen；原图 / 掩膜遮白 / 原图加掩膜提示）
   eval/              fragments.py（人工标的划掉 / 重写的文字在不在模型读数里）、pages_score.py（整页输出对放回整页的金标：找到 / 画对）、matching.py（组件匹配 + F1 + 前沿 + 误报预算）、ap.py（掩膜 AP）、bootstrap.py（按书写者自助法）、
                      freeze.py（阈值冻结；`read_frozen` 是各读数共用的「读一份冻结」）、fates.py（找到 / 画对）、speed.py（推理计速）、
                      inloop.py（训练中验证读数）、report.py（重新打分、与已记录数字和另一份存档比对）、
@@ -39,8 +38,7 @@ revrender/
   tools/             annotate/（标注页 editor.html + 单文件打包）、compare_trace.py / compare_curve.py / compare_checkpoint.py（两份训练轨迹 / 验证曲线 / 检查点张量逐项比对）、
                      pages_view.py + pages_view.html（整页结果的静态 HTML：识别完拼回的、被字数过滤掉的）、
                      tighten_view.py + tighten_view.html（掩膜收紧前后的静态对比页：模型的和金标的）、
-                     clean_view.py + clean_view.html（整页清洁前后的静态对比页）、
-                     recognition_view.py + recognition_view.html（逐块文本标注、整题上下文、B/C/D 对比与导入导出）
+                     clean_view.py + clean_view.html（整页清洁前后的静态对比页）
 scripts/             deploy.sh、launch_gpu_job.sh、launch_queue_runner.sh、launch_train_arm.sh、launch_native_arm.sh、
                      verify_equivalence.sh、verify_thresholds.sh、verify_analysis.sh、_common.sh
 docs/                data_location.md（题目图在哪、怎么对上 image_id：只读调查）
@@ -103,7 +101,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 在 288 个人工确认的涂改行上，两个强模型读得很不一致：Qwen3.5-35B 与 Infinity 的相似度中位数 0.44、不低于 0.9 的占 31%；390 个无涂改行是 0.94 和 54%。要求「保留划掉的字」时，划掉的文字出现在读数里的比例：Unlimited-OCR 43%、Infinity 53%、Qwen3.5-35B 59%；重写的文字：60% / 67% / 73%。
 
-**Codex 做过的两轮（只是记录，没有人工答案，不当证据；代码是 `recognize.py`、`data/recognition_pack.py`、`eval/recognition_score.py`、`tools/recognition_view`）。** 都是 Qwen3-VL-8B 读我们的整题切块，B 原图 / C 掩膜遮白 / D 原图加红色掩膜图：
+**Codex 做过的两轮（只是记录，没有人工答案，不当证据；代码已在第一步之后删掉，历史在 git，最后一版是 `6404e64`，输出留在本机 `work/recognition_*`）。** 都是 Qwen3-VL-8B 读我们的整题切块，B 原图 / C 掩膜遮白 / D 原图加红色掩膜图：
 
 - 第一轮（`work/recognition_pilot40`，40 页 448 块）：提示要求「划掉、涂黑的不输出」，带整页上下文；其中 98 块有检测掩膜。
 - 第二轮（`work/recognition_revision80`，80 个检测阳性块）：不提这句，分「全部墨迹如实转写」和「正常直接输出、作废的用 `<del>` 包裹」两个任务。
