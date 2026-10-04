@@ -1,6 +1,6 @@
 """Read the lines of a ``data.line_pack`` pack with one VLM under several conditions, one image per request.
 
-    python -m revrender.recognize_lines --pack PACK --model MODEL_DIR [--conditions NAME ...] [--backend vllm|hf] [--tp N] --output-dir OUT
+    python -m revrender.recognize_lines --pack PACK --model MODEL_DIR [--conditions NAME ...] [--backend vllm|hf] [--adapter DIR] [--tp N] --output-dir OUT
 
 A condition is an image of the line and the words that go with it (``CONDITIONS``).  The words are one skeleton -- transcribe, LaTeX for
 formulas, □ for what cannot be read, no solving or correcting -- and what a condition adds to it:
@@ -110,6 +110,7 @@ def main(argv=None):
     p.add_argument('--model', type=Path, required=True)
     p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES])
     p.add_argument('--backend', choices=('vllm', 'hf'), default='vllm')
+    p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
     p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')
     p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
     p.add_argument('--max-new-tokens', type=int, default=256)
@@ -122,6 +123,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     require(len(set(args.conditions)) == len(args.conditions), 'duplicate condition')
     require(args.backend == 'hf' or not TOKEN_RULES & set(args.conditions), 'token conditions need --backend hf')
+    require(args.backend == 'hf' or not args.adapter, '--adapter needs --backend hf')
     pack = json.loads((args.pack/'pack.json').read_text())
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
     rows = pack['rows'][:args.limit or None]
@@ -129,14 +131,15 @@ def main(argv=None):
     out = make_output_dir(args.output_dir)
     if args.backend == 'hf':
         from .models.vlm_tokens import Reader
-        reader = Reader(args.model)
+        reader = Reader(args.model, adapter=args.adapter)
     else:
         from vllm import LLM, SamplingParams
         model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=4096, max_num_seqs=16, gpu_memory_utilization=.90,
                     limit_mm_per_prompt={'image': 1}, tensor_parallel_size=args.tp, trust_remote_code=args.trust_remote_code, disable_log_stats=True)
         sampling = SamplingParams(temperature=0, max_tokens=args.max_new_tokens, seed=SEED)
     write_manifest(out, config=to_jsonable(args), inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'),
-                                                           **{str(w): digest(w) for w in sorted(args.model.glob('*.safetensors'))}},
+                                                           **{str(w): digest(w) for w in sorted(args.model.glob('*.safetensors'))},
+                                                           **({str(w): digest(w) for w in sorted(args.adapter.glob('*.safetensors'))} if args.adapter else {})},
                    backend=args.backend, rows=len(jobs), lines=len(rows),
                    conditions={c: {'image': CONDITIONS[c][0], 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0])} for c in args.conditions},
                    system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'dtype': 'bfloat16'})

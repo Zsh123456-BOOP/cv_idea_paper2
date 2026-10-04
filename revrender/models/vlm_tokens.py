@@ -74,15 +74,19 @@ def patch_embed_as_linear(embed):
 
 
 class Reader:
-    """A Qwen3-VL model and its processor on one device, reading batches of lines with hidden visual tokens."""
+    """A Qwen3-VL model (with a LoRA adapter, if given) and its processor on one device, reading batches of lines with hidden visual tokens."""
 
-    def __init__(self, model_dir, device='cuda'):
+    def __init__(self, model_dir, device='cuda', adapter=None):
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor
         self.torch, self.device = torch, device
         self.processor = AutoProcessor.from_pretrained(str(model_dir))
         self.processor.tokenizer.padding_side = 'left'
-        self.model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa').to(device).eval()
+        self.model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa')
+        if adapter:                                                      # a LoRA adapter of ``train_reader``, merged into the weights
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(self.model, str(adapter)).merge_and_unload()
+        self.model = self.model.to(device).eval()
         patch_embed_as_linear(self.model.model.visual.patch_embed)
         self.merge = self.model.config.vision_config.spatial_merge_size
         self.image_token = self.model.config.image_token_id

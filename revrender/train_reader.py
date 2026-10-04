@@ -1,0 +1,205 @@
+"""Teach a Qwen3-VL to give the final valid writing of a line struck out in places: LoRA on synthetic revisions.
+
+    python -m revrender.train_reader --corpus corpus.jsonl --pages DIR [--pages DIR ...] --model MODEL_DIR --output-dir OUT
+        [--kinds clean whole paste] [--steps N] [--batch-size B] [--accumulate A] [--rank R] [--lr LR]
+
+The samples are the recipes of ``data.reader_corpus`` drawn when they are read (``data.paste_strikes``): the line, with writing struck out and
+put in or the whole line struck, and the text it should be read as -- the host's own, or nothing (``[空]``).  The words of the request are
+those of ``recognize_lines`` (``--words``); the answer is ``<transcription>text</transcription>`` and only the answer carries the loss.  The
+language model's linear layers get a low-rank adapter; the vision tower and everything else stay as they are.  ``--kinds clean`` trains on
+the clean lines alone, the control that says how much of a gain is the writer's hand and the answer's style and how much is the strikes.
+Seed 42; OUT/adapter is the adapter (``recognize_lines --backend hf --adapter OUT/adapter`` reads with it), OUT/train_log.jsonl the loss.
+"""
+import argparse
+import json
+import math
+import random
+import time
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from . import pages as pages_module
+from .data import lines as lines_module
+from .data.paste_strikes import compose
+from .recognize_lines import SYSTEM, prompt
+from .util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
+
+EMPTY = '[空]'
+TARGET = '<transcription>{}</transcription>'
+
+
+def target_of(text):
+    """The answer a request is taught to get: the text between the tags, ``[空]`` for nothing."""
+    return TARGET.format(text.strip() if text.strip() else EMPTY)
+
+
+def read_rows(corpus, kinds=None, split=None):
+    rows = [json.loads(line) for line in Path(corpus).read_text(encoding='utf-8').splitlines() if line.strip()]
+    return [r for r in rows if (not kinds or r['kind'] in kinds) and (not split or r['split'] == split)]
+
+
+class Crops:
+    """Line crops of the pages, by line id, as RGB arrays (a page is opened once per crop; the pages are big, the crops small)."""
+
+    def __init__(self, folders, rows):
+        self.files = pages_module.page_files(folders, sorted({r['image_id'] for r in rows}))
+        self.boxes = {r['line_id']: r['box_1000'] for r in rows}
+
+    def get(self, line_id, box_1000=None):
+        image_id = line_id.split(':')[0]
+        with Image.open(self.files[image_id]) as page:
+            return np.asarray(page.convert('RGB').crop(lines_module.crop_box(box_1000 or self.boxes[line_id], *page.size)))
+
+
+def render(row, crops):
+    """(PIL image, the text it should be read as) for a recipe row."""
+    host = crops.get(row['line_id'], row['box_1000'])
+    donors = [crops.get(d) for d in row['donors']]
+    made = compose(host, donors, random.Random(row['seed']), row['kind'])
+    return made['image'].convert('RGB'), '' if made['kind'] == 'whole' else row['host_text']      # what could not be drawn comes out clean: the host's text
+
+
+class Samples:
+    def __init__(self, rows, crops):
+        self.rows, self.crops = rows, crops
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, i):
+        return render(self.rows[i], self.crops)
+
+
+class Collate:
+    """A batch for the model: the chat with the answer, the loss only on the answer."""
+
+    def __init__(self, processor, words):
+        self.processor, self.words = processor, words
+        self.start = processor.tokenizer.convert_tokens_to_ids('<|im_start|>')
+
+    def __call__(self, batch):
+        conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': SYSTEM}]},
+                          {'role': 'user', 'content': [{'type': 'image', 'image': image}, {'type': 'text', 'text': self.words}]},
+                          {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for image, text in batch]
+        out = self.processor.apply_chat_template(conversations, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
+        out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw')}
+        labels = out['input_ids'].clone()
+        for b in range(labels.shape[0]):
+            marks = (out['input_ids'][b] == self.start).nonzero().flatten()
+            labels[b, :int(marks[-1])+3] = -100                        # the system and user turns and "<|im_start|>assistant\n"
+        labels[out['attention_mask'] == 0] = -100
+        out['labels'] = labels
+        return out
+
+
+def lora_model(model_dir, rank, alpha, dropout):
+    import torch
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForImageTextToText
+    from .models.vlm_tokens import patch_embed_as_linear
+    model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa')
+    patch_embed_as_linear(model.model.visual.patch_embed)
+    config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias='none',
+                        target_modules=r'.*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)')
+    return get_peft_model(model, config)
+
+
+def cycle(loader):
+    """Go through a loader again and again."""
+    while True:
+        yield from loader
+
+
+def evaluate(model, loader, device):
+    import torch
+    model.eval()
+    total, count = 0., 0
+    with torch.inference_mode():
+        for batch in loader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
+            tokens = int((batch['labels'] != -100).sum())
+            total += float(model(**batch).loss)*tokens
+            count += tokens
+    model.train()
+    return total/max(1, count)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
+    p.add_argument('--corpus', type=Path, required=True)
+    p.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
+    p.add_argument('--model', type=Path, required=True)
+    p.add_argument('--kinds', nargs='+', choices=('clean', 'whole', 'paste'), default=['clean', 'whole', 'paste'])
+    p.add_argument('--words', choices=('neutral', 'final'), default='final', help='the words of the request (recognize_lines conditions raw_neutral / raw_final)')
+    p.add_argument('--steps', type=int, default=600, help='optimizer steps')
+    p.add_argument('--batch-size', type=int, default=8, help='samples per forward pass')
+    p.add_argument('--accumulate', type=int, default=4, help='forward passes per optimizer step')
+    p.add_argument('--rank', type=int, default=16)
+    p.add_argument('--alpha', type=int, default=32)
+    p.add_argument('--dropout', type=float, default=.05)
+    p.add_argument('--lr', type=float, default=1e-4)
+    p.add_argument('--warmup', type=int, default=30)
+    p.add_argument('--eval-every', type=int, default=100)
+    p.add_argument('--val-limit', type=int, default=200, help='validation recipes (writers held out of training)')
+    p.add_argument('--workers', type=int, default=6)
+    p.add_argument('--checkpointing', action='store_true', help='gradient checkpointing (the 8B model)')
+    p.add_argument('--output-dir', type=Path, required=True)
+    args = p.parse_args(argv)
+    import torch
+    from transformers import AutoProcessor
+    train_rows, val_rows = read_rows(args.corpus, args.kinds, 'train'), read_rows(args.corpus, args.kinds, 'val')[:args.val_limit]
+    require(train_rows, 'no training recipe of these kinds')
+    out = make_output_dir(args.output_dir)
+    torch.manual_seed(SEED)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    crops = Crops(args.pages, read_rows(args.corpus))
+    processor = AutoProcessor.from_pretrained(str(args.model))
+    processor.tokenizer.padding_side = 'right'
+    collate = Collate(processor, prompt('raw_final' if args.words == 'final' else 'raw_neutral', {'boxes': []}))
+    generator = torch.Generator().manual_seed(SEED)
+    loader = torch.utils.data.DataLoader(Samples(train_rows, crops), batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=args.workers,
+                                         generator=generator, drop_last=True, persistent_workers=args.workers > 0)
+    val_loader = torch.utils.data.DataLoader(Samples(val_rows, crops), batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
+    model = lora_model(args.model, args.rank, args.alpha, args.dropout).to('cuda')
+    if args.checkpointing:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
+        model.enable_input_require_grads()
+    model.train()
+    params = [q for q in model.parameters() if q.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0., betas=(.9, .999))
+    schedule = lambda step: min(1., (step+1)/args.warmup)*(.1+.9*.5*(1+math.cos(math.pi*step/args.steps)))
+    write_manifest(out, config=to_jsonable(args), inputs={str(args.corpus): digest(args.corpus)}, train_recipes=len(train_rows), val_recipes=len(val_rows),
+                   trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds)
+    stream = (out/'train_log.jsonl').open('x', encoding='utf-8')
+    started, iterator = time.monotonic(), cycle(loader)
+    for step in range(args.steps):
+        for group in optimizer.param_groups:
+            group['lr'] = args.lr*schedule(step)
+        total, tokens = 0., 0
+        for _ in range(args.accumulate):
+            batch = {k: v.to('cuda') for k, v in next(iterator).items()}
+            batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
+            loss = model(**batch).loss
+            (loss/args.accumulate).backward()
+            total += float(loss)
+        torch.nn.utils.clip_grad_norm_(params, 1.)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        row = {'step': step+1, 'loss': total/args.accumulate, 'lr': optimizer.param_groups[0]['lr'], 'seconds': round(time.monotonic()-started, 1)}
+        if val_loader is not None and ((step+1) % args.eval_every == 0 or step+1 == args.steps):
+            row['val_loss'] = evaluate(model, val_loader, 'cuda')
+        stream.write(json.dumps(row)+'\n')
+        stream.flush()
+        print(json.dumps(row), flush=True)
+    model.save_pretrained(out/'adapter')
+    stream.close()
+    write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'final_loss': row['loss'], 'final_val_loss': row.get('val_loss')})
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
