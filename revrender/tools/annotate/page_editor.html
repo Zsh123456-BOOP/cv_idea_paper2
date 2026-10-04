@@ -74,6 +74,9 @@ code { font:12.5px ui-monospace, Menlo, monospace; background:var(--bg); padding
       <button id="t-blot" data-tool="blot"><span class="sw" style="background:var(--blot)"></span>涂黑框<kbd>1</kbd></button>
       <button id="t-line" data-tool="line"><span class="sw" style="background:var(--line)"></span>划线<kbd>2</kbd></button>
       <button id="t-over" data-tool="overwrite"><span class="sw" style="background:var(--over)"></span>盖写框<kbd>3</kbd></button>
+      <button id="t-splitv">上下拆开<kbd>S</kbd></button>
+      <button id="t-splith">左右拆开<kbd>⇧S</kbd></button>
+      <button id="t-join">与下一行合并<kbd>J</kbd></button>
       <button id="t-del">删除选中<kbd>D</kbd></button>
       <button id="t-undo">撤销<kbd>Z</kbd></button>
       <button id="t-redo">重做<kbd>⇧Z</kbd></button>
@@ -92,11 +95,11 @@ code { font:12.5px ui-monospace, Menlo, monospace; background:var(--bg); padding
 <dialog id="dlgHelp" class="help">
   <h3 style="margin-top:0">标注规则</h3>
   <ol>
-    <li><b>行框</b>：每一行手写一个框。多框了别的行、少框了字，选中后拖角点；斜行或弯行在框边上<b>双击加点</b>，让框跟着字走；按住 <kbd>⌥/Alt</kbd> 点一个角点删掉它。漏了一行用「新行框」拖一个；不是作答的（题目印刷字、页脚、页码）勾「不是作答」。右边的顺序就是阅读顺序，用 ↑ ↓ 调。</li>
+    <li><b>行框</b>：每一行手写一个框。多框了别的行、少框了字，选中后拖白点；斜行或弯行在框边上<b>双击加点</b>，让框跟着字走；按住 <kbd>⌥/Alt</kbd> 点一个白点删掉它。一个框里装了两行：把鼠标放在两行之间按 <kbd>S</kbd>（上下拆开）；左右两段不相干的字：鼠标放在中间按 <kbd>⇧S</kbd>（左右拆开）；一行被切成两个框：选中前一个按 <kbd>J</kbd> 与下一行合并。漏了一行用「新行框」拖一个。整行都是题目印刷字、页脚、页码的，勾「不是作答」。右边的顺序就是阅读顺序，用 ↑ ↓ 调。拖动行框里面是平移画面；要整体挪动一个行框，按住 <kbd>⇧</kbd> 拖。</li>
     <li><b>涂改区域</b>：只标让字作废的痕迹。涂黑、乱涂用「涂黑框」框住；横线、斜线划掉用「划线」沿着线点几下，双击或回车结束；新字直接写在旧字上面用「盖写框」。下划线、圈、箭头、着重号都不算。不用画得很准，程序会只留墨迹。</li>
-    <li><b>文字</b>：写这一行学生写下的全部内容；被划掉的部分放进 <code>[[ ]]</code>，例：<code>x=[[3]]5</code>（最终是 x=5，划掉的是 3）。看不清的字写 <code>?</code>，如 <code>[[2?]]</code>；完全读不出写 <code>[[?]]</code>；盖写写 <code>[[旧]]新</code>。在行上方补写的字直接写进最终该在的位置。LaTeX 和 ∠ √ × ° 都可以。</li>
+    <li><b>文字</b>：写这一行学生写下的全部内容；被划掉的部分放进 <code>[[ ]]</code>，例：<code>x=[[3]]5</code>（最终是 x=5，划掉的是 3）。看不清的字写 <code>?</code>，如 <code>[[2?]]</code>；完全读不出写 <code>[[?]]</code>；盖写写 <code>[[旧]]新</code>。只写手写的字：同一行里的印刷字（如填空题的「a=」）不写。在行上方或旁边补写的改正，写进它替换的那一行、最终该在的位置，不单独成行；一处划掉跨了两行，就在两行里各写各的 <code>[[ ]]</code>。分式写 <code>a/b</code> 或 <code>\frac{a}{b}</code>，上下两层算一行。LaTeX 和 ∠ √ × ° 都可以。在文字框里按回车跳到下一行，⇧回车才是换行。</li>
     <li>每行的 <code>[[ ]]</code> 段数要和这一行里的涂改区域数一致，不一致会标黄。整行都读不出就勾「整行读不出」。</li>
-    <li>做完一题点「本题完成 ✓」。页面自动保存在这个浏览器里；换浏览器或电脑前先「导出」，到那边「导入」。</li>
+    <li>做完一题点「本题完成 ✓」。页面自动保存在这个浏览器里；换浏览器或电脑前先「导出」，到那边「导入」。试标包导出的文件也能导入正式的测试包，试标过的题不用再标。</li>
   </ol>
   <p style="color:var(--muted)">滚轮缩放，按住空格或右键拖动平移；<kbd>0</kbd> 适应窗口。</p>
   <button id="helpClose">关闭</button>
@@ -121,7 +124,7 @@ if (!store.pages) store.pages = {};
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { hud("浏览器存不下了：请先导出"); } };
 
 let at = Math.max(0, PAGES.findIndex(p => !(store.pages[p.id] || {}).done)), tool = "select", selected = null, drawing = null, drag = null;
-let scale = 1, panX = 0, panY = 0, image = null, showLines = true, showMarks = true, spaceDown = false, undo = [], redo = [];
+let scale = 1, panX = 0, panY = 0, image = null, showLines = true, showMarks = true, spaceDown = false, undo = [], redo = [], cursor = null;
 if (at < 0) at = 0;
 
 const page = () => PAGES[at];
@@ -277,7 +280,15 @@ function renderList() {
     const grow = () => { txt.style.height = "auto"; txt.style.height = txt.scrollHeight + 2 + "px"; };
     txt.oninput = () => { l.text = txt.value; grow(); touched(); refreshChecks(); };
     requestAnimationFrame(grow);
-    txt.onchange = () => { remember(); };
+    let before = null;
+    txt.addEventListener("focus", () => { before = JSON.stringify(state()); });
+    txt.onchange = () => { if (before) { undo.push(before); if (undo.length > 80) undo.shift(); redo = []; } before = JSON.stringify(state()); };
+    txt.addEventListener("keydown", e => {
+      if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      const next = document.querySelector(`#list .row[data-index="${k + 1}"] .txt`);
+      if (next) next.focus(); else txt.blur();
+    });
     const ctl = document.createElement("div"); ctl.className = "ctl";
     const tag = document.createElement("span"); tag.textContent = sourceName(l.source); ctl.appendChild(tag);
     const box = (label, field) => {
@@ -331,6 +342,32 @@ function deleteSelected() {
   if (selected.kind === "line") state().lines.splice(selected.index, 1); else state().marks.splice(selected.index, 1);
   selected = null; touched(); renderList(); draw();
 }
+function bbox(points) { const xs = points.map(q => q[0]), ys = points.map(q => q[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; }
+const rectangle = (l, t, r, b) => [[l, t], [r, t], [r, b], [l, b]];
+function split(how) {
+  // The selected line box cut in two at the cursor (the middle when the cursor is not over it): rows = a top and a bottom box, columns = a
+  // left and a right one.  The text stays with the first; the second is new and empty.
+  if (!selected || selected.kind !== "line") { hud("先选中一个行框"); return; }
+  const lines = state().lines, line = lines[selected.index], [l, t, r, b] = bbox(line.poly);
+  const at = how === "rows" ? Math.round(cursor && cursor[1] > t + 2 && cursor[1] < b - 2 ? cursor[1] : (t + b) / 2)
+                            : Math.round(cursor && cursor[0] > l + 2 && cursor[0] < r - 2 ? cursor[0] : (l + r) / 2);
+  remember();
+  line.poly = how === "rows" ? rectangle(l, t, r, at) : rectangle(l, t, at, b);
+  lines.splice(selected.index + 1, 0, { poly: how === "rows" ? rectangle(l, at, r, b) : rectangle(at, t, r, b), text: "", source: "added", line_id: null, not_writing: false, unreadable: false });
+  touched(); renderList(); draw();
+  hud(how === "rows" ? "已上下拆开：下面那行的文字是空的" : "已左右拆开：右边那段的文字是空的");
+}
+function joinNext() {
+  if (!selected || selected.kind !== "line") { hud("先选中一个行框"); return; }
+  const lines = state().lines, k = selected.index;
+  if (k + 1 >= lines.length) { hud("这已经是最后一行"); return; }
+  remember();
+  const [l1, t1, r1, b1] = bbox(lines[k].poly), [l2, t2, r2, b2] = bbox(lines[k + 1].poly);
+  lines[k].poly = rectangle(Math.min(l1, l2), Math.min(t1, t2), Math.max(r1, r2), Math.max(b1, b2));
+  lines[k].text = [lines[k].text, lines[k + 1].text].filter(Boolean).join("");
+  lines.splice(k + 1, 1);
+  touched(); renderList(); draw();
+}
 function insertLine(polygon) {
   const lines = state().lines, cy = centre(polygon)[1];
   let at = lines.findIndex(l => centre(l.poly)[1] > cy);
@@ -378,11 +415,15 @@ cv.addEventListener("mousedown", e => {
     return;
   }
   if (h !== -1) { remember(); drag = { kind: "handle", index: h }; return; }
-  if (selected && onSelected(p)) { remember(); drag = { kind: "move", from: p, moved: false }; return; }   // the selected shape first
+  if (selected && onSelected(p) && (selected.kind === "mark" || e.shiftKey)) { remember(); drag = { kind: "move", from: p, moved: false }; return; }   // the selected shape first
   const m = showMarks ? hitMark(p) : -1;
   if (m !== -1) { select({ kind: "mark", index: m }); remember(); drag = { kind: "move", from: p, moved: false }; return; }
   const l = showLines ? hitLine(p) : -1;
-  if (l !== -1) { select({ kind: "line", index: l }); remember(); drag = { kind: "move", from: p, moved: false }; return; }
+  if (l !== -1) {                                               // a line box is chosen by a click; dragging inside it pans, unless Shift is held
+    select({ kind: "line", index: l });
+    if (e.shiftKey) { remember(); drag = { kind: "move", from: p, moved: false }; } else drag = { kind: "pan", sx, sy, panX, panY };
+    return;
+  }
   select(null); drag = { kind: "pan", sx, sy, panX, panY };
 });
 cv.addEventListener("dblclick", e => {
@@ -396,6 +437,7 @@ cv.addEventListener("dblclick", e => {
 });
 window.addEventListener("mousemove", e => {
   const rect = cv.getBoundingClientRect(), sx = e.clientX - rect.left, sy = e.clientY - rect.top, p = toImage(sx, sy);
+  if (e.target === cv) cursor = p;
   if (drawing && drawing.tool === "line") { drawing.cursor = p; draw(); }
   if (drawing && drawing.start) { drawing.end = p; draw(); return; }
   if (!drag) return;
@@ -446,7 +488,9 @@ document.addEventListener("keydown", e => {
   else if (key === "1") setTool("blot");
   else if (key === "2") setTool("line");
   else if (key === "3") setTool("overwrite");
-  else if (key === "d" || key === "delete" || key === "backspace") { e.preventDefault(); deleteSelected(); }
+  else if (key === "d" || key === "delete") { e.preventDefault(); deleteSelected(); }
+  else if (key === "s") split(e.shiftKey ? "columns" : "rows");
+  else if (key === "j") joinNext();
   else if (key === "z" && e.shiftKey) $("t-redo").click();
   else if (key === "z") $("t-undo").click();
   else if (key === "0") fit();
@@ -486,6 +530,9 @@ $("doneBtn").onclick = () => {
 $("resetBtn").onclick = () => { if (!confirm("把这一题还原成预填的样子？你在这一题上的修改都会丢掉。")) return; delete store.pages[page().id]; delete scratch[page().id]; save(); show(at); };
 for (const b of document.querySelectorAll(".tools [data-tool]")) b.onclick = () => setTool(b.dataset.tool);
 $("t-del").onclick = deleteSelected;
+$("t-splitv").onclick = () => split("rows");
+$("t-splith").onclick = () => split("columns");
+$("t-join").onclick = joinNext;
 $("t-undo").onclick = () => { if (!undo.length) return; redo.push(JSON.stringify(state())); store.pages[page().id] = JSON.parse(undo.pop()); selected = null; touched(); renderList(); draw(); status(); };
 $("t-redo").onclick = () => { if (!redo.length) return; undo.push(JSON.stringify(state())); store.pages[page().id] = JSON.parse(redo.pop()); selected = null; touched(); renderList(); draw(); status(); };
 $("t-fit").onclick = fit;
@@ -515,8 +562,9 @@ $("importFile").onchange = async () => {
   const file = $("importFile").files[0]; if (!file) return;
   try {
     const value = JSON.parse(await file.text());
-    if (value.schema !== "paper2-page-annotation-v1" || value.pack !== PACK.id) throw new Error("不是这个标注包导出的文件");
-    const ids = new Set(PAGES.map(p => p.id)), incoming = Object.keys(value.pages).filter(id => ids.has(id));
+    if (value.schema !== "paper2-page-annotation-v1") throw new Error("不是整道题标注页导出的文件");
+    const ids = new Set(PAGES.map(p => p.id)), incoming = Object.keys(value.pages).filter(id => ids.has(id));   // any pack's export: the questions this pack also has
+    if (!incoming.length) throw new Error("文件里没有这个标注包里的题");
     if (!confirm(`导入 ${incoming.length} 道题的标注，覆盖这个浏览器里这些题的内容？`)) return;
     for (const id of incoming) store.pages[id] = value.pages[id];
     save(); show(at);
