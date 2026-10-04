@@ -22,9 +22,12 @@ require_clean_source() {   # a deployed snapshot carries deployment_origin.json 
     test -z "$(git -C "$ROOT" status --porcelain --untracked-files=no)" || { echo 'source dirty'; exit 2; }
 }
 
-hold_card() {      # $1 = GPU uuid: take the card's lock shared on fd 9 and pin the environment
-    exec 9>>"$LOCKS/$1.lock"
-    flock -s 9
+hold_card() {      # $1 = GPU uuid (several joined by commas for a job that spans cards): take each card's lock shared and pin the environment
+    local uuid fd
+    for uuid in ${1//,/ }; do
+        exec {fd}>>"$LOCKS/$uuid.lock"
+        flock -s "$fd"
+    done
     export CUDA_VISIBLE_DEVICES="$1" CUBLAS_WORKSPACE_CONFIG=:4096:8 PYTHONHASHSEED=42 PYTHONDONTWRITEBYTECODE=1
     export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1
     export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
