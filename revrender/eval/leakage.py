@@ -18,7 +18,8 @@ Per model and condition (``revrender.recognize_lines``), on the pack's lines lab
 Beside each share's mean over lines (``mean``: [mean, 2.5th, 97.5th]) an entry has ``pooled`` (characters over characters, so a line
 of forty struck characters weighs forty times a line of one), ``strict`` and ``lenient`` (the mean when only the characters held under
 both alignments of ``eval.coverage`` count, and under either), ``masked`` and ``unmasked`` (the mean on lines RevRender gave a mask and
-on those it did not: a mask-conditioned reading cannot help the second), ``abstain`` (the share of lines read as nothing or as
+on those it did not: a mask-conditioned reading cannot help the second), ``by_extent`` (lines struck out whole, with nothing after, against lines
+struck in part: the first is mostly a question of saying nothing, the second of reading around the strike), ``abstain`` (the share of lines read as nothing or as
 placeholders only: a leak is easily lowered by saying nothing, so read it with ``valid``) and ``change_from_raw_final`` (per line, the
 share that lose or gain more than ``MOVED_SHARE`` and the median change: the paired mean is carried by a few lines).
 
@@ -157,6 +158,9 @@ def score(pack_rows, predictions, seed=SEED):
                 groups[rows[i].get('ink_kind') or 'unknown'].append(i)
             mean_of = lambda xs: mean(xs) if xs else None
             entry['by_ink_kind'] = {k: {'lines': len(v), **{s: mean_of([got[i][s] for i in v if got[i][s] is not None]) for s in SHARES}} for k, v in sorted(groups.items())}
+            extents = {'whole_line_struck': [i for i in pair_ids if not prepare(rows[i].get('text_after'))], 'partial': [i for i in pair_ids if prepare(rows[i].get('text_after'))]}
+            entry['by_extent'] = {k: {'lines': len(v), **{s: mean_of([got[i][s] for i in v if got[i][s] is not None]) for s in SHARES}, 'abstain': mean_of([abstained(texts[i]) for i in v])}
+                                  for k, v in extents.items()}
             control_ids = sorted(i for i in texts if rows[i]['kind'] == 'no_edit' and i in base)
             moves = [1.-similarity(texts[i], base[i]) for i in control_ids]
             entry['controls'] = {'lines': len(control_ids), 'mean_change': mean(moves) if moves else None,

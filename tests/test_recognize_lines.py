@@ -66,6 +66,8 @@ def test_leakage_valid_loss_blank_and_harm_to_clean_lines_are_counted_per_model_
     assert raw['leak']['pooled'] == 1. and raw['leak']['masked'] == {'n': 0, 'mean': None} and raw['leak']['unmasked']['n'] == 3 and raw['abstain'] == 0.
     assert erased['abstain'] == 1/3 and erased['valid']['change_from_raw_final']['n'] == 2 and erased['valid']['change_from_raw_final']['lose'] == .5
     assert raw['leak']['strict'] <= raw['leak']['mean'][0] <= raw['leak']['lenient']
+    assert raw['by_extent']['whole_line_struck']['lines'] == 1 and raw['by_extent']['partial']['lines'] == 2 and erased['by_extent']['whole_line_struck']['abstain'] == 1.
+    assert erased['by_extent']['whole_line_struck']['leak'] == 0. and raw['by_extent']['whole_line_struck']['valid'] is None
     assert not leakage.labelled({'kind': 'pair', 'text_before': 'x=3', 'before_unreadable': True}) and not leakage.labelled({'kind': 'pair', 'text_before': ''})
     assert not leakage.labelled({'kind': 'no_edit'}) and leakage.labelled(PACK[0])
 
