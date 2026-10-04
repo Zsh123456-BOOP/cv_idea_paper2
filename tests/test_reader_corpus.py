@@ -31,7 +31,7 @@ def test_each_host_becomes_one_recipe_per_variant_and_a_paste_takes_its_donors_f
     kinds = [r['kind'] for r in rows if r['line_id'] == 'w1_3_1:L1']
     assert kinds == list(C.VARIANTS)
     for r in rows:
-        assert (r['text'] == '') == (r['kind'] == 'whole') and r['host_text'] and (bool(r['donors']) == (r['kind'] == 'paste'))
+        assert (r['text'] == '') == (r['kind'] == 'whole') and r['host_text'] and (bool(r['donors']) == (r['kind'] in ('paste', 'stack')))
         assert r['line_id'] not in r['donors'] and all(d.startswith(r['writer']) for d in r['donors'])
     assert C.recipes(chosen) == rows and C.recipes(chosen, seed=7) != rows        # the same corpus every time, another seed another draw
     alone = C.recipes(C.hosts(CATALOGUE, {'qwen35_35b': QWEN, 'infinity': INFINITY}, WRITERS, set()))

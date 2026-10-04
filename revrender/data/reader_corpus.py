@@ -6,8 +6,8 @@ A host is a line of the catalogue that a person or a consensus of models judged 
 whose text two strong models read alike (``AGREE``; the reading of the first is the text the reader is taught to give).  A host is never
 a test writer's, nor a writer of any line of the evaluation pack (``--exclude-pack``: a reader taught on the writer's own hand reads that
 writer's lines better for it).  Each host is made into one recipe per entry of ``VARIANTS``: ``clean`` (the line itself), ``whole`` (the
-whole line struck out: the target is nothing) and ``paste`` (struck writing of the same writer's other lines put in: the target is the
-host's text).  A recipe says which lines, which kind, which seed; the image is drawn when it is read (``data.paste_strikes.compose``), so
+whole line struck out: the target is nothing), ``paste`` (struck writing of the same writer's other lines put in: the target is the
+host's text) and ``stack`` (the same, above or below a word of the host).  A recipe says which lines, which kind, which seed; the image is drawn when it is read (``data.paste_strikes.compose``), so
 the corpus is a file of text.  A small share of the writers, chosen by hash, is the corpus's own validation split.
 
 OUT/corpus.jsonl has a row per recipe (id, split, kind, line_id, image_id, writer, text, donors, seed) and OUT/summary.json the counts.
@@ -28,7 +28,7 @@ from .prior_annotations import read_line_text, writer_splits
 
 AGREE = .9                 # the two readings of a host are at least this alike (difflib's ratio after normalising)
 MIN_CHARS = 4              # and the text has at least this many characters
-VARIANTS = ('clean', 'whole', 'paste', 'paste')
+VARIANTS = ('clean', 'whole', 'paste', 'paste', 'stack')
 DONORS = 6                 # other hosts of the writer a paste may take writing from
 VAL_SHARE = .05            # of the writers
 TYPES = ('text', 'equation')
@@ -65,13 +65,13 @@ def recipes(chosen, variants=VARIANTS, donors=DONORS, seed=SEED):
     for h in chosen:
         others = [i for i in by_writer[h['writer']] if i != h['line_id']]
         for n, kind in enumerate(variants):
-            if kind == 'paste' and not others:
+            if kind in ('paste', 'stack') and not others:
                 continue
             draw = int(hashlib.sha256(f'{seed}:{h["line_id"]}:{n}'.encode()).hexdigest()[:8], 16)
             rng = random.Random(draw)
             out.append({'id': f'{h["line_id"]}#{n}', 'split': 'val' if val_writer(h['writer']) else 'train', 'kind': kind, 'line_id': h['line_id'],
                         'image_id': h['image_id'], 'writer': h['writer'], 'text': h['text'] if kind != 'whole' else '', 'host_text': h['text'],
-                        'box_1000': h['box_1000'], 'donors': rng.sample(others, min(donors, len(others))) if kind == 'paste' else [], 'seed': draw})
+                        'box_1000': h['box_1000'], 'donors': rng.sample(others, min(donors, len(others))) if kind in ('paste', 'stack') else [], 'seed': draw})
     return out
 
 

@@ -1,6 +1,4 @@
 """How much of the struck, rewritten and valid text of a labelled line a reading holds."""
-import pytest
-
 from revrender.eval import coverage as C
 
 

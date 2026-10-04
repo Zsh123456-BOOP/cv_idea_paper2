@@ -132,7 +132,7 @@ def main(argv=None):
     p.add_argument('--corpus', type=Path, required=True)
     p.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
     p.add_argument('--model', type=Path, required=True)
-    p.add_argument('--kinds', nargs='+', choices=('clean', 'whole', 'paste'), default=['clean', 'whole', 'paste'])
+    p.add_argument('--kinds', nargs='+', choices=('clean', 'whole', 'paste', 'stack'), default=['clean', 'whole', 'paste', 'stack'])
     p.add_argument('--words', choices=('neutral', 'final'), default='final', help='the words of the request (recognize_lines conditions raw_neutral / raw_final)')
     p.add_argument('--steps', type=int, default=600, help='optimizer steps')
     p.add_argument('--batch-size', type=int, default=8, help='samples per forward pass')

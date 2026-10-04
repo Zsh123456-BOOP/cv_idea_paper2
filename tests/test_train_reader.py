@@ -1,7 +1,6 @@
 """The reader's training samples: what is drawn from a recipe, the answer it is taught and that only the answer carries the loss."""
 import json
 import os
-from pathlib import Path
 
 import numpy as np
 import pytest

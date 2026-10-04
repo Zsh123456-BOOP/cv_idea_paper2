@@ -6,6 +6,8 @@ samples; the target text is always the host's own, so no character under a strok
   clean   the line as it is: its text
   paste   a stretch of writing cut from another line of the same writer is struck out and put into the line between two words (or at its
           end): the host's text, the pasted words are not in it
+  stack   the same struck writing put above or below one of the host's words, in the same columns, as a correction is written over what
+          it replaces: the host's text, and the strokes overlap writing that is valid
   whole   the whole line struck out with strokes across it: nothing (an empty reading)
 
 Strikes are drawn in seven styles (``STYLES``), in the colour of the host's ink, with the stroke width scaled to the line's height; a
@@ -14,7 +16,6 @@ the mask of the strokes (ink only, the shape a revision mask has), and the boxes
 randomness comes from the ``random.Random`` given: the same recipe draws the same sample.
 """
 import math
-import random
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -22,13 +23,14 @@ from PIL import Image, ImageDraw
 from ..eval.ink import INK_BELOW
 
 STYLES = ('line', 'double', 'wave', 'zigzag', 'cross', 'scribble', 'blot')
-KINDS = ('clean', 'paste', 'whole')
+KINDS = ('clean', 'paste', 'stack', 'whole')
 SUPER = 3                  # strokes are drawn at this many times the size and brought down: soft edges
 GAP = .35                  # words are separated by this many line heights of blank columns (at least MIN_GAP pixels)
 MIN_GAP = 8
 OVERSHOOT = (0, .5)        # a stroke runs on past the struck writing by this many line heights, from..to
 STROKE = (.05, .11)        # stroke width as a share of the line height (at least 2 pixels)
 SEGMENT_WIDTH = (.12, .6)  # a pasted stretch is this wide, in widths of the host
+STACK_OVERLAP = (.0, .5)   # a stacked stretch shares this much of its height with the host's rows
 MASK_ALPHA = .35           # stroke pixels at least this opaque are in the mask
 
 
@@ -193,7 +195,7 @@ def struck_segment(donor, host, rng, style=None, overlap=True):
 
 def compose(host, donors, rng, kind, style=None):
     """One sample from a host line (array [h, w, 3] uint8) and donor lines of the same writer (arrays): a dict (image: PIL RGB, mask: bool
-    [h, w], boxes, kind, pasted).  ``kind`` is one of ``KINDS``; a ``paste`` with no donor to take writing from comes out ``clean`` (``kind`` says so)."""
+    [h, w], boxes, kind, pasted).  ``kind`` is one of ``KINDS``; a ``paste`` or ``stack`` with no donor to take writing from comes out ``clean`` (``kind`` says so)."""
     host = np.asarray(host, np.uint8)
     host_ink = ink_of(host)
     rows = ink_rows(host_ink)
@@ -220,4 +222,24 @@ def compose(host, donors, rng, kind, style=None):
             top_piece = int(np.clip((height-piece.shape[0])//2+rng.uniform(-.1, .1)*host.shape[0], 0, height-piece.shape[0]))
             mask = place(canvas, piece, piece_mask, cut+pad-room, top_piece)
             return {'image': Image.fromarray(canvas), 'mask': mask, 'boxes': boxes_of(mask), 'kind': 'paste', 'pasted': 1}
+    if kind == 'stack' and rows is not None:
+        spans = word_spans(host_ink, host.shape[0])
+        for donor in rng.sample(list(donors), len(donors)):
+            made = struck_segment(np.asarray(donor, np.uint8), host, rng, style, overlap=rng.random() < .4)
+            if made is None:
+                continue
+            piece, piece_mask, room = made
+            a, b = rng.choice(spans)
+            left = int(a+rng.uniform(-.3, .3)*(b-a))-room
+            shared = int(rng.uniform(*STACK_OVERLAP)*min(piece.shape[0], rows[1]-rows[0]))
+            above = rng.random() < .5
+            height = host.shape[0]+piece.shape[0]-shared
+            pad_left = max(0, -left)
+            width = max(host.shape[1], left+piece.shape[1])+pad_left
+            canvas = np.full((height, width, 3), 255, np.uint8)
+            top_host = piece.shape[0]-shared if above else 0
+            canvas[top_host:top_host+host.shape[0], pad_left:pad_left+host.shape[1]] = host
+            top_piece = 0 if above else host.shape[0]-shared
+            mask = place(canvas, piece, piece_mask, left+pad_left, top_piece)
+            return {'image': Image.fromarray(canvas), 'mask': mask, 'boxes': boxes_of(mask), 'kind': 'stack', 'pasted': 1}
     return {'image': Image.fromarray(host), 'mask': np.zeros(host.shape[:2], bool), 'boxes': [], 'kind': 'clean', 'pasted': 0}

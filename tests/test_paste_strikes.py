@@ -2,7 +2,6 @@
 import random
 
 import numpy as np
-import pytest
 
 from revrender.data import paste_strikes as S
 
@@ -80,3 +79,17 @@ def test_boxes_join_close_strokes_and_give_thousandths():
     mask[12:18, 150:180] = True
     assert S.boxes_of(mask) == [[50, 250, 300, 500], [750, 600, 900, 900]]
     assert S.boxes_of(np.zeros((20, 200), bool)) == []
+
+
+def test_a_stacked_stretch_sits_above_or_below_a_word_of_the_host_in_its_columns_and_keeps_the_hosts_writing():
+    host, donor = line([50, 60, 40]), line([40, 30])
+    seen = set()
+    for seed in range(30):
+        out = S.compose(host, [donor], random.Random(seed), 'stack', style='double')
+        image, mask = np.asarray(out['image']), out['mask']
+        assert out['kind'] == 'stack' and image.shape[0] > host.shape[0] and image.shape[1] >= host.shape[1] and mask.any()
+        rows = np.flatnonzero(mask.any(1))
+        seen.add('above' if rows.mean() < image.shape[0]/2 else 'below')
+        assert S.ink_of(image).sum() >= S.ink_of(host).sum()
+    assert seen == {'above', 'below'}
+    assert S.compose(host, [], random.Random(1), 'stack')['kind'] == 'clean'
