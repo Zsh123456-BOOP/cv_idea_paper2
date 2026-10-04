@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>整道题标注</title>
+<style>
+:root { --bg:#f3f3ef; --panel:#fff; --ink:#1e1e1c; --muted:#6b6b65; --rule:#d9d9d2; --sel:#1565c0; --warn:#b26a00; --warnbg:#fff3d6;
+        --blot:#d32f2f; --line:#ef6c00; --over:#7b1fa2; --done:#2e7d32; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#151515; --panel:#1f1f1f; --ink:#ececea; --muted:#9d9d97; --rule:#353531; --sel:#64b5f6; --warn:#ffb74d; --warnbg:#3a2e14;
+          --blot:#ff6b6b; --line:#ffa040; --over:#ce93d8; --done:#6fcf79; }
+}
+* { box-sizing:border-box; }
+html, body { height:100%; margin:0; }
+body { background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; display:flex; flex-direction:column; }
+button { font:inherit; padding:3px 9px; border:1px solid var(--rule); border-radius:6px; background:var(--panel); color:var(--ink); cursor:pointer; white-space:nowrap; }
+button:hover { border-color:var(--sel); }
+button[aria-pressed="true"] { background:var(--sel); color:#fff; border-color:var(--sel); }
+button:disabled { opacity:.45; cursor:default; }
+kbd { font:11px ui-monospace, Menlo, monospace; color:var(--muted); margin-left:4px; }
+.bar { display:flex; flex-wrap:wrap; gap:6px 8px; align-items:center; padding:7px 12px; background:var(--panel); border-bottom:1px solid var(--rule); }
+.bar .grow { flex:1; }
+.pill { border-radius:10px; padding:0 9px; background:var(--rule); font-size:12px; }
+.pill.done { background:var(--done); color:#fff; }
+.main { flex:1; display:flex; min-height:0; }
+.left { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; }
+.tools { display:flex; flex-wrap:wrap; gap:5px; padding:6px 10px; border-bottom:1px solid var(--rule); background:var(--panel); }
+.sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+.work { position:relative; flex:1; min-height:0; overflow:hidden; background:#888; }
+#cv { position:absolute; inset:0; display:block; }
+.hud { position:absolute; left:8px; bottom:6px; color:#fff; background:rgba(0,0,0,.55); padding:2px 8px; border-radius:5px; font-size:12px; pointer-events:none; }
+.side { width:min(46vw, 640px); flex:0 0 auto; border-left:1px solid var(--rule); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+.side .head { padding:8px 10px; border-bottom:1px solid var(--rule); }
+.side .warnings { color:var(--warn); background:var(--warnbg); padding:4px 10px; font-size:12.5px; display:none; }
+.list { flex:1; overflow:auto; padding:4px 0; }
+.row { display:grid; grid-template-columns:auto 1fr; gap:2px 8px; padding:5px 10px; border-bottom:1px solid var(--rule); }
+.row.sel { background:rgba(21,101,192,.09); }
+.row.off .txt { opacity:.45; }
+.num { font:600 12px ui-monospace, Menlo, monospace; border-radius:5px; padding:2px 6px; color:#fff; cursor:pointer; align-self:start; margin-top:3px; }
+.txt { width:100%; font:14px/1.4 ui-monospace, Menlo, "PingFang SC", monospace; padding:4px 6px; border:1px solid var(--rule); border-radius:5px; background:var(--panel); color:var(--ink); resize:vertical; min-height:30px; }
+.ctl { grid-column:2; display:flex; flex-wrap:wrap; gap:4px 10px; align-items:center; font-size:12px; color:var(--muted); }
+.ctl button { padding:0 6px; font-size:12px; }
+.ctl label { display:inline-flex; gap:3px; align-items:center; }
+.ctl .w { color:var(--warn); background:var(--warnbg); border-radius:4px; padding:0 5px; }
+.ctl .final { color:var(--ink); font-family:ui-monospace, Menlo, monospace; }
+dialog { border:1px solid var(--rule); border-radius:10px; background:var(--panel); color:var(--ink); max-width:760px; }
+dialog textarea { width:100%; height:160px; font:11px ui-monospace, monospace; }
+.help li { margin:3px 0; }
+code { font:12.5px ui-monospace, Menlo, monospace; background:var(--bg); padding:0 4px; border-radius:3px; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <span>第 <b id="pos">–</b> / <span id="total">–</span> 题</span>
+  <span class="pill" id="state">未完成</span>
+  <span class="pill" id="pilot" hidden>试标</span>
+  <span id="progress" style="color:var(--muted)"></span>
+  <span class="grow"></span>
+  <button id="prev">上一题<kbd>←</kbd></button>
+  <button id="next">下一题<kbd>→</kbd></button>
+  <button id="nextOpen">下一个未完成</button>
+  <button id="doneBtn">本题完成 ✓</button>
+  <button id="resetBtn">还原本题</button>
+  <button id="exportBtn">导出</button>
+  <button id="importBtn">导入</button>
+  <button id="helpBtn">规则</button>
+</div>
+<div class="main">
+  <div class="left">
+    <div class="tools">
+      <button id="t-select" data-tool="select">选择 / 拖点<kbd>V</kbd></button>
+      <button id="t-newline" data-tool="newline">新行框<kbd>N</kbd></button>
+      <button id="t-blot" data-tool="blot"><span class="sw" style="background:var(--blot)"></span>涂黑框<kbd>1</kbd></button>
+      <button id="t-line" data-tool="line"><span class="sw" style="background:var(--line)"></span>划线<kbd>2</kbd></button>
+      <button id="t-over" data-tool="overwrite"><span class="sw" style="background:var(--over)"></span>盖写框<kbd>3</kbd></button>
+      <button id="t-del">删除选中<kbd>D</kbd></button>
+      <button id="t-undo">撤销<kbd>Z</kbd></button>
+      <button id="t-redo">重做<kbd>⇧Z</kbd></button>
+      <button id="t-fit">适应<kbd>0</kbd></button>
+      <button id="t-lines" aria-pressed="true">显示行框<kbd>L</kbd></button>
+      <button id="t-marks" aria-pressed="true">显示涂改<kbd>M</kbd></button>
+    </div>
+    <div class="work" id="work"><canvas id="cv"></canvas><span class="hud" id="hud"></span></div>
+  </div>
+  <div class="side">
+    <div class="head"><b>每行的文字</b> <span style="color:var(--muted);font-size:12px">被划掉的放进 <code>[[ ]]</code>，看不清的字写 <code>?</code>，读不出写 <code>[[?]]</code>，盖写写 <code>[[旧]]新</code></span></div>
+    <div class="warnings" id="pageWarn"></div>
+    <div class="list" id="list"></div>
+  </div>
+</div>
+<dialog id="dlgHelp" class="help">
+  <h3 style="margin-top:0">标注规则</h3>
+  <ol>
+    <li><b>行框</b>：每一行手写一个框。多框了别的行、少框了字，选中后拖角点；斜行或弯行在框边上<b>双击加点</b>，让框跟着字走；按住 <kbd>⌥/Alt</kbd> 点一个角点删掉它。漏了一行用「新行框」拖一个；不是作答的（题目印刷字、页脚、页码）勾「不是作答」。右边的顺序就是阅读顺序，用 ↑ ↓ 调。</li>
+    <li><b>涂改区域</b>：只标让字作废的痕迹。涂黑、乱涂用「涂黑框」框住；横线、斜线划掉用「划线」沿着线点几下，双击或回车结束；新字直接写在旧字上面用「盖写框」。下划线、圈、箭头、着重号都不算。不用画得很准，程序会只留墨迹。</li>
+    <li><b>文字</b>：写这一行学生写下的全部内容；被划掉的部分放进 <code>[[ ]]</code>，例：<code>x=[[3]]5</code>（最终是 x=5，划掉的是 3）。看不清的字写 <code>?</code>，如 <code>[[2?]]</code>；完全读不出写 <code>[[?]]</code>；盖写写 <code>[[旧]]新</code>。在行上方补写的字直接写进最终该在的位置。LaTeX 和 ∠ √ × ° 都可以。</li>
+    <li>每行的 <code>[[ ]]</code> 段数要和这一行里的涂改区域数一致，不一致会标黄。整行都读不出就勾「整行读不出」。</li>
+    <li>做完一题点「本题完成 ✓」。页面自动保存在这个浏览器里；换浏览器或电脑前先「导出」，到那边「导入」。</li>
+  </ol>
+  <p style="color:var(--muted)">滚轮缩放，按住空格或右键拖动平移；<kbd>0</kbd> 适应窗口。</p>
+  <button id="helpClose">关闭</button>
+</dialog>
+<dialog id="dlgDump"><h3 style="margin-top:0">导出</h3><p id="dumpNote" style="color:var(--muted)"></p><textarea id="dump" readonly></textarea>
+  <div style="display:flex;gap:8px;margin-top:8px"><button id="dumpSave">下载 JSON</button><button id="dumpClose">关闭</button></div></dialog>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+<!--RULES--><script src="page_rules.js"></script><!--/RULES-->
+<!--PACK--><script src="pack.js"></script><!--/PACK-->
+<script>
+"use strict";
+const PACK = window.PACK, PAGES = PACK.pages, KEY = "paper2-page-annotation:" + PACK.id;
+const PALETTE = ["#1e88e5", "#43a047", "#8e24aa", "#00897b", "#f4511e", "#3949ab", "#c0ca33", "#6d4c41", "#d81b60", "#039be5"];
+const TYPES = { blot: "--blot", line: "--line", overwrite: "--over" };
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const clone = v => JSON.parse(JSON.stringify(v));
+
+let store = { pages: {} };
+try { store = JSON.parse(localStorage.getItem(KEY) || "") || store; } catch (e) { store = { pages: {} }; }
+if (!store.pages) store.pages = {};
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { hud("浏览器存不下了：请先导出"); } };
+
+let at = Math.max(0, PAGES.findIndex(p => !(store.pages[p.id] || {}).done)), tool = "select", selected = null, drawing = null, drag = null;
+let scale = 1, panX = 0, panY = 0, image = null, showLines = true, showMarks = true, spaceDown = false, undo = [], redo = [];
+if (at < 0) at = 0;
+
+const page = () => PAGES[at];
+// A question the annotator has not changed is read from the pack (a rebuilt pack's better prefill shows through); the first change copies
+// it into the store, and from then on the store is what the page shows.
+const scratch = {};
+function state() {
+  const id = page().id;
+  if (store.pages[id]) return store.pages[id];
+  if (!scratch[id]) scratch[id] = { lines: clone(page().lines), marks: clone(page().marks), done: false };
+  return scratch[id];
+}
+function remember() { undo.push(JSON.stringify(state())); if (undo.length > 80) undo.shift(); redo = []; }
+function touched() { const s = state(); s.updated_at = new Date().toISOString(); store.pages[page().id] = s; save(); }
+
+// ---------- geometry on the page (image pixels) ----------
+const toImage = (sx, sy) => [(sx - panX) / scale, (sy - panY) / scale];
+const toScreen = (x, y) => [x * scale + panX, y * scale + panY];
+const near = 7;                                   // screen pixels a click may miss a point or an edge by
+function handles(item) {
+  if (item.kind === "line") return state().lines[item.index].poly;
+  const m = state().marks[item.index];
+  return m.shape === "box" ? [[m.x, m.y], [m.x + m.w, m.y], [m.x + m.w, m.y + m.h], [m.x, m.y + m.h]] : m.path;
+}
+function hitHandle(p) {
+  if (!selected) return -1;
+  return handles(selected).findIndex(h => Math.hypot(h[0] - p[0], h[1] - p[1]) * scale <= near);
+}
+function segDistance(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy;
+  const t = l ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l)) : 0;
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+function hitMark(p) {
+  const marks = state().marks;
+  for (let k = marks.length - 1; k >= 0; k--) {
+    const m = marks[k];
+    if (m.shape === "box") {
+      if (p[0] >= m.x - near / scale && p[0] <= m.x + m.w + near / scale && p[1] >= m.y - near / scale && p[1] <= m.y + m.h + near / scale) return k;
+    } else {
+      for (let i = 1; i < m.path.length; i++) if (segDistance(p, m.path[i - 1], m.path[i]) * scale <= near + 3) return k;
+    }
+  }
+  return -1;
+}
+function hitLine(p) {
+  const lines = state().lines;
+  let best = -1, bestArea = Infinity;
+  lines.forEach((l, k) => {
+    if (!pointInPolygon(p, l.poly)) return;
+    const xs = l.poly.map(q => q[0]), ys = l.poly.map(q => q[1]);
+    const area = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+    if (area < bestArea) { best = k; bestArea = area; }
+  });
+  if (best !== -1) return best;
+  lines.forEach((l, k) => { if (best === -1 && distanceToPolygon(p, l.poly) * scale <= near) best = k; });
+  return best;
+}
+function onSelected(p) {
+  if (!selected) return false;
+  if (selected.kind === "line") { const poly = state().lines[selected.index].poly; return pointInPolygon(p, poly) || distanceToPolygon(p, poly) * scale <= near; }
+  const m = state().marks[selected.index];
+  if (m.shape === "box") return p[0] >= m.x - near / scale && p[0] <= m.x + m.w + near / scale && p[1] >= m.y - near / scale && p[1] <= m.y + m.h + near / scale;
+  for (let i = 1; i < m.path.length; i++) if (segDistance(p, m.path[i - 1], m.path[i]) * scale <= near + 3) return true;
+  return false;
+}
+function nearestEdge(poly, p, closed) {
+  let best = -1, bestD = Infinity;
+  const n = poly.length, last = closed ? n : n - 1;
+  for (let i = 0; i < last; i++) {
+    const d = segDistance(p, poly[i], poly[(i + 1) % n]);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return [best, bestD];
+}
+
+// ---------- drawing ----------
+function hud(text) { $("hud").textContent = text; }
+function fit() {
+  const w = $("work").clientWidth, h = $("work").clientHeight, p = page();
+  if (!w || !h) { requestAnimationFrame(fit); return; }                       // the layout is not there yet
+  scale = Math.min(w / p.width, h / p.height) * .98;
+  panX = (w - p.width * scale) / 2; panY = (h - p.height * scale) / 2;
+  draw();
+}
+function poly(ctx, points, closed) {
+  ctx.beginPath();
+  points.forEach((q, i) => { const [x, y] = toScreen(q[0], q[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  if (closed) ctx.closePath();
+}
+function draw() {
+  const cv = $("cv"), box = $("work"), ratio = window.devicePixelRatio || 1;
+  cv.width = box.clientWidth * ratio; cv.height = box.clientHeight * ratio;
+  cv.style.width = box.clientWidth + "px"; cv.style.height = box.clientHeight + "px";
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.fillStyle = "#888"; ctx.fillRect(0, 0, box.clientWidth, box.clientHeight);
+  const p = page(), s = state();
+  if (image) ctx.drawImage(image, panX, panY, p.width * scale, p.height * scale);
+  if (showLines) s.lines.forEach((l, k) => {
+    const colour = l.not_writing ? "#9e9e9e" : PALETTE[k % PALETTE.length];
+    const chosen = selected && selected.kind === "line" && selected.index === k;
+    ctx.save();
+    ctx.strokeStyle = colour; ctx.lineWidth = chosen ? 2.5 : 1.5; ctx.setLineDash(l.not_writing ? [6, 4] : []);
+    poly(ctx, l.poly, true); ctx.stroke();
+    if (chosen) { ctx.globalAlpha = .08; ctx.fillStyle = colour; ctx.fill(); }
+    ctx.restore();
+    const [x, y] = toScreen(Math.min(...l.poly.map(q => q[0])), Math.min(...l.poly.map(q => q[1])));
+    ctx.fillStyle = colour; ctx.font = "600 12px ui-monospace, Menlo, monospace";
+    const label = String(k + 1), w = ctx.measureText(label).width + 6;
+    ctx.fillRect(x - w, y, w, 15); ctx.fillStyle = "#fff"; ctx.fillText(label, x - w + 3, y + 11.5);
+  });
+  if (showMarks) s.marks.forEach((m, k) => {
+    const colour = css(TYPES[m.type] || "--blot"), chosen = selected && selected.kind === "mark" && selected.index === k;
+    ctx.save(); ctx.strokeStyle = colour; ctx.fillStyle = colour;
+    if (m.shape === "box") {
+      const [x, y] = toScreen(m.x, m.y);
+      ctx.globalAlpha = .14; ctx.fillRect(x, y, m.w * scale, m.h * scale);
+      ctx.globalAlpha = 1; ctx.lineWidth = chosen ? 2.5 : 1.5; ctx.strokeRect(x, y, m.w * scale, m.h * scale);
+    } else {
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.globalAlpha = .35; ctx.lineWidth = Math.max(4, 5 * Math.min(scale, 2)); poly(ctx, m.path, false); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.lineWidth = chosen ? 2 : 1.2; poly(ctx, m.path, false); ctx.stroke();
+    }
+    ctx.restore();
+  });
+  if (selected) {
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = css("--sel"); ctx.lineWidth = 1.5;
+    handles(selected).forEach(h => { const [x, y] = toScreen(h[0], h[1]); ctx.fillRect(x - 4, y - 4, 8, 8); ctx.strokeRect(x - 4, y - 4, 8, 8); });
+  }
+  if (drawing) {
+    ctx.save(); ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
+    ctx.strokeStyle = drawing.tool === "newline" ? css("--sel") : css(TYPES[drawing.tool] || "--blot");
+    if (drawing.tool === "line") { poly(ctx, drawing.points.concat([drawing.cursor || drawing.points[drawing.points.length - 1]]), false); ctx.stroke(); }
+    else if (drawing.end) { const [x0, y0] = toScreen(...drawing.start), [x1, y1] = toScreen(...drawing.end); ctx.strokeRect(x0, y0, x1 - x0, y1 - y0); }
+    ctx.restore();
+  }
+}
+
+// ---------- the side list ----------
+function sourceName(source) { return ({ ocr: "OCR", split: "拆分", ink: "补框", added: "新加" })[source] || ""; }
+function renderList() {
+  const s = state(), list = $("list"), result = checks(s.lines, s.marks);
+  list.replaceChildren();
+  s.lines.forEach((l, k) => {
+    const row = document.createElement("div"); row.className = "row" + (selected && selected.kind === "line" && selected.index === k ? " sel" : "") + (l.not_writing ? " off" : "");
+    row.dataset.index = k;
+    const num = document.createElement("span"); num.className = "num"; num.textContent = k + 1;
+    num.style.background = l.not_writing ? "#9e9e9e" : PALETTE[k % PALETTE.length];
+    num.title = "在图上找到这一行"; num.onclick = () => { select({ kind: "line", index: k }); centreOn(l.poly); };
+    const txt = document.createElement("textarea"); txt.className = "txt"; txt.rows = 1; txt.value = l.text || ""; txt.spellcheck = false;
+    txt.onfocus = () => { if (!(selected && selected.kind === "line" && selected.index === k)) { selected = { kind: "line", index: k }; draw(); markRows(); } };
+    const grow = () => { txt.style.height = "auto"; txt.style.height = txt.scrollHeight + 2 + "px"; };
+    txt.oninput = () => { l.text = txt.value; grow(); touched(); refreshChecks(); };
+    requestAnimationFrame(grow);
+    txt.onchange = () => { remember(); };
+    const ctl = document.createElement("div"); ctl.className = "ctl";
+    const tag = document.createElement("span"); tag.textContent = sourceName(l.source); ctl.appendChild(tag);
+    const box = (label, field) => {
+      const w = document.createElement("label"), c = document.createElement("input"); c.type = "checkbox"; c.checked = !!l[field];
+      c.onchange = () => { remember(); l[field] = c.checked; touched(); renderList(); draw(); };
+      w.append(c, label); return w;
+    };
+    ctl.append(box("不是作答", "not_writing"), box("整行读不出", "unreadable"));
+    for (const [label, step] of [["↑", -1], ["↓", 1]]) {
+      const b = document.createElement("button"); b.textContent = label; b.title = step < 0 ? "往前挪" : "往后挪";
+      b.onclick = () => moveLine(k, step); ctl.appendChild(b);
+    }
+    const del = document.createElement("button"); del.textContent = "删这行"; del.onclick = () => { selected = { kind: "line", index: k }; deleteSelected(); };
+    ctl.appendChild(del);
+    const fin = document.createElement("span"); fin.className = "final"; ctl.appendChild(fin);
+    const warn = document.createElement("span"); warn.className = "w"; ctl.appendChild(warn);
+    row.append(num, txt, ctl); list.appendChild(row);
+  });
+  refreshChecks();
+}
+function refreshChecks() {
+  const s = state(), result = checks(s.lines, s.marks);
+  document.querySelectorAll("#list .row").forEach(row => {
+    const k = Number(row.dataset.index), l = s.lines[k], warn = row.querySelector(".w"), fin = row.querySelector(".final");
+    warn.textContent = result.line[k] || ""; warn.style.display = result.line[k] ? "" : "none";
+    const parsed = parseLine(l.text || "");
+    fin.textContent = !l.not_writing && parsed.struck.length && !parsed.error ? "最终：" + parsed.final : "";
+  });
+  const w = $("pageWarn"), all = result.page.concat(result.line.filter(Boolean).length ? [`${result.line.filter(Boolean).length} 行需要看一下（黄色）`] : []);
+  w.textContent = all.join("；"); w.style.display = all.length ? "block" : "none";
+}
+function markRows() {
+  document.querySelectorAll("#list .row").forEach(row => row.classList.toggle("sel", !!selected && selected.kind === "line" && Number(row.dataset.index) === selected.index));
+}
+function centreOn(points) {
+  const [cx, cy] = centre(points), w = $("work").clientWidth, h = $("work").clientHeight;
+  panX = w / 2 - cx * scale; panY = h / 2 - cy * scale; draw();
+}
+function moveLine(k, step) {
+  const lines = state().lines, j = k + step;
+  if (j < 0 || j >= lines.length) return;
+  remember(); [lines[k], lines[j]] = [lines[j], lines[k]]; touched();
+  selected = { kind: "line", index: j }; renderList(); draw();
+}
+
+// ---------- editing ----------
+function select(item) { selected = item; draw(); markRows(); if (item && item.kind === "line") { const row = document.querySelector(`#list .row[data-index="${item.index}"]`); if (row) row.scrollIntoView({ block: "nearest" }); } }
+function deleteSelected() {
+  if (!selected) return;
+  remember();
+  if (selected.kind === "line") state().lines.splice(selected.index, 1); else state().marks.splice(selected.index, 1);
+  selected = null; touched(); renderList(); draw();
+}
+function insertLine(polygon) {
+  const lines = state().lines, cy = centre(polygon)[1];
+  let at = lines.findIndex(l => centre(l.poly)[1] > cy);
+  if (at === -1) at = lines.length;
+  lines.splice(at, 0, { poly: polygon, text: "", source: "added", line_id: null, not_writing: false, unreadable: false });
+  return at;
+}
+function finishDrawing() {
+  if (!drawing) return;
+  if (drawing.tool === "line") {
+    if (drawing.points.length >= 2) { remember(); state().marks.push({ type: "line", shape: "line", path: drawing.points.map(q => [Math.round(q[0]), Math.round(q[1])]) }); selected = { kind: "mark", index: state().marks.length - 1 }; touched(); }
+  } else if (drawing.end) {
+    const x = Math.round(Math.min(drawing.start[0], drawing.end[0])), y = Math.round(Math.min(drawing.start[1], drawing.end[1]));
+    const w = Math.round(Math.abs(drawing.end[0] - drawing.start[0])), h = Math.round(Math.abs(drawing.end[1] - drawing.start[1]));
+    if (w * scale >= 4 && h * scale >= 4) {
+      remember();
+      if (drawing.tool === "newline") { const k = insertLine([[x, y], [x + w, y], [x + w, y + h], [x, y + h]]); selected = { kind: "line", index: k }; touched(); renderList(); draw(); setTimeout(() => { const t = document.querySelector(`#list .row[data-index="${k}"] .txt`); if (t) t.focus(); }, 0); }
+      else { state().marks.push({ type: drawing.tool, shape: "box", x, y, w, h }); selected = { kind: "mark", index: state().marks.length - 1 }; touched(); }
+    }
+  }
+  drawing = null; refreshChecks(); draw();
+}
+function setTool(t) {
+  tool = t; drawing = null;
+  document.querySelectorAll(".tools [data-tool]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
+  hud({ select: "选择：点行框或涂改；拖白色方块改形状；双击框边加点；⌥/Alt 点方块删点；拖空白处平移", newline: "新行框：拖出一个框", blot: "涂黑框：拖出一个框",
+        line: "划线：沿着线点几下，双击或回车结束，Esc 取消", overwrite: "盖写框：拖出一个框" }[t]);
+  draw();
+}
+
+const cv = $("cv");
+cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("mousedown", e => {
+  const rect = cv.getBoundingClientRect(), sx = e.clientX - rect.left, sy = e.clientY - rect.top, p = toImage(sx, sy);
+  if (e.button === 2 || e.button === 1 || spaceDown) { drag = { kind: "pan", sx, sy, panX, panY }; return; }
+  if (tool === "line") {
+    if (!drawing) drawing = { tool: "line", points: [] };
+    drawing.points.push(p); draw(); return;
+  }
+  if (tool !== "select") { drawing = { tool, start: p, end: null }; return; }
+  const h = hitHandle(p);
+  if (h !== -1 && e.altKey) {
+    const pts = handles(selected), min = selected.kind === "line" ? 3 : (state().marks[selected.index].shape === "box" ? 99 : 2);
+    if (pts.length > min) { remember(); pts.splice(h, 1); touched(); renderList(); draw(); }
+    return;
+  }
+  if (h !== -1) { remember(); drag = { kind: "handle", index: h }; return; }
+  if (selected && onSelected(p)) { remember(); drag = { kind: "move", from: p, moved: false }; return; }   // the selected shape first
+  const m = showMarks ? hitMark(p) : -1;
+  if (m !== -1) { select({ kind: "mark", index: m }); remember(); drag = { kind: "move", from: p, moved: false }; return; }
+  const l = showLines ? hitLine(p) : -1;
+  if (l !== -1) { select({ kind: "line", index: l }); remember(); drag = { kind: "move", from: p, moved: false }; return; }
+  select(null); drag = { kind: "pan", sx, sy, panX, panY };
+});
+cv.addEventListener("dblclick", e => {
+  const rect = cv.getBoundingClientRect(), p = toImage(e.clientX - rect.left, e.clientY - rect.top);
+  if (tool === "line") { if (drawing) { drawing.points.pop(); finishDrawing(); } return; }
+  if (tool !== "select" || !selected) return;
+  const closed = selected.kind === "line", pts = handles(selected);
+  if (!closed && state().marks[selected.index].shape === "box") return;
+  const [edge, d] = nearestEdge(pts, p, closed);
+  if (edge !== -1 && d * scale <= near + 4) { remember(); pts.splice(edge + 1, 0, [Math.round(p[0]), Math.round(p[1])]); touched(); draw(); }
+});
+window.addEventListener("mousemove", e => {
+  const rect = cv.getBoundingClientRect(), sx = e.clientX - rect.left, sy = e.clientY - rect.top, p = toImage(sx, sy);
+  if (drawing && drawing.tool === "line") { drawing.cursor = p; draw(); }
+  if (drawing && drawing.start) { drawing.end = p; draw(); return; }
+  if (!drag) return;
+  if (drag.kind === "pan") { panX = drag.panX + sx - drag.sx; panY = drag.panY + sy - drag.sy; draw(); return; }
+  if (drag.kind === "handle") {
+    if (selected.kind === "mark" && state().marks[selected.index].shape === "box") {
+      const m = state().marks[selected.index], corners = handles(selected), opposite = corners[(drag.index + 2) % 4];
+      m.x = Math.round(Math.min(opposite[0], p[0])); m.y = Math.round(Math.min(opposite[1], p[1]));
+      m.w = Math.round(Math.abs(p[0] - opposite[0])); m.h = Math.round(Math.abs(p[1] - opposite[1]));
+      drag.index = [p[0] < opposite[0], p[1] < opposite[1]].join() === "true,true" ? 0 : p[0] >= opposite[0] && p[1] < opposite[1] ? 1 : p[0] >= opposite[0] ? 2 : 3;
+    } else { const pts = handles(selected); pts[drag.index] = [Math.round(p[0]), Math.round(p[1])]; }
+    draw(); return;
+  }
+  if (drag.kind === "move") {
+    const dx = p[0] - drag.from[0], dy = p[1] - drag.from[1];
+    if (!drag.moved && Math.hypot(dx, dy) * scale < 3) return;
+    drag.moved = true; drag.from = p;
+    if (selected.kind === "mark" && state().marks[selected.index].shape === "box") { const m = state().marks[selected.index]; m.x += dx; m.y += dy; }
+    else handles(selected).forEach(q => { q[0] += dx; q[1] += dy; });
+    draw();
+  }
+});
+window.addEventListener("mouseup", () => {
+  if (drawing && drawing.start) { finishDrawing(); return; }
+  if (drag && (drag.kind === "handle" || (drag.kind === "move" && drag.moved))) {
+    const pts = selected && handles(selected);
+    if (pts) pts.forEach(q => { q[0] = Math.round(q[0]); q[1] = Math.round(q[1]); });
+    if (selected && selected.kind === "mark" && state().marks[selected.index].shape === "box") { const m = state().marks[selected.index]; m.x = Math.round(m.x); m.y = Math.round(m.y); }
+    touched(); refreshChecks();
+  } else if (drag && drag.kind === "move" && !drag.moved) undo.pop();
+  drag = null;
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect(), sx = e.clientX - rect.left, sy = e.clientY - rect.top, [x, y] = toImage(sx, sy);
+  const factor = Math.exp(-e.deltaY * .0015);
+  scale = Math.min(12, Math.max(.05, scale * factor)); panX = sx - x * scale; panY = sy - y * scale; draw();
+}, { passive: false });
+
+function typing(e) { const t = e.target.tagName; return t === "TEXTAREA" || t === "INPUT"; }
+document.addEventListener("keydown", e => {
+  if (e.key === " " && !typing(e)) { spaceDown = true; e.preventDefault(); return; }
+  if (typing(e)) { if (e.key === "Escape") e.target.blur(); return; }
+  if ($("dlgHelp").open || $("dlgDump").open) return;
+  const key = e.key.toLowerCase();
+  if (key === "v") setTool("select");
+  else if (key === "n") setTool("newline");
+  else if (key === "1") setTool("blot");
+  else if (key === "2") setTool("line");
+  else if (key === "3") setTool("overwrite");
+  else if (key === "d" || key === "delete" || key === "backspace") { e.preventDefault(); deleteSelected(); }
+  else if (key === "z" && e.shiftKey) $("t-redo").click();
+  else if (key === "z") $("t-undo").click();
+  else if (key === "0") fit();
+  else if (key === "l") $("t-lines").click();
+  else if (key === "m") $("t-marks").click();
+  else if (key === "enter") finishDrawing();
+  else if (key === "escape") { drawing = null; draw(); }
+  else if (key === "arrowleft") $("prev").click();
+  else if (key === "arrowright") $("next").click();
+});
+document.addEventListener("keyup", e => { if (e.key === " ") spaceDown = false; });
+
+// ---------- pages ----------
+function show(k) {
+  at = Math.max(0, Math.min(PAGES.length - 1, k)); selected = null; drawing = null; undo = []; redo = [];
+  const p = page();
+  $("pos").textContent = at + 1; $("total").textContent = PAGES.length;
+  $("pilot").hidden = !p.pilot;
+  status();
+  image = null; const img = new Image(); img.onload = () => { if (page() === p) { image = img; if (!scale) fit(); else draw(); } }; img.src = p.image;
+  renderList(); fit();
+}
+function status() {
+  const done = !!state().done;
+  $("state").textContent = done ? "已完成" : "未完成"; $("state").className = "pill" + (done ? " done" : "");
+  $("doneBtn").textContent = done ? "改回未完成" : "本题完成 ✓";
+  $("progress").textContent = `已完成 ${PAGES.filter(q => (store.pages[q.id] || {}).done).length} / ${PAGES.length}`;
+}
+$("prev").onclick = () => show(at - 1);
+$("next").onclick = () => show(at + 1);
+$("nextOpen").onclick = () => { for (let i = 1; i <= PAGES.length; i++) { const k = (at + i) % PAGES.length; if (!(store.pages[PAGES[k].id] || {}).done) return show(k); } hud("全部完成了"); };
+$("doneBtn").onclick = () => {
+  const s = state(), result = checks(s.lines, s.marks), open = result.line.filter(Boolean).length + result.page.length;
+  if (!s.done && open && !confirm(`还有 ${open} 处提醒（黄色）。仍然标为完成吗？`)) return;
+  s.done = !s.done; touched(); status();
+};
+$("resetBtn").onclick = () => { if (!confirm("把这一题还原成预填的样子？你在这一题上的修改都会丢掉。")) return; delete store.pages[page().id]; delete scratch[page().id]; save(); show(at); };
+for (const b of document.querySelectorAll(".tools [data-tool]")) b.onclick = () => setTool(b.dataset.tool);
+$("t-del").onclick = deleteSelected;
+$("t-undo").onclick = () => { if (!undo.length) return; redo.push(JSON.stringify(state())); store.pages[page().id] = JSON.parse(undo.pop()); selected = null; touched(); renderList(); draw(); status(); };
+$("t-redo").onclick = () => { if (!redo.length) return; undo.push(JSON.stringify(state())); store.pages[page().id] = JSON.parse(redo.pop()); selected = null; touched(); renderList(); draw(); status(); };
+$("t-fit").onclick = fit;
+$("t-lines").onclick = () => { showLines = !showLines; $("t-lines").setAttribute("aria-pressed", String(showLines)); draw(); };
+$("t-marks").onclick = () => { showMarks = !showMarks; $("t-marks").setAttribute("aria-pressed", String(showMarks)); draw(); };
+$("helpBtn").onclick = () => $("dlgHelp").showModal();
+$("helpClose").onclick = () => $("dlgHelp").close();
+
+function exported() {
+  const pages = {};
+  for (const p of PAGES) if (store.pages[p.id]) pages[p.id] = store.pages[p.id];
+  return { schema: "paper2-page-annotation-v1", pack: PACK.id, exported_at: new Date().toISOString(), pages };
+}
+$("exportBtn").onclick = () => {
+  const value = exported(), n = Object.keys(value.pages).length, done = Object.values(value.pages).filter(p => p.done).length;
+  $("dump").value = JSON.stringify(value); $("dumpNote").textContent = `动过的题 ${n} 道，已完成 ${done} 道。把下载的文件发给我。`;
+  $("dlgDump").showModal();
+};
+$("dumpSave").onclick = () => {
+  const blob = new Blob([JSON.stringify(exported(), null, 1)], { type: "application/json" }), a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = `标注_${PACK.id}_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.json`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("dumpClose").onclick = () => $("dlgDump").close();
+$("importBtn").onclick = () => $("importFile").click();
+$("importFile").onchange = async () => {
+  const file = $("importFile").files[0]; if (!file) return;
+  try {
+    const value = JSON.parse(await file.text());
+    if (value.schema !== "paper2-page-annotation-v1" || value.pack !== PACK.id) throw new Error("不是这个标注包导出的文件");
+    const ids = new Set(PAGES.map(p => p.id)), incoming = Object.keys(value.pages).filter(id => ids.has(id));
+    if (!confirm(`导入 ${incoming.length} 道题的标注，覆盖这个浏览器里这些题的内容？`)) return;
+    for (const id of incoming) store.pages[id] = value.pages[id];
+    save(); show(at);
+  } catch (err) { alert("导入失败：" + err.message); }
+  $("importFile").value = "";
+};
+window.addEventListener("resize", () => (scale ? draw() : fit()));
+window.addEventListener("beforeunload", save);
+setTool("select");
+show(at);
+</script>
+</body>
+</html>
