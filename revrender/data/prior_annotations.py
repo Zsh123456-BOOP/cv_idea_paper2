@@ -15,8 +15,10 @@ student work and stays out of Git):
     python -m revrender.data.prior_annotations [--root DIR] [--tags tags.json] --output-dir OUT
 
 OUT/pairs.jsonl has one record per annotated line, OUT/summary.json the counts and what the three models did on the revised lines.
-``--tags`` is a json {image_id: {split, rows}} (the writer's split in paper 1); lines of a test writer are counted but ``summary.json``
-reads the models on the others only.
+``--mapping`` is paper 1's split mapping (``index_manifest.json`` of the data bundle: it names the split of every writer, the external
+set's included) and ``--same-student`` the json of students who have two writer ids (a student whose other id is a test writer is a
+test writer); without them ``--tags`` (a json {image_id: {split, rows}}) gives the split of the pages it knows.  Lines of a test writer are
+counted but ``summary.json`` reads the models on the others only.
 """
 import argparse
 import json
@@ -101,18 +103,32 @@ def read_line_text(root, wanted=None):
     return out
 
 
-def split_of(record, tags):
+def writer_splits(mapping, same_student=None):
+    """{writer: split} from paper 1's split mapping (``index_manifest.json``); of two ids of one student, one a test writer, both are."""
+    splits = {row['group_uuid']: row['split'] for row in json.loads(Path(mapping).read_text(encoding='utf-8'))['rows']}
+    if same_student:
+        for pair in json.loads(Path(same_student).read_text(encoding='utf-8'))['pairs']:
+            ids = list(pair.values())
+            if any(splits.get(i) == 'test' for i in ids):
+                splits.update({i: 'test' for i in ids})
+    return splits
+
+
+def split_of(record, tags, writers=None):
+    """The writer's split in paper 1 ('none': not used there): from the writer mapping when given, else from the page tags."""
+    if writers is not None:
+        return writers.get(record['image_id'].split('_')[0], 'none')
     return tags.get(record['image_id'], {}).get('split', 'none')
 
 
-def summarise(pairs, texts, tags):
+def summarise(pairs, texts, tags, writers=None):
     """Counts by kind and split, and for the revised lines of the non-test writers what each model's reading holds of the labelled
     fragments; the agreement of the two models on revised lines against the no-edit lines."""
     counts = defaultdict(Counter)
     for r in pairs.values():
-        counts[kind_of(r)][split_of(r, tags)] += 1
-    revised = [r for r in pairs.values() if kind_of(r) == 'pair' and split_of(r, tags) != 'test']
-    controls = [r for r in pairs.values() if kind_of(r) == 'no_edit' and split_of(r, tags) != 'test']
+        counts[kind_of(r)][split_of(r, tags, writers)] += 1
+    revised = [r for r in pairs.values() if kind_of(r) == 'pair' and split_of(r, tags, writers) != 'test']
+    controls = [r for r in pairs.values() if kind_of(r) == 'no_edit' and split_of(r, tags, writers) != 'test']
     readings = {}
     for model in MODELS:
         seen = Counter()
@@ -141,22 +157,26 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument('--root', type=Path, help="the earlier project's folder (default: configs/paths.toml [prior] root)")
     parser.add_argument('--tags', type=Path, help='json {image_id: {split, rows}}: the writer\'s split in paper 1')
+    parser.add_argument('--mapping', type=Path, help="paper 1's split mapping (index_manifest.json): the split of every writer, the external set's too")
+    parser.add_argument('--same-student', type=Path, help='json of students with two writer ids (the pairs a test writer taints)')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
     root = args.root or expand(load_paths().get('prior', {}).get('root', ''))
     require(root and Path(root).is_dir(), 'give --root or set [prior] root in configs/paths.toml')
     tags = json.loads(args.tags.read_text()) if args.tags else {}
+    writers = writer_splits(args.mapping, args.same_student) if args.mapping else None
     pairs = read_pairs(root)
     texts = read_line_text(root, set(pairs))
     out = make_output_dir(args.output_dir)
     with (out/'pairs.jsonl').open('x', encoding='utf-8') as f:
         for record in pairs.values():
-            f.write(json.dumps({**record, 'kind': kind_of(record), 'split': split_of(record, tags),
+            f.write(json.dumps({**record, 'kind': kind_of(record), 'split': split_of(record, tags, writers),
                                 **{model: texts[model].get(record['line_id']) for model in MODELS}}, ensure_ascii=False)+'\n')
-    summary = summarise(pairs, texts, tags)
+    summary = summarise(pairs, texts, tags, writers)
     write_json(out/'summary.json', summary)
-    write_manifest(out, config=to_jsonable(args), inputs={str(Path(root)/relative): digest(Path(root)/relative)
-                                                          for relative in (*FILES.values(), *LINE_READINGS.values())}, lines=len(pairs))
+    write_manifest(out, config=to_jsonable(args), inputs={**{str(Path(root)/relative): digest(Path(root)/relative)
+                                                              for relative in (*FILES.values(), *LINE_READINGS.values())},
+                                                           **({str(args.mapping): digest(args.mapping)} if args.mapping else {})}, lines=len(pairs))
     print(json.dumps({'lines': len(pairs), **{k: sum(v.values()) for k, v in summary['by_kind_and_split'].items()}}, ensure_ascii=False))
     return 0
 

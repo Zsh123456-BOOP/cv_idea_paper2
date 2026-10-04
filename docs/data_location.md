@@ -111,6 +111,6 @@ uuid 的第三段首位也能区分来源：`5` 的是未标注 / 补充（3,967
 | 三个模型的行转写 | `outputs/ocr_line_all46902_results_20260816_v1/server_original/{qwen_v1,infinity_v1}/crop_predictions.jsonl` | 46,902 | `model_text`、`ulocr_text`；Qwen3.5-35B-A3B-LaTeX-OCR（`FutureMa/Qwen3.5-35B-A3B-LaTeX-OCR`）、Infinity-Parser2-Pro；提示要求保留划掉的字；vLLM 四卡 |
 | 涂改区域标注（第一篇金标的原始标记框 / 折线） | `gold/revision_region_annotation_exports_20260829_v1/download_exports/` | 2,100 条不重复 | `marks`；与 `returned_annotations/` 有重叠，用前按样本键去重 |
 
-合并后 903 行：有前后对的 327（训练书写者 215、验证 23、没用到 56、测试 33）；盲判无涂改的 433（253 / 26 / 121 / 33）；盲判有涂改但没写前后文的 67；配对标注者判「没有涂改」的 22；其余（看不清等）54。前后对和盲判两批没有重叠的行。第一篇测试书写者的行只计数，不读。
+合并后 903 行：有前后对的 327（训练书写者 190、验证 27、没用到 71、测试 39）；盲判无涂改的 433（210 / 33 / 147 / 43）；盲判有涂改但没写前后文的 67；配对标注者判「没有涂改」的 22；其余（看不清等）54。前后对和盲判两批没有重叠的行。书写者的划分按第一篇的划分映射（数据包的 `index_manifest.json`）认，**外部集的书写者也在里面**（61 名：训练 42、验证 10、测试 9），两个编号的学生只要另一个编号是测试书写者就按测试算；只按未标注页的标签认会漏掉外部集里的测试书写者（漏了 12 行）。第一篇测试书写者的行只计数，不读。
 
 旧项目里和第二篇相关的其余记录，都不是识别或转写：`complete_answer_*`（整题判错的预标注和三条件提示实验，用 Qwen3.5-122B / Qwen3.6-35B，评判错题，不是转写）、`removal_transcription_probe_v1/v2`（Qwen3-VL-8B 读 175 个涂改行：原图、涂白、还原三档，要求保留划掉的字；划掉的文字被读出 48% / 35% / 36%）、服务器 `/home/zsh/hme/ftv_code_9a7b264`（VLM 判错项目，11 个模型，结论是整合而非感知的损失）。服务器上的 VLM 权重在 `/home/zsh/hme/models`（Qwen3-VL 2B/4B/8B/32B-FP8、Qwen2.5-VL-7B、InternVL3.5-8B、GLM-4.1V-9B、MiniCPM-V-4、Gemma-3-12B / 4B、Llama-3.2-11B-Vision、Phi-4-multimodal，以及 DeepSeek-OCR、GLM-OCR、GOT-OCR2、MonkeyOCRv2、PaddleOCR-VL、Unlimited-OCR）。

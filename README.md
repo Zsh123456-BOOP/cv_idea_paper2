@@ -68,7 +68,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 冻结 | `python -m revrender.eval.freeze --bundle B --bundle-sha S --run OUT/formal --output freeze.json`（原生基线加 `--model maskdino` 等） |
 | 掩膜 AP / 找到画对 / 自助法 / 计速 | `python -m revrender.eval.ap / .fates / .bootstrap / .speed`；三者加 `--ink-only` 就只在墨迹上读（金标和交付掩膜都裁到墨迹） |
 | 看整页结果（HTML） | `python -m revrender.tools.pages_view --pages-output OUT --images 图片目录 --answer-text qwen_shard0.jsonl [...] --tags tags.json --min-chars 10 --output-dir SITE`：学生手写解答转写少于 `--min-chars` 个字的页被过滤；`SITE/kept.html` 是识别完并拼回整页的，`SITE/filtered.html` 是被过滤掉的，`SITE/index.html` 是汇总；图片拷进 `SITE/assets`，文件夹拷到哪都能打开（浏览器直接开 html，或 `python3 -m http.server`）。只含学生手写图，别提交 |
-| 旧项目已有的人工标注和模型转写 | `python -m revrender.data.prior_annotations [--tags tags.json] --output-dir OUT`：按行 id 合并人工前后对、盲判无涂改行和三个模型的行转写，写 `OUT/pairs.jsonl`（每行一条）和 `OUT/summary.json`；只读旧项目，文字只放本机 |
+| 旧项目已有的人工标注和模型转写 | `python -m revrender.data.prior_annotations [--mapping index_manifest.json] [--same-student 对子.json] --output-dir OUT`：按行 id 合并人工前后对、盲判无涂改行和三个模型的行转写，写 `OUT/pairs.jsonl`（每行一条）和 `OUT/summary.json`；只读旧项目，文字只放本机 |
 | 整页清洁 | `python -m revrender.data.clean_pages --pages 图片目录 [...] [--ids 页id文件] --output-dir OUT`：同一道题、同一尺寸的页共用一个虚线框（按该组各页共有的虚线定，不是每页自己的最外两条）；框外的一切（相邻题的虚线和字、页脚、页角黑块）涂白，去杂点和浅灰雾；页的尺寸不变；`OUT/<image_id>.png` 和 `OUT/frames.json`。只用 CPU，3,976 页约 7 分钟 |
 | 清洁前后的对比页 | `python -m revrender.tools.clean_view --before 扫描目录 [...] --after 清洁输出 --per-question 30 --output-dir SITE`：每题抽若干页，左扫描（绿框 = 保留的范围）右清洁后；只含学生手写图，别提交 |
 | 整道题：切行 → 标涂改 → 拼回 | `python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages 图片目录 --ocr-model /home/zsh/hme/models/Unlimited-OCR --templates templates.npz --output-dir OUT [--ids 页id文件] [--frames frames.json] [--overlay]`；`templates.npz`（每道题一个印刷模板，用来分出手写墨迹）由 `python -m revrender.data.handwriting --pages 图片目录 --output templates.npz` 生成；已有 OCR 文本时用 `--ocr-text ulocr.jsonl` 代替 `--ocr-model`（不占 OCR 的显存和时间）。每页写 `OUT/<image_id>.json`（切出的行、每个实例的行号 / 分数 / 框）和 `.npz`（每个实例在它的行裁图上的掩膜）。需要 GPU，约 16 GB（OCR 模型 14 GB + RevRender）；在清洁后的页上跑：`--pages` 指清洁输出，`--frames` 给它的 frames.json（框外的块丢掉） |
@@ -92,16 +92,16 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 第二篇的方向（2026-10-04 用户定，面向计算机方向，不做教育评分）：涂改感知的多模态识别。上游是第一篇的涂改掩膜（`tighten` 之后只含墨迹）；问题是 VLM 读手写数学作答时，划掉的被读成有效（泄漏）、有效的被读坏（误删）。第一步先量问题有多大，再决定做方法。
 
-**旧项目（`~/Desktop/cv_idea`）已经有的，不用再标。** 都以目录里的行 id（`<image_id>:L<nnnn>`）为键，和本项目切页用的是同一个 id；读取用 `python -m revrender.data.prior_annotations --tags tags.json --output-dir OUT`（`configs/paths.toml` 的 `[prior] root`），文件清单和字段见 [docs/data_location.md](docs/data_location.md) 第 8 节：
+**旧项目（`~/Desktop/cv_idea`）已经有的，不用再标。** 都以目录里的行 id（`<image_id>:L<nnnn>`）为键，和本项目切页用的是同一个 id；读取用 `python -m revrender.data.prior_annotations --mapping index_manifest.json --same-student 对子.json --output-dir OUT`（`configs/paths.toml` 的 `[prior] root`；测试书写者按第一篇的划分映射认，外部集的书写者也在里面），文件清单和字段见 [docs/data_location.md](docs/data_location.md) 第 8 节：
 
 | 内容 | 行数 | 说明 |
 |---|---:|---|
-| 人工前后对（划掉的原文 `text_before`、重写的新文 `text_after`、涂改类型） | 327 | 其中 294 行不是第一篇测试书写者的；类型：划掉重写、只划掉、覆盖改写、整行 |
-| 人工盲判「这一行没有涂改」 | 433 | 400 行不是测试书写者的；做对照块 |
+| 人工前后对（划掉的原文 `text_before`、重写的新文 `text_after`、涂改类型） | 327 | 其中 288 行不是第一篇测试书写者的（测试 39 行）；类型：划掉重写、只划掉、覆盖改写、整行 |
+| 人工盲判「这一行没有涂改」 | 433 | 390 行不是测试书写者的；做对照块 |
 | 人工判「有涂改」但没写前后文 | 67 | |
 | 三个模型对每一行（46,902 行）的转写 | 46,902 | Qwen3.5-35B-A3B-LaTeX-OCR（`FutureMa`，即印象里的「32B」）、Infinity-Parser2-Pro，加 Unlimited-OCR 的文字；提示要求保留划掉的字 |
 
-在 294 个人工确认的涂改行上，两个强模型读得很不一致：Qwen3.5-35B 与 Infinity 的相似度中位数 0.44、不低于 0.9 的占 30%；400 个无涂改行是 0.94 和 54%。要求「保留划掉的字」时，划掉的文字出现在读数里的比例：Unlimited-OCR 42%、Infinity 53%、Qwen3.5-35B 59%；重写的文字：60% / 67% / 73%。
+在 288 个人工确认的涂改行上，两个强模型读得很不一致：Qwen3.5-35B 与 Infinity 的相似度中位数 0.44、不低于 0.9 的占 31%；390 个无涂改行是 0.94 和 54%。要求「保留划掉的字」时，划掉的文字出现在读数里的比例：Unlimited-OCR 43%、Infinity 53%、Qwen3.5-35B 59%；重写的文字：60% / 67% / 73%。
 
 **Codex 做过的两轮（只是记录，没有人工答案，不当证据；代码是 `recognize.py`、`data/recognition_pack.py`、`eval/recognition_score.py`、`tools/recognition_view`）。** 都是 Qwen3-VL-8B 读我们的整题切块，B 原图 / C 掩膜遮白 / D 原图加红色掩膜图：
 
@@ -111,7 +111,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 **第一步的设计（先量大小，不训练）：**
 
-- 样本：人工前后对里不是测试书写者的 294 行，加人工盲判无涂改的 400 行（对照）；不读测试书写者的行；不用新标。
+- 样本：人工前后对里不是测试书写者的 288 行，加人工盲判无涂改的 390 行（对照）；不读测试书写者的行；不用新标。
 - 条件（单图、同一提示骨架）：原图 + 中性提示；原图 + 「只转写最终有效内容」；擦除（收紧掩膜）；红色叠加（合成一张图）；把涂改位置写进文字提示；之后加免训练的视觉 token 屏蔽。
 - 模型：先 Qwen3-VL-8B，再加服务器上已有的 Qwen3-VL-32B-FP8、InternVL3.5-8B、Qwen2.5-VL-7B、GLM-4.1V、MiniCPM-V-4、Gemma-3-12B 等。
 - 指标：划掉的文字泄漏率（`eval/fragments.contains(读数, text_before)`）、重写的文字保留率（`text_after`）、对照块上输出相对原图读数的改变；按涂改类型分层，配对自助法给区间；不算整句 CER。

@@ -80,3 +80,20 @@ def test_the_tool_writes_the_table_and_what_the_models_read_of_the_labelled_frag
     assert manifest['lines'] == 6 and manifest['seed'] == 42
     with pytest.raises(FileExistsError):
         P.main(['--root', str(root), '--output-dir', str(out)])
+
+
+def test_the_split_comes_from_the_writer_mapping_and_a_test_writers_other_id_is_a_test_writer_too(tmp_path):
+    root = earlier_project(tmp_path)
+    mapping = tmp_path/'index_manifest.json'
+    mapping.write_text(json.dumps({'rows': [{'group_uuid': 'w1', 'split': 'train'}, {'group_uuid': 'w2', 'split': 'dev'}, {'group_uuid': 'w9', 'split': 'test'}]}))
+    twin = tmp_path/'same.json'
+    twin.write_text(json.dumps({'pairs': [{'a': 'w2', 'b': 'w9'}]}))
+    assert P.writer_splits(mapping) == {'w1': 'train', 'w2': 'dev', 'w9': 'test'}
+    writers = P.writer_splits(mapping, twin)
+    assert writers['w2'] == 'test' and writers['w1'] == 'train'
+    pairs = P.read_pairs(root)
+    assert P.split_of(pairs['w1_3_1:L0002'], {}, writers) == 'train' and P.split_of(pairs['w2_4_1:L0001'], {}, writers) == 'test'
+    assert P.split_of(pairs['w3_5_1:L0004'], {}, writers) == 'none' and P.split_of(pairs['w3_5_1:L0004'], {'w3_5_1': {'split': 'dev'}}) == 'dev'
+    out = tmp_path/'out'
+    P.main(['--root', str(root), '--mapping', str(mapping), '--same-student', str(twin), '--output-dir', str(out)])
+    assert json.loads((out/'summary.json').read_text())['revised_non_test_lines'] == 2        # w1's line and the writer without a split; w2 is a test writer now
