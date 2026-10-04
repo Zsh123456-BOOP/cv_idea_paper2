@@ -7,6 +7,8 @@ to ink (``tighten.non_white``).  Three images and the places of the masks go to 
 
   raw      the crop as scanned
   erased   the crop with the masked ink whited out
+  blanked  the crop with the whole column band under each mask whited out (a line crop holds one line, so what is struck there goes with it,
+           and so does anything valid in the same columns): the hard erasure of the revised words
   overlay  the crop with the masked ink tinted red (one image: a second image would be read as more text)
   boxes    each mask's box, in thousandths of the crop's width and height, for a hint in words
 
@@ -33,6 +35,7 @@ from .prior_annotations import lines as read_jsonl
 
 KINDS = ('pair', 'no_edit')
 RED, ALPHA = (220, 0, 0), .6
+BAND_PAD = 4               # columns of margin each side of a mask when its band is blanked
 
 
 def select(rows, limit=0):
@@ -45,6 +48,16 @@ def select(rows, limit=0):
 def erase(rgb, mask):
     out = np.array(rgb)
     out[mask] = 255
+    return Image.fromarray(out)
+
+
+def blank(rgb, masks, pad=BAND_PAD):
+    """The crop with the full-height band of columns under every mask whited out."""
+    out = np.array(rgb)
+    for mask in masks:
+        columns = np.nonzero(mask.any(0))[0]
+        if len(columns):
+            out[:, max(0, columns.min()-pad):columns.max()+1+pad] = 255
     return Image.fromarray(out)
 
 
@@ -106,9 +119,10 @@ def main(argv=None):
         rgb.save(out/'assets'/f'{stem}_raw.png')
         erase(rgb, union).save(out/'assets'/f'{stem}_erased.png')
         tint(rgb, union).save(out/'assets'/f'{stem}_overlay.png')
+        blank(rgb, masks).save(out/'assets'/f'{stem}_blanked.png')
         keep = ('line_id', 'image_id', 'kind', 'split', 'ink_kind', 'text_before', 'text_after', 'no_rewrite', 'before_unreadable')
         packed.append({**{k: r.get(k) for k in keep}, 'id': stem, 'size': [width, height], 'masked_pixels': int(union.sum()), 'boxes': boxes_of(masks, (width, height)),
-                       'images': {k: f'assets/{stem}_{k}.png' for k in ('raw', 'erased', 'overlay')}})
+                       'images': {k: f'assets/{stem}_{k}.png' for k in ('raw', 'erased', 'blanked', 'overlay')}})
     write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'seed': 42, 'rows': packed})
     write_manifest(out, config=to_jsonable(args), inputs={str(args.pairs): digest(args.pairs), str(args.checkpoint): digest(args.checkpoint), str(args.freeze): digest(args.freeze)},
                    point={k: point[k] for k in ('mask_threshold', 'nms', 'score_threshold')}, checkpoint_step=payload.get('step'), rows=len(packed),

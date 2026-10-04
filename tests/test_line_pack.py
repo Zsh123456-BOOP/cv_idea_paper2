@@ -22,6 +22,15 @@ def test_a_test_writers_line_and_a_pair_without_text_are_left_out_and_the_rest_c
     assert [r['line_id'] for r in chosen] == ['w1_3_1:L0001', 'w1_3_1:L0002'] and L.select(ROWS, 1)[0]['line_id'] == 'w1_3_1:L0001'
 
 
+def test_the_columns_under_a_mask_are_blanked_to_the_full_height():
+    rgb = Image.fromarray(np.full((20, 40, 3), 120, np.uint8))
+    mask = np.zeros((20, 40), bool)
+    mask[5:10, 10:20] = True
+    out = np.asarray(L.blank(rgb, [mask]))
+    assert (out[:, 6:24] == 255).all() and (out[:, :6] == 120).all() and (out[:, 24:] == 120).all()
+    assert (np.asarray(L.blank(rgb, [np.zeros((20, 40), bool)])) == 120).all()
+
+
 def test_the_masked_ink_is_whited_out_in_one_image_and_tinted_red_in_another():
     rgb = Image.fromarray(np.full((20, 40, 3), 120, np.uint8))
     mask = np.zeros((20, 40), bool)
@@ -61,6 +70,8 @@ def test_a_pack_has_the_three_images_the_labels_and_the_boxes_of_each_line(tmp_p
     erased = np.asarray(Image.open(out/revised['images']['erased']))
     assert raw.shape[:2] == (40, 400) and (erased == 255).mean() > (raw == 255).mean() and (erased[..., 0] > 200).all()
     assert (np.asarray(Image.open(out/clean['images']['erased'])) == np.asarray(Image.open(out/clean['images']['raw']))).all()
+    assert (np.asarray(Image.open(out/clean['images']['blanked'])) == np.asarray(Image.open(out/clean['images']['raw']))).all()
+    assert (np.asarray(Image.open(out/revised['images']['blanked']))[:, 90:310] == 255).all()
     manifest = json.loads((out/'run_manifest.json').read_text())
     assert (manifest['rows'], manifest['pairs'], manifest['controls'], manifest['with_mask']) == (2, 1, 1, 1)
     with pytest.raises(FileExistsError):

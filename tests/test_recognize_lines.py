@@ -16,7 +16,8 @@ def test_each_condition_says_one_thing_more_than_the_skeleton_and_a_hint_names_t
     hint = R.prompt('hint_final', row)
     assert '[100, 200, 400, 800]' in hint and '[500, 100, 900, 900]' in hint and hint.endswith(R.FINAL)
     assert '没有检测到涂改区域' in R.prompt('hint_final', {'boxes': []})
-    assert [R.CONDITIONS[c][0] for c in ('raw_neutral', 'erased_final', 'overlay_final', 'hint_final')] == ['raw', 'erased', 'overlay', 'raw']
+    assert [R.CONDITIONS[c][0] for c in ('raw_neutral', 'erased_final', 'overlay_final', 'hint_final', 'blanked_final')] == ['raw', 'erased', 'overlay', 'raw', 'blanked']
+    assert R.prompt('blanked_neutral', row) == neutral and R.prompt('blanked_final', row) == final
 
 
 def test_a_request_has_one_image_and_the_reading_is_what_is_inside_the_tags():

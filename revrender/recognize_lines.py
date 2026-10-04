@@ -9,6 +9,8 @@ formulas, □ for what cannot be read, no solving or correcting -- and what a co
   raw_final        the scan, and the instruction to give only the final valid work: what is struck out, blacked out or voided is left out
   erased_neutral   the revision erased (the masks of the pack), nothing more
   erased_final     the revision erased, and the instruction above
+  blanked_neutral  the columns under each mask whited out (the revised words gone), nothing more
+  blanked_final    the same, and the instruction above
   overlay_final    the revision tinted red in the one image, said to be a marker and not writing, and the instruction above
   hint_final       the scan, the places of the masks in words (thousandths of the width and height), and the instruction above
 
@@ -37,6 +39,8 @@ CONDITIONS = {
     'raw_final': ('raw', (FINAL,)),
     'erased_neutral': ('erased', ()),
     'erased_final': ('erased', (FINAL,)),
+    'blanked_neutral': ('blanked', ()),
+    'blanked_final': ('blanked', (FINAL,)),
     'overlay_final': ('overlay', (OVERLAY, FINAL)),
     'hint_final': ('raw', ('hint', FINAL)),
 }
