@@ -1,13 +1,15 @@
 """Teach a Qwen3-VL to give the final valid writing of a line struck out in places: LoRA on synthetic revisions.
 
     python -m revrender.train_reader --corpus corpus.jsonl --pages DIR [--pages DIR ...] --model MODEL_DIR --output-dir OUT
-        [--kinds clean whole paste] [--steps N] [--batch-size B] [--accumulate A] [--rank R] [--lr LR]
+        [--kinds clean whole paste stack] [--blank] [--steps N] [--batch-size B] [--accumulate A] [--rank R] [--lr LR]
 
 The samples are the recipes of ``data.reader_corpus`` drawn when they are read (``data.paste_strikes``): the line, with writing struck out and
 put in or the whole line struck, and the text it should be read as -- the host's own, or nothing (``[空]``).  The words of the request are
 those of ``recognize_lines`` (``--words``); the answer is ``<transcription>text</transcription>`` and only the answer carries the loss.  The
 language model's linear layers get a low-rank adapter; the vision tower and everything else stay as they are.  ``--kinds clean`` trains on
 the clean lines alone, the control that says how much of a gain is the writer's hand and the answer's style and how much is the strikes.
+``--blank`` whites out the columns under the strokes' mask (the way ``recognize_lines`` conditions ``blanked_*`` do with a detector's masks) before
+the sample is read, so the reader learns to read what is left around a gap; leave out ``stack``, whose column holds writing that is valid.
 Seed 42; OUT/adapter is the adapter (``recognize_lines --backend hf --adapter OUT/adapter`` reads with it), OUT/train_log.jsonl the loss.
 """
 import argparse
@@ -22,6 +24,7 @@ from PIL import Image
 
 from . import pages as pages_module
 from .data import lines as lines_module
+from .data.line_pack import band_mask
 from .data.paste_strikes import compose
 from .recognize_lines import SYSTEM, prompt
 from .util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
@@ -53,23 +56,28 @@ class Crops:
             return np.asarray(page.convert('RGB').crop(lines_module.crop_box(box_1000 or self.boxes[line_id], *page.size)))
 
 
-def render(row, crops):
-    """(PIL image, the text it should be read as) for a recipe row."""
+def render(row, crops, blank=False):
+    """(PIL image, the text it should be read as) for a recipe row; with ``blank`` the columns under the strokes' mask are whited out."""
     host = crops.get(row['line_id'], row['box_1000'])
     donors = [crops.get(d) for d in row['donors']]
     made = compose(host, donors, random.Random(row['seed']), row['kind'])
-    return made['image'].convert('RGB'), '' if made['kind'] == 'whole' else row['host_text']      # what could not be drawn comes out clean: the host's text
+    image = made['image'].convert('RGB')
+    if blank and made['boxes']:
+        array = np.array(image)
+        array[band_mask(made['boxes'], image.size)] = 255
+        image = Image.fromarray(array)
+    return image, '' if made['kind'] == 'whole' else row['host_text']      # what could not be drawn comes out clean: the host's text
 
 
 class Samples:
-    def __init__(self, rows, crops):
-        self.rows, self.crops = rows, crops
+    def __init__(self, rows, crops, blank=False):
+        self.rows, self.crops, self.blank = rows, crops, blank
 
     def __len__(self):
         return len(self.rows)
 
     def __getitem__(self, i):
-        return render(self.rows[i], self.crops)
+        return render(self.rows[i], self.crops, self.blank)
 
 
 class Collate:
@@ -133,6 +141,7 @@ def main(argv=None):
     p.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
     p.add_argument('--model', type=Path, required=True)
     p.add_argument('--kinds', nargs='+', choices=('clean', 'whole', 'paste', 'stack'), default=['clean', 'whole', 'paste', 'stack'])
+    p.add_argument('--blank', action='store_true', help='white out the columns under the strokes before reading (not with stack)')
     p.add_argument('--words', choices=('neutral', 'final'), default='final', help='the words of the request (recognize_lines conditions raw_neutral / raw_final)')
     p.add_argument('--steps', type=int, default=600, help='optimizer steps')
     p.add_argument('--batch-size', type=int, default=8, help='samples per forward pass')
@@ -152,6 +161,7 @@ def main(argv=None):
     from transformers import AutoProcessor
     train_rows, val_rows = read_rows(args.corpus, args.kinds, 'train'), read_rows(args.corpus, args.kinds, 'val')[:args.val_limit]
     require(train_rows, 'no training recipe of these kinds')
+    require(not (args.blank and 'stack' in args.kinds), '--blank and the stack kind do not go together: the blanked column holds valid writing')
     out = make_output_dir(args.output_dir)
     torch.manual_seed(SEED)
     random.seed(SEED)
@@ -161,9 +171,9 @@ def main(argv=None):
     processor.tokenizer.padding_side = 'right'
     collate = Collate(processor, prompt('raw_final' if args.words == 'final' else 'raw_neutral', {'boxes': []}))
     generator = torch.Generator().manual_seed(SEED)
-    loader = torch.utils.data.DataLoader(Samples(train_rows, crops), batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=args.workers,
+    loader = torch.utils.data.DataLoader(Samples(train_rows, crops, args.blank), batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=args.workers,
                                          generator=generator, drop_last=True, persistent_workers=args.workers > 0)
-    val_loader = torch.utils.data.DataLoader(Samples(val_rows, crops), batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
+    val_loader = torch.utils.data.DataLoader(Samples(val_rows, crops, args.blank), batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
     model = lora_model(args.model, args.rank, args.alpha, args.dropout).to('cuda')
     if args.checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})

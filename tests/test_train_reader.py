@@ -41,6 +41,17 @@ def test_a_recipe_is_drawn_into_an_image_and_the_text_it_should_be_read_as(tmp_p
     assert np.asarray(whole).min() < np.asarray(clean).min()+1 and np.array_equal(np.asarray(T.render(rows[2], crops)[0]), np.asarray(paste))
 
 
+def test_with_blank_the_columns_under_the_strokes_are_white_and_the_rest_is_as_it_was(tmp_path):
+    folder = page(tmp_path)
+    rows = [row('paste', 'w1_3_1:L1', ['w1_3_1:L2']), row('whole', 'w1_3_1:L1', []), row('clean', 'w1_3_1:L1', [])]
+    crops = T.Crops([folder], rows+[row('clean', 'w1_3_1:L2', [])])
+    plain, blanked = T.render(rows[0], crops), T.render(rows[0], crops, blank=True)
+    assert plain[1] == blanked[1] and plain[0].size == blanked[0].size
+    assert (np.asarray(blanked[0]) < 200).sum() < (np.asarray(plain[0]) < 200).sum() and (np.asarray(blanked[0]) >= np.asarray(plain[0])).all()      # whiter, nothing darker
+    assert np.asarray(T.render(rows[1], crops, blank=True)[0]).min() >= 250                               # a whole-line strike whites out the whole line
+    assert np.array_equal(np.asarray(T.render(rows[2], crops, blank=True)[0]), np.asarray(T.render(rows[2], crops)[0]))
+
+
 def test_the_corpus_rows_are_read_by_kind_and_split(tmp_path):
     path = tmp_path/'corpus.jsonl'
     rows = [row('clean', 'w1_3_1:L1', []), {**row('whole', 'w1_3_1:L1', []), 'split': 'val'}, row('paste', 'w1_3_1:L1', ['w1_3_1:L2'])]
