@@ -48,10 +48,10 @@ run smoke_a --stage smoke --output-dir "$OUT/smoke_a"
 run smoke_b --stage smoke --output-dir "$OUT/smoke_b" --replay-of "$OUT/smoke_a"
 run learning --stage learning --output-dir "$OUT/learning"
 if [ "${STOP_AFTER:-}" = learning ]; then
-    flock -u 9; touch "$OUT/GATES_COMPLETE"; echo "gates complete; GPU released $(date -u +%FT%TZ)"; exit 0
+    release_cards; touch "$OUT/GATES_COMPLETE"; echo "gates complete; GPU released $(date -u +%FT%TZ)"; exit 0
 fi
 run formal --stage formal --output-dir "$OUT/formal" --gate-root "$OUT"
-flock -u 9
+release_cards
 echo "training complete; GPU released $(date -u +%FT%TZ)"
 if [ -n "${SYNTHETIC:-}" ]; then touch "$OUT/COMPLETE"; echo "checkpoints kept; nothing frozen $(date -u +%FT%TZ)"; exit 0; fi
 "$PY" -m revrender.eval.freeze --bundle "$BUNDLE" --bundle-sha "$BUNDLE_SHA" --run "$OUT/formal" --output "$OUT/freeze.json" > "$OUT/freeze.log" 2>&1

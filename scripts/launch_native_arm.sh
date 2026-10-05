@@ -39,7 +39,7 @@ run_native() {
 run_native smoke --smoke-steps 4
 test -f "$OUT/smoke/smoke_complete.json"
 if [ "${STOP_AFTER:-}" = smoke ]; then
-    flock -u 9; touch "$OUT/SMOKE_COMPLETE"; echo "smoke complete; GPU released $(date -u +%FT%TZ)"; exit 0
+    release_cards; touch "$OUT/SMOKE_COMPLETE"; echo "smoke complete; GPU released $(date -u +%FT%TZ)"; exit 0
 fi
 run_native formal
 test -f "$OUT/formal/train_complete.json"
@@ -49,6 +49,6 @@ numactl --cpunodebind="$NUMA" --membind="$NUMA" "$NATIVE_PY" -m revrender.baseli
     --freeze "$OUT/freeze_upstream.json" --bundle "$BUNDLE" --bundle-sha "$BUNDLE_SHA" ${TF[@]+"${TF[@]}"} \
     --upstream-root "$UPSTREAM" --weights-dir "$WEIGHTS" --output-dir "$OUT/threshold" > "$OUT/threshold.log" 2>&1
 cp "$OUT/threshold/freeze.json" "$OUT/freeze.json"
-flock -u 9
+release_cards
 touch "$OUT/COMPLETE"
 echo "trained and frozen on validation; no test pass $(date -u +%FT%TZ)"
