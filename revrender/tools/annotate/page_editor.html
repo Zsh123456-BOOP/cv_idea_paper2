@@ -174,10 +174,11 @@ function fit() {
   panX = (w - p.width * scale) / 2; panY = (h - p.height * scale) / 2;
   draw();
 }
-function focusOn(box, margin = 2.4) {
+function focusOn(box, margin = 2) {
+  // The region in the middle with a few characters of its line round it.
   const w = $("work").clientWidth, h = $("work").clientHeight, [l, t, r, b] = box;
-  const bw = Math.max(60, r - l) * margin, bh = Math.max(40, b - t) * margin * 1.8;
-  scale = Math.min(6, w / bw, h / bh);
+  const bw = Math.max(140, r - l) * margin, bh = Math.max(60, b - t) * margin * 1.6;
+  scale = Math.min(4, w / bw, h / bh);
   panX = w / 2 - (l + r) / 2 * scale; panY = h / 2 - (t + b) / 2 * scale; draw();
 }
 function path(ctx, points) {

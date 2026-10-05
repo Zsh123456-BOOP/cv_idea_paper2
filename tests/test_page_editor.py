@@ -139,6 +139,12 @@ def write_question(tmp_path):
     return scans, out_pages, selection, previous
 
 
+def test_a_reading_starts_the_text_without_the_marks_it_drew_the_strike_with():
+    cases = {r'$\overline{AD}$': 'AD', r'$58$': '58', r'$\frac{50}{60}a$': r'$\frac{50}{60}a$', r'是$\boxed{直}$角等': '是直角等',
+             r'$\overline{\cancel{a+401}}$': 'a+401', '40□\n+6': '40? +6', r'$$x^2$$': r'$$x^2$$', r'$\textcircled{1}AB$': r'$\textcircled{1}AB$'}
+    assert {k: P.starting_text(k) for k in cases} == cases
+
+
 def test_the_prefill_and_the_pack_make_one_page_with_regions_and_starting_texts(tmp_path):
     scans, out_pages, selection, previous = write_question(tmp_path)
     prefill = tmp_path/'prefill'

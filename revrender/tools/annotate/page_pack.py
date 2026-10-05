@@ -4,7 +4,8 @@
         [--first N] --output-dir OUT
 
 ``--prefill`` is the output of ``page_prefill`` (the revisions and their regions).  ``--readings`` is what ``recognize_lines`` read on its
-crops under ``raw_struck``: each revision's text starts from it (□ written as ?, line breaks as spaces); a revision without a reading
+crops under ``raw_struck``: each revision's text starts from it (□ written as ?, line breaks as spaces, the marks a reader draws a strike
+with -- an overline, a cancel and the like -- taken off, a formula with no command in it written plainly); a revision without a reading
 starts empty.  A blackout starts as unreadable (its text kept, for when some of it can be read after all).
 
 The editor (``page_editor.html``) and its rules (``page_rules.js``) are inlined with the scans, so OUT/标注.html opens from anywhere
@@ -15,6 +16,7 @@ belongs under work/, never in Git.
 import argparse
 import base64
 import json
+import re
 from pathlib import Path
 
 from ... import pages as pages_module
@@ -23,6 +25,8 @@ from ...util import digest, make_output_dir, require, to_jsonable, write_json, w
 HERE = Path(__file__).parent
 EDITOR, RULES = HERE/'page_editor.html', HERE/'page_rules.js'
 CONDITION = 'raw_struck'
+WRAPPER = re.compile(r'\\(?:overline|underline|cancel|bcancel|xcancel|sout|st|boxed|text|mathrm)\s*\{([^{}]*)\}')
+PLAIN = re.compile(r"\$\$([^$\\^_{}]+)\$\$|\$([^$\\^_{}]+)\$")
 
 
 def slot(text, name, payload):
@@ -34,8 +38,12 @@ def slot(text, name, payload):
 
 
 def starting_text(reading):
-    """A reading as the page's starting text: □ (the reader's unreadable character) as ?, line breaks as spaces."""
-    return ' '.join(reading.replace('□', '?').split())
+    """A reading as the page's starting text: □ (the reader's unreadable character) as ?, line breaks as spaces, the marks a strike was
+    drawn with taken off (innermost first), and a formula with no command, ^ or _ in it as plain text."""
+    text, before = ' '.join(reading.replace('□', '?').split()), None
+    while text != before:
+        before, text = text, WRAPPER.sub(r'\1', text)
+    return PLAIN.sub(lambda m: m.group(1) if m.group(1) is not None else m.group(2), text).strip()
 
 
 def read_readings(path):
