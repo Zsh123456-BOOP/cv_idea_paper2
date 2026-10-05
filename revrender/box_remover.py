@@ -5,7 +5,8 @@
 
 Every struck-line box of the labelled questions of ``--split`` (a blackout's box is left alone: what it covers is taken as unreadable)
 is cropped with ``eval.revision_boxes.PAD`` round it, letterboxed onto the 96 x 768 strip the way the remover was trained, read at
-the operating point (a low score cut keeps what a later reading cuts at its own) and its delivered masks put back on the page.  The
+the operating point (a low score cut keeps what a later reading cuts at its own) and its delivered masks put back on the page; with
+``--top N`` only the N best of each box are kept, whatever their score (the box is known to hold a struck line).  The
 output is laid out like ``revrender.pages``'s (OUT/<image_id>.json and .npz, the boxes as its pieces, source ``box``), so
 ``eval.revision_boxes`` reads it like any model.
 """
@@ -32,12 +33,13 @@ def crop_of(region, size):
     return [max(0, int(min(xs))-PAD), max(0, int(min(ys))-PAD), min(size[0], int(max(xs))+PAD), min(size[1], int(max(ys))+PAD)]
 
 
-def read_boxes(model, point, grey, boxes):
-    """The instances the remover delivers in each box of a grey page: [{line, score, box, mask (on the box)}]."""
+def read_boxes(model, point, grey, boxes, top=0):
+    """The instances the remover delivers in each box of a grey page: [{line, score, box, mask (on the box)}]; ``top``: only that many
+    of each box (the best ones; they come in descending score)."""
     strips = [np.asarray(letterbox(Image.fromarray(grey).crop(tuple(box)), STRIP_W, STRIP_H, 255)) for box in boxes]
     instances = []
     for k, (box, delivered) in enumerate(zip(boxes, infer.predict_lines(model, strips, point))):
-        for mask, score in delivered:
+        for mask, score in delivered[:top or None]:
             crop = unletterbox(mask, box[2]-box[0], box[3]-box[1])
             if crop.any():
                 instances.append({'line': k, 'score': float(score), 'box': list(box), 'mask': crop})
@@ -52,6 +54,7 @@ def main(argv=None):
     parser.add_argument('--selection', type=Path, required=True)
     parser.add_argument('--split', choices=('val', 'test', 'train'), required=True)
     parser.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
+    parser.add_argument('--top', type=int, default=0, help="keep only each box's N best instances, whatever their score (0: all)")
     parser.add_argument('--all', action='store_true', help='also questions not marked done')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -70,7 +73,7 @@ def main(argv=None):
             grey = np.asarray(opened.convert('L'))
         size = (grey.shape[1], grey.shape[0])
         boxes = [crop_of(r['region'], size) for r in labels[image_id]['revisions'] if r['kind'] == 'line']
-        instances = read_boxes(model, point, grey, boxes) if boxes else []
+        instances = read_boxes(model, point, grey, boxes, args.top) if boxes else []
         pages_module.write_page(out, image_id, size, [{'box': box, 'source': 'box', 'ocr_type': None, 'ocr_text': ''} for box in boxes], instances)
         totals['pages'] += 1
         totals['boxes'] += len(boxes)

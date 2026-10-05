@@ -27,7 +27,7 @@ def test_struck_line_boxes_are_read_and_written_like_a_page(tmp_path, monkeypatc
 
     def strokes_everywhere(model, strips, point, batch_size=None):
         seen.extend(strips)
-        return [[(np.ones((96, 768), bool), .9)] for _ in strips]
+        return [[(np.ones((96, 768), bool), .9), (np.ones((96, 768), bool), .05)] for _ in strips]
     monkeypatch.setattr(infer, 'load_checkpoint', lambda path, variant=None, expected_sha=None: (None, {'step': 7}))
     monkeypatch.setattr(infer, 'predict_lines', strokes_everywhere)
     checkpoint = tmp_path/'step_7.pt'
@@ -38,4 +38,8 @@ def test_struck_line_boxes_are_read_and_written_like_a_page(tmp_path, monkeypatc
     record, instances = pages_module.read_output(out, 'q_5_1')
     assert len(seen) == 1 and seen[0].shape == (96, 768)                  # the blackout's box is not read
     assert record['lines'][0]['box'] == [14, 19, 126, 46] and record['lines'][0]['source'] == 'box'
-    assert len(instances) == 1 and instances[0]['mask'].shape == (27, 112) and instances[0]['score'] == .9
+    assert len(instances) == 2 and instances[0]['mask'].shape == (27, 112) and instances[0]['score'] == .9
+    top = tmp_path/'top'
+    assert X.main(['--checkpoint', str(checkpoint), '--point', '.4', '.5', '0', '--labels', str(labels), '--selection', str(selection), '--split', 'val',
+                   '--pages', str(scans), '--top', '1', '--output-dir', str(top)]) == 0
+    assert [i['score'] for i in pages_module.read_output(top, 'q_5_1')[1]] == [.9]
