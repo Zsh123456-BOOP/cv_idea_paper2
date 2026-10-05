@@ -1,118 +1,75 @@
-"""The user's annotations of whole questions, read back: per line its polygon, final text, struck stretches and revision marks.
+"""The user's revision annotations of whole questions, read back: per stroke and per revision the pixels to remove, per revision the region
+of writing it voids, and per question the scan with the revisions removed.
 
-    python -m revrender.data.page_labels --export 标注_paper2-test_….json [--export …] --selection selection.json --pages DIR [--pages DIR ...]
+    python -m revrender.data.page_labels --export 涂改标注_….json [--export …] --selection selection.json --pages DIR [--pages DIR ...]
         --output-dir OUT [--all]
 
-``--export`` is what the page editor (``tools/annotate/page_editor.html``) downloads; several exports are merged, a later file winning
-for a question it also holds.  Only questions marked done are read unless ``--all``.  Each line's text is read by the editor's own rules
-(``[[ ]]`` around what was struck, ``?`` for a character that cannot be read): the final text, the struck stretches and whether each is
-legible.  Each revision mark goes to the line that holds its centre (the editor's rule); it is rasterised on the page -- a box as it is, a
-struck line as a polyline ``STROKE_PX`` wide -- and cut to ink (``tighten.non_white``), the shape paper 1's masks have.
+``--export`` is what the page editor (``tools/annotate/page_editor.html``) downloads; several exports are merged, a later file winning for
+a question it also holds.  Only questions marked done are read unless ``--all``.  A struck line was drawn along the stroke and stopped where
+the stroke crosses writing, so its pixels are the ink within half the stroke's width of the line (the width measured on the ink under it),
+cut to ink with its soft edge (``tighten.non_white``); a blackout's pixels are the ink inside its polygon.  The removed scan sets those
+pixels white: the writing a struck line crossed keeps the pixels the annotator skipped, so it is whole.  A revision's region is the polygon
+of the writing it voids (``page_rules.js`` computes it from the ink; the annotator may have moved it).
 
-OUT/labels.jsonl has a row per line (image id, split, line number in reading order, polygon, text as typed, final text, struck stretches,
-flags, the indexes of its marks); OUT/marks/<image_id>.npz holds each mark's mask on the page (packed bits, ``mask_<n>``) and
-OUT/marks/<image_id>.json the marks (type, shape, line); OUT/summary.json the counts per split.  A struck stretch and a mark of one line
-are paired left to right; a line where their numbers differ is counted (``unpaired``), never fixed.  The text is student work: OUT stays
-out of Git.
+Per question OUT/<image_id>.json (strokes and revisions with their kinds and pixel counts), OUT/<image_id>.npz (``stroke_<n>``,
+``revision_<n>``, ``region_<n>``: masks on the page, packed bits) and OUT/removed/<image_id>.png; OUT/summary.json the counts per split.
+The scans are student work: OUT stays out of Git.
 """
 import argparse
 import json
-import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
+from scipy import ndimage
 
 from .. import pages as pages_module
+from ..eval.ink import INK_BELOW
 from ..tighten import non_white
 from ..util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
-SCHEMA = 'paper2-page-annotation-v1'
-STROKE_PX = 5              # a struck line drawn by the annotator is rasterised this wide, then cut to ink
-OPEN, CLOSE = '[[', ']]'
+SCHEMA = 'paper2-revision-annotation-v1'
+MIN_WIDTH = 2.             # a struck line is taken at least this wide (pixels)
 
 
-def parse_line(text):
-    """(final text, [{text, legible}], error or None): the Python twin of ``page_rules.js``'s ``parseLine`` (tests/test_page_editor.py
-    checks that the two agree)."""
-    final, struck, rest, error = '', [], text or '', None
-    while rest:
-        opening, closing = rest.find(OPEN), rest.find(CLOSE)
-        if closing != -1 and (opening == -1 or closing < opening):
-            return final+rest, struck, '多了 ]]'
-        if opening == -1:
-            return final+rest, struck, error
-        final += rest[:opening]
-        after = rest[opening+len(OPEN):]
-        end, nested = after.find(CLOSE), after.find(OPEN)
-        if end == -1:
-            return final+rest[opening:], struck, '[[ 没有配对的 ]]'
-        if nested != -1 and nested < end:
-            return final+rest[opening:], struck, '[[ 里面又有 [['
-        inside = after[:end]
-        plain = re.sub(r'\s+', '', inside)
-        if not plain:
-            error = error or '空的 [[ ]]'
-        struck.append({'text': inside, 'legible': 'no' if re.fullmatch(r'\?+', plain) else 'partly' if '?' in plain else 'yes'})
-        rest = after[end+len(CLOSE):]
-    return final, struck, error
-
-
-def point_in_polygon(point, polygon):
-    x, y = point
-    inside = False
-    for (xi, yi), (xj, yj) in zip(polygon, polygon[-1:]+polygon[:-1]):
-        if (yi > y) != (yj > y) and x < (xj-xi)*(y-yi)/(yj-yi)+xi:
-            inside = not inside
-    return inside
-
-
-def mark_points(mark):
-    if mark['shape'] == 'box':
-        return [[mark['x'], mark['y']], [mark['x']+mark['w'], mark['y']], [mark['x']+mark['w'], mark['y']+mark['h']], [mark['x'], mark['y']+mark['h']]]
-    return mark['path']
-
-
-def centre(points):
-    xs, ys = [p[0] for p in points], [p[1] for p in points]
-    return ((min(xs)+max(xs))/2, (min(ys)+max(ys))/2)
-
-
-def assign(lines, marks):
-    """([mark indexes per line, left to right], [mark indexes in no line]): the editor's ``assignMarks``."""
-    per_line, outside = [[] for _ in lines], []
-    for m, mark in enumerate(marks):
-        c = centre(mark_points(mark))
-        holders = [k for k, line in enumerate(lines) if not line.get('not_writing') and point_in_polygon(c, line['poly'])]
-        if not holders:
-            outside.append(m)
-            continue
-        per_line[min(holders, key=lambda k: np.hypot(c[0]-centre(lines[k]['poly'])[0], c[1]-centre(lines[k]['poly'])[1]))].append(m)
-    for indexes in per_line:
-        indexes.sort(key=lambda m: centre(mark_points(marks[m]))[0])
-    return per_line, outside
-
-
-def rasterise(mark, size, ink):
-    """A mark's mask on the page (``size`` = width, height), cut to ``ink``."""
+def polygon_mask(points, size):
     canvas = Image.new('L', size, 0)
-    draw = ImageDraw.Draw(canvas)
-    if mark['shape'] == 'box':
-        draw.rectangle([mark['x'], mark['y'], mark['x']+mark['w']-1, mark['y']+mark['h']-1], fill=255)
-    else:
-        draw.line([tuple(p) for p in mark['path']], fill=255, width=STROKE_PX, joint='curve')
-        for x, y in mark['path']:
-            draw.ellipse([x-STROKE_PX/2, y-STROKE_PX/2, x+STROKE_PX/2, y+STROKE_PX/2], fill=255)
-    return (np.asarray(canvas) > 0) & ink
+    ImageDraw.Draw(canvas).polygon([tuple(p) for p in points], fill=255)
+    return np.asarray(canvas) > 0
+
+
+def line_mask(path, size, width):
+    """A polyline ``width`` wide with square-cut ends: it stops where the annotator stopped it, never past."""
+    canvas = Image.new('L', size, 0)
+    ImageDraw.Draw(canvas).line([tuple(p) for p in path], fill=255, width=max(1, int(round(width))), joint='curve')
+    return np.asarray(canvas) > 0
+
+
+def stroke_width(path, ink, depth, size):
+    """The width of the ink a struck line was drawn along: twice the median depth (``depth``: the ink's distance transform) of the ink
+    under the line, at least ``MIN_WIDTH``."""
+    on = line_mask(path, size, 1) & ink
+    return max(MIN_WIDTH, 2*float(np.median(depth[on]))) if on.any() else MIN_WIDTH
+
+
+def stroke_pixels(stroke, ink, soft, depth, size):
+    """The pixels a stroke removes: a blackout's ink inside it (with the soft edge); a struck line's ink within half its width of the line,
+    with the faint edge round that ink (never more of the writing it stopped at)."""
+    if stroke['kind'] == 'blot':
+        return polygon_mask(stroke['path'], size) & soft
+    core = line_mask(stroke['path'], size, stroke_width(stroke['path'], ink, depth, size)+1) & ink
+    if not core.any():
+        return core
+    return core | ndimage.binary_dilation(core, np.ones((3, 3), bool), iterations=2, mask=soft & ~ink)
 
 
 def merge_exports(paths):
-    """{image id: page state} from editor exports, a later file winning for a question it also holds."""
+    """{image id: question state} from editor exports, a later file winning for a question it also holds."""
     pages = {}
     for path in paths:
         value = json.loads(Path(path).read_text(encoding='utf-8'))
-        require(value.get('schema') == SCHEMA, f'{path}: not an export of the page editor')
+        require(value.get('schema') == SCHEMA, f'{path}: not an export of the revision annotation page')
         pages.update(value['pages'])
     return pages
 
@@ -133,40 +90,45 @@ def main(argv=None):
     require(chosen, 'no question to read (none is marked done; --all reads the rest)')
     scans = pages_module.page_files(args.pages, chosen)
     out = make_output_dir(args.output_dir)
-    (out/'marks').mkdir()
+    (out/'removed').mkdir()
     counts = defaultdict(Counter)
-    with (out/'labels.jsonl').open('x', encoding='utf-8') as stream:
-        for image_id in chosen:
-            state, split = pages[image_id], selection[image_id]['split']
-            with Image.open(scans[image_id]) as opened:
-                grey = np.asarray(opened.convert('L'))
-            ink = non_white(grey)
-            per_line, outside = assign(state['lines'], state['marks'])
-            masks = [rasterise(mark, (grey.shape[1], grey.shape[0]), ink) for mark in state['marks']]
-            for k, line in enumerate(state['lines']):
-                final, struck, error = parse_line(line.get('text', ''))
-                writing = not line.get('not_writing') and not line.get('unreadable')
-                stream.write(json.dumps({'image_id': image_id, 'split': split, 'line': k, 'poly': line['poly'], 'source': line.get('source'),
-                                         'catalogue_line_id': line.get('line_id'), 'text': line.get('text', ''), 'final': final, 'struck': struck, 'error': error,
-                                         'not_writing': bool(line.get('not_writing')), 'unreadable': bool(line.get('unreadable')), 'marks': per_line[k],
-                                         'paired': writing and not error and len(struck) == len(per_line[k])}, ensure_ascii=False)+'\n')
-                if writing:
-                    counts[split]['lines'] += 1
-                    counts[split]['revised_lines'] += bool(struck or per_line[k])
-                    counts[split]['struck_stretches'] += len(struck)
-                    counts[split]['unpaired_lines'] += bool(error or len(struck) != len(per_line[k]))
-                    for s in struck:
-                        counts[split][f'legible_{s["legible"]}'] += 1
-                counts[split]['not_writing'] += bool(line.get('not_writing'))
-                counts[split]['unreadable_lines'] += bool(line.get('unreadable'))
-            counts[split]['questions'] += 1
-            counts[split]['marks'] += len(state['marks'])
-            counts[split]['marks_outside_lines'] += len(outside)
-            counts[split]['empty_marks'] += sum(not m.any() for m in masks)
-            np.savez_compressed(out/'marks'/f'{image_id}.npz', **{f'mask_{n}': np.packbits(m, axis=-1) for n, m in enumerate(masks)})
-            line_of = {m: k for k, indexes in enumerate(per_line) for m in indexes}
-            write_json(out/'marks'/f'{image_id}.json', {'image_id': image_id, 'size': [grey.shape[1], grey.shape[0]],
-                                                         'marks': [{**mark, 'line': line_of.get(n)} for n, mark in enumerate(state['marks'])]})
+    for image_id in chosen:
+        state, split = pages[image_id], selection[image_id]['split']
+        with Image.open(scans[image_id]) as opened:
+            rgb = np.array(opened.convert('RGB'))
+        grey = np.asarray(Image.fromarray(rgb).convert('L'))
+        size = (grey.shape[1], grey.shape[0])
+        ink, soft = grey < INK_BELOW, non_white(grey)
+        depth = ndimage.distance_transform_edt(ink)
+        by_id = {s['id']: s for s in state['strokes']}
+        stroke_masks = {s['id']: stroke_pixels(s, ink, soft, depth, size) for s in state['strokes']}
+        arrays, revisions = {}, []
+        for n, s in enumerate(state['strokes']):
+            arrays[f'stroke_{n}'] = np.packbits(stroke_masks[s['id']], axis=-1)
+        for n, g in enumerate(state['groups']):
+            members = [by_id[i] for i in g['strokes'] if i in by_id]
+            mask = np.logical_or.reduce([stroke_masks[m['id']] for m in members]) if members else np.zeros(grey.shape, bool)
+            region = polygon_mask(g['region'], size) if g.get('region') else np.zeros(grey.shape, bool)
+            kinds = {m['kind'] for m in members}
+            kind = 'line' if kinds == {'line'} else 'blot' if kinds == {'blot'} else 'mixed'
+            arrays[f'revision_{n}'], arrays[f'region_{n}'] = np.packbits(mask, axis=-1), np.packbits(region, axis=-1)
+            revisions.append({'id': g['id'], 'strokes': g['strokes'], 'kind': kind, 'region': g.get('region'), 'region_auto': g.get('region_auto', True),
+                              'pixels': int(mask.sum()), 'region_pixels': int(region.sum()), 'ink_in_region': int((ink & region).sum())})
+            counts[split][f'revisions_{kind}'] += 1
+            counts[split]['revisions_without_region'] += not g.get('region')
+            counts[split]['regions_moved_by_hand'] += bool(g.get('region')) and not g.get('region_auto', True)
+        removal = np.logical_or.reduce(list(stroke_masks.values())) if stroke_masks else np.zeros(grey.shape, bool)
+        removed = rgb.copy()
+        removed[removal] = 255
+        Image.fromarray(removed).save(out/'removed'/f'{image_id}.png')
+        np.savez_compressed(out/f'{image_id}.npz', **arrays)
+        write_json(out/f'{image_id}.json', {'image_id': image_id, 'split': split, 'size': list(size),
+                                             'strokes': [{**s, 'pixels': int(stroke_masks[s['id']].sum())} for s in state['strokes']], 'revisions': revisions})
+        counts[split]['questions'] += 1
+        counts[split]['strokes_line'] += sum(s['kind'] == 'line' for s in state['strokes'])
+        counts[split]['strokes_blot'] += sum(s['kind'] == 'blot' for s in state['strokes'])
+        counts[split]['strokes_without_ink'] += sum(not m.any() for m in stroke_masks.values())
+        counts[split]['removed_pixels'] += int(removal.sum())
     summary = {split: dict(c) for split, c in sorted(counts.items())}
     write_json(out/'summary.json', summary)
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [*args.export, args.selection]}, questions=len(chosen), summary=summary)

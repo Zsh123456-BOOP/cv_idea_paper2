@@ -24,7 +24,7 @@ revrender/
                      page_gold.py（第一篇的金标放回整页坐标，写成与整页输出同一布局）、clean_pages.py（整页清洁：只留本题自己的虚线框、去杂点）、
                      prior_annotations.py（旧项目已有的人工前后对、盲判无涂改行、三个模型的行转写，按行 id 合并）、
                      line_pack.py（人工标注行的图包：原图 / 擦除 / 涂白列带 / 红色叠加 + 掩膜框）、
-                     annotation_set.py（第二篇要人工标注的整道题：按第一篇的书写者划分挑选）、page_labels.py（读回整道题的标注：每行最终文字、被划掉的内容、涂改掩膜）、
+                     annotation_set.py（第二篇要人工标注的整道题：按第一篇的书写者划分挑选）、page_labels.py（读回整道题的涂改标注：每笔要去掉的像素、每处的掩膜和作废区域、去掉涂改后的扫描图）、
                      paste_strikes.py（干净行上的合成涂改：七种划法、贴进去的被划掉的字、整行划掉；目标文字由构造已知）、
                      reader_corpus.py（合成涂改的配方：宿主行的挑选、与测试 / 评测书写者隔开、写成文字文件）、
                      journal.py（写作者子集、合成阳性）
@@ -42,7 +42,7 @@ revrender/
                      representation.py（掩膜网格的上限、掩膜加粗 / 变细后的读数）、pixel_errors.py（错误像素按六类统计）
   baselines/         native/（七个原生实例分割基线 + Mask Transfiner：factory、train、threshold、transfiner、dense、metrics、compat）
                      component_cls.py、removal.py、paper.py、mathscrub.py（涂改专用方法）、common.py
-  tools/             annotate/（第一篇的逐行标注页 editor.html + 单文件打包；第二篇的整道题标注页 page_editor.html + page_rules.js + page_pack.py）、compare_trace.py / compare_curve.py / compare_checkpoint.py（两份训练轨迹 / 验证曲线 / 检查点张量逐项比对）、
+  tools/             annotate/（第一篇的逐行标注页 editor.html + 单文件打包；第二篇的整道题涂改标注页 page_editor.html + page_rules.js + page_pack.py）、compare_trace.py / compare_curve.py / compare_checkpoint.py（两份训练轨迹 / 验证曲线 / 检查点张量逐项比对）、
                      pages_view.py + pages_view.html（整页结果的静态 HTML：识别完拼回的、被字数过滤掉的）、
                      tighten_view.py + tighten_view.html（掩膜收紧前后的静态对比页：模型的和金标的）、
                      clean_view.py + clean_view.html（整页清洁前后的静态对比页）、
@@ -246,13 +246,13 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 ## 第二篇的人工标注（整道题）
 
-定位和口径见 CLAUDE.md「第二篇的划分、标注和评测口径」。流程：
+定位和口径见 CLAUDE.md「第二篇的划分、标注和评测口径」。2026-10-05 起只标几何（去掉涂改、恢复下面的字），不标行框和文字；第一版「行框 + 每行文字 + `[[ ]]`」用户试标后不好用，已换掉（试标的 5 题的涂改形状已带进新版）。流程：
 
-1. 挑题：`python -m revrender.data.annotation_set --mapping index_manifest.json --same-student 对子.json --output-dir OUT`。书写者按第一篇划分（训练 / 第一篇的 dev 当验证 / 测试，同一学生的两个编号合并），每题至少 12 行、至少 3 行判为有涂改，按题号轮流、一位书写者一题，种子 42；测试 400、验证 200、训练 200 行，测试的前 5 题是试标。现在的选择（`work/annotation_set`，服务器 `paper2_annotation_set`）：测试 22 题 417 行（目录判为有涂改 122 行）、验证 13 题 217 行（56）、训练 11 题 211 行（77）；题号 2–9。
-2. 预填：`revrender.pages` 在这些题上跑一遍（同第一篇的冻结点、存档的 OCR 文本；服务器 `paper2_pages_annotation_set`：46 题、1,000 个行块、423 个实例）。
-3. 打包：`python -m revrender.tools.annotate.page_pack --selection selection.json --pages 扫描目录 … --revrender PAGES_OUT --which pilot|test|val|train|all --output-dir OUT` 写 `OUT/标注.html`（一个文件，图、预填、规则都在里面，浏览器直接打开）。行框 = 行块的四角框（OCR 的行、拆开的多行区域、补框的手写），按从上到下排；文字 = 强模型（Qwen3.5-35B，当年要求保留划掉的字）在那条目录行上的读数，字与字之间的空格收紧（LaTeX 命令之间的空格保留），没有就用 OCR 的文字；页眉、页脚、标题先勾「不是作答」；涂改 = RevRender 的实例裁到墨迹，又细又长的当划线（沿中线的折线），其余当涂黑框，「盖写」不猜。包的 id 只由 `--which` 定：重新打包后，浏览器里已经改过的题保留，没动过的题显示新的预填。
-4. 标注页（`page_editor.html`）：滚轮缩放、空格或右键拖动平移；选中行框后拖白点改形状，框边上双击加点（斜行、弯行），⌥/Alt 点白点删点，「新行框」补漏掉的行，右边 ↑ ↓ 调阅读顺序；涂改用第一篇的三个工具（涂黑框、划线折线、盖写框）；每行文字里被划掉的放进 `[[ ]]`、看不清的字写 `?`、读不出写 `[[?]]`、盖写写 `[[旧]]新`；一行里 `[[ ]]` 的段数和这一行的涂改区域数不一致、括号不配对、涂改不在任何行框里都会标黄；选中行框后按 S 在鼠标处上下拆开、⇧S 左右拆开、J 与下一行合并；拖动行框里面是平移画面，⇧ 拖才挪框；文字框里回车跳到下一行；自动保存在浏览器里，「导出」下载 JSON，「导入」接着标（别的包导出的文件也能导入，只取本包也有的题）。规则只有一份实现（`page_rules.js`），读回时用的 Python 版与它逐例对照（`tests/test_page_editor.py`，用 node）。
-5. 读回：`python -m revrender.data.page_labels --export 标注_….json [--export …] --selection selection.json --pages 扫描目录 … --output-dir OUT` 写每行一条（多边形、原文、最终文字、被划掉的段及能否辨认、标志、这一行的涂改）、每题的涂改掩膜（框原样、划线按 5 像素宽画，都裁到墨迹）和按划分的计数；只读标为完成的题（`--all` 读全部）；`[[ ]]` 段数与涂改数对不上的行只计数（`unpaired_lines`），不替用户改。
+1. 挑题：`python -m revrender.data.annotation_set --mapping index_manifest.json --same-student 对子.json --output-dir OUT`。书写者按第一篇划分（训练 / 第一篇的 dev 当验证 / 测试，同一学生的两个编号合并），每题至少 12 行、至少 3 行判为有涂改，按题号轮流、一位书写者一题，种子 42。现在的选择（`work/annotation_set`，服务器 `paper2_annotation_set`）：测试 22 题 417 行（目录判为有涂改 122 行）、验证 13 题 217 行（56）、训练 11 题 211 行（77）；题号 2–9；测试的前 5 题是试标。
+2. 预填：`revrender.pages` 在这些题上跑一遍（第一篇的冻结点、存档的 OCR 文本、印刷模板 `paper2_page_templates`；服务器 `paper2_pages_annotation_set_templates`：46 题、998 个块、422 个实例。不带模板的那次是 1,000 个块、423 个实例，几乎一样）。
+3. 打包：`python -m revrender.tools.annotate.page_pack --selection selection.json --pages 扫描目录 … --revrender PAGES_OUT --which test --first 15 [--previous 旧导出.json] --output-dir OUT` 写 `OUT/标注.html`（一个文件，图、预填、规则都在里面，用 Chrome 打开）。每个 RevRender 实例一笔、各自一处：细长的当划线（沿中线的折线），其余当涂黑（墨迹的凸包，去掉不显眼的角）；`--previous` 让题从已有的导出开始（旧版的涂改变成笔画，旧版的文字不带）。包的 id 只由 `--which` 定：重新打包后，浏览器里已经改过的题保留。
+4. 标注页（`page_editor.html`，规则在 `page_rules.js`，一份实现）：划线 = 拖出一段（压到字就停、跳过字再拖下一段），点选两段按 C 连成一条（第一篇的做法）；涂黑 = 拖一个框，拖边中间的小圆点多出一个角；点一下选一笔、再点别的加进来，G 组成一处、U 拆开；每处的作废区域按这处笔画碰到的墨迹自动算（笔画外扩 14 × 28 像素的窗口里连着的墨迹），选中虚线框可拖，拖过的不再自动变、R 重算；右边列表点一处就放大到那里，回车下一处；滚轮缩放，⇧ / 空格 / 右键拖动平移；自动保存在浏览器里，「导出」下载 JSON，「导入」接着标。
+5. 读回：`python -m revrender.data.page_labels --export 涂改标注_….json [--export …] --selection selection.json --pages 扫描目录 … --output-dir OUT` 写每题的笔画和每处涂改（种类、像素数、区域）、掩膜（每笔、每处、每个区域）、去掉涂改后的扫描图（`OUT/removed/`），以及按划分的计数；只读标为完成的题（`--all` 读全部）。划线的像素 = 画线两侧、按线下墨迹量出的笔宽之内的墨迹，方头、不越过画线的终点，再加不碰字的软边；涂黑 = 框内墨迹加软边。
 
 ## 数据
 
