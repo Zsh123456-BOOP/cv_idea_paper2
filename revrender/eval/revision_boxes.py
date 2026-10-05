@@ -1,7 +1,7 @@
 """A model's revisions on whole questions read against the user's boxes (the annotation page's exports, ``paper2-revision-box-v1``).
 
     python -m revrender.eval.revision_boxes boxes --labels EXPORT.json [--labels ...] --selection selection.json --split val
-        --pages-output OUT_OF_revrender.pages --pages DIR [--pages DIR ...] [--cuts .2 .3 ...] [--pack-cut C] --output-dir OUT
+        --model NAME=OUT_OF_revrender.pages [--model ...] --pages DIR [--pages DIR ...] [--cuts .2 .3 ...] [--cut-from SUMMARY] --output-dir OUT
     python -m revrender.eval.revision_boxes read --pack OUT/pack --readings predictions.jsonl --output read.json
 
 ``boxes``: the model's removal on a question at a score cut is its instances at or above the cut, pasted on the page and cut to the
@@ -9,12 +9,14 @@ page's non-white pixels (``tighten.non_white``).  A revision is found when the r
 (and ``MIN_FOUND`` pixels); the boxes cover every revision of a question, so a piece of removed ink of at least ``FALSE_PLACE`` pixels
 outside every box (grown by ``EDGE``) is a place the model removed valid writing.  Per cut: revisions found (recall), places found
 against false places (precision), F1, and the share of the ink outside the boxes removed; the cut with the best F1 is reported (on the
-validation split this chooses it; on the test split it is only read).  OUT/summary.json, OUT/questions.json (per question at that cut)
-and OUT/pack (``--pack-cut``, default that cut): a line pack (``recognize_lines``) with each revision whose struck text was written,
-its box with a margin as scanned (``raw``) and with the removal whited out (``erased``).
+validation split this chooses it; on the test split it is only read, and ``--cut-from`` -- the validation's summary -- gives each model
+the cut chosen there).  Several models (``--model NAME=DIR``, a ``revrender.pages`` run each) are read on the same boxes, and ``scan``
+-- nothing removed -- with them.  OUT/summary.json (per model), OUT/questions.json (per model and question at its cut) and OUT/pack: a
+line pack (``recognize_lines``, condition ``erased_neutral``) with a row per model and revision whose struck text was written
+(``<model>|<image id>#<revision>``): the box with a margin, the model's removal whited out (``scan``: as scanned).
 
 ``read``: what a reader read on those crops against the struck text: the share of the text's characters a minimal edit alignment of
-the two keeps (``eval.coverage``; a ``?`` of the label is not counted), per condition, for struck lines and blackouts apart.
+the two keeps (``eval.coverage``; a ``?`` of the label is not counted), per model and condition, for struck lines and blackouts apart.
 Student work: OUT stays out of Git.
 """
 import argparse
@@ -97,52 +99,64 @@ def boxes(args):
     labels = read_labels(args.labels)
     chosen = sorted(i for i, q in labels.items() if selection.get(i, {}).get('split') == args.split and (q.get('done') or args.all))
     require(chosen, f'no labelled {args.split} question (only questions marked done count unless --all)')
+    models = dict(m.split('=', 1) for m in args.model)
+    require(len(models) == len(args.model) and 'scan' not in models, 'model names must differ and not be scan')
+    chosen_cuts = {m: r['best_cut'] for m, r in json.loads(args.cut_from.read_text())['models'].items()} if args.cut_from else {}
     scans = pages_module.page_files(args.pages, chosen)
     out = make_output_dir(args.output_dir)
-    per_cut, kept = defaultdict(list), {}
+    (out/'pack'/'crops').mkdir(parents=True)
+    per_cut = {m: defaultdict(list) for m in models}
+    questions, rows, summary = defaultdict(list), [], {}
+    pages_cache = {}
     for image_id in chosen:
         with Image.open(scans[image_id]) as opened:
             rgb = np.array(opened.convert('RGB'))
         grey = np.asarray(Image.fromarray(rgb).convert('L'))
         size = (grey.shape[1], grey.shape[0])
         ink, soft = grey < INK_BELOW, non_white(grey)
-        record, instances = pages_module.read_output(args.pages_output, image_id)
-        require(tuple(record['size']) == size, f'{image_id}: the model read another size of this page')
         revisions = labels[image_id]['revisions']
         regions = [polygon_mask(r['region'], size) for r in revisions]
-        for cut in args.cuts:
-            removed = removal(instances, grey.shape, cut, soft)
-            found, false, outside, ink_outside = question_reading(removed, ink, regions)
-            per_cut[cut].append({'image_id': image_id, 'found': found, 'kinds': [r['kind'] for r in revisions], 'false_places': false,
-                                 'removed_outside': outside, 'ink_outside': ink_outside})
-        kept[image_id] = (rgb, soft, instances, revisions)
-    readings = {str(cut): totals(rows) for cut, rows in per_cut.items()}
-    best = max(args.cuts, key=lambda c: (readings[str(c)]['f1'], -c))
-    pack_cut = args.pack_cut if args.pack_cut is not None else best
-    write_json(out/'questions.json', per_cut[best])
-    (out/'pack'/'crops').mkdir(parents=True)
-    rows = []
-    for image_id, (rgb, soft, instances, revisions) in kept.items():
-        erased = rgb.copy()
-        erased[removal(instances, soft.shape, pack_cut, soft)] = 255
+        for name, directory in models.items():
+            record, instances = pages_module.read_output(Path(directory), image_id)
+            require(tuple(record['size']) == size, f'{image_id}: {name} read another size of this page')
+            for cut in args.cuts:
+                found, false, outside, ink_outside = question_reading(removal(instances, grey.shape, cut, soft), ink, regions)
+                per_cut[name][cut].append({'image_id': image_id, 'found': found, 'kinds': [r['kind'] for r in revisions], 'false_places': false,
+                                           'removed_outside': outside, 'ink_outside': ink_outside})
+        pages_cache[image_id] = (rgb, soft, revisions)
+    for name in models:
+        readings = {str(cut): totals(rows_) for cut, rows_ in per_cut[name].items()}
+        best = max(args.cuts, key=lambda c: (readings[str(c)]['f1'], -c))
+        cut = chosen_cuts.get(name, best)
+        require(cut in args.cuts, f'{name}: the cut {cut} is not among --cuts')
+        summary[name] = {'best_cut': best, 'pack_cut': cut, 'at_pack_cut': readings[str(cut)], 'by_cut': readings}
+        questions[name] = per_cut[name][cut]
+    for image_id, (rgb, soft, revisions) in pages_cache.items():
+        pictures = {'scan': rgb}
+        for name, directory in models.items():
+            _, instances = pages_module.read_output(Path(directory), image_id)
+            pictures[name] = rgb.copy()
+            pictures[name][removal(instances, soft.shape, summary[name]['pack_cut'], soft)] = 255
         for r in revisions:
             if r.get('unreadable') or not prepare(r.get('text', '')).replace('?', ''):
                 continue
             xs, ys = [p[0] for p in r['region']], [p[1] for p in r['region']]
             box = (max(0, min(xs)-PAD), max(0, min(ys)-PAD), min(rgb.shape[1], max(xs)+PAD), min(rgb.shape[0], max(ys)+PAD))
-            images = {}
-            for name, picture in (('raw', rgb), ('erased', erased)):
-                images[name] = f'crops/{len(rows):05d}_{name}.png'
-                Image.fromarray(picture).crop(box).save(out/'pack'/images[name])
-            rows.append({'id': f'{image_id}#{r["id"]}', 'line_id': f'{image_id}#{r["id"]}', 'image_id': image_id, 'kind': r['kind'],
-                         'size': [box[2]-box[0], box[3]-box[1]], 'boxes': [], 'images': images, 'text': r['text']})
+            for name, picture in pictures.items():
+                path = f'crops/{len(rows):05d}.png'
+                Image.fromarray(picture).crop(box).save(out/'pack'/path)
+                rows.append({'id': f'{name}|{image_id}#{r["id"]}', 'line_id': f'{image_id}#{r["id"]}', 'model': name, 'image_id': image_id,
+                             'kind': r['kind'], 'size': [box[2]-box[0], box[3]-box[1]], 'boxes': [], 'images': {'erased': path}, 'text': r['text']})
+    write_json(out/'questions.json', questions)
     write_json(out/'pack'/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
-    summary = {'split': args.split, 'questions': len(chosen), 'best_cut': best, 'pack_cut': pack_cut, 'pack_rows': len(rows), 'by_cut': readings,
-               'rule': {'found': FOUND, 'min_found': MIN_FOUND, 'edge': EDGE, 'false_place': FALSE_PLACE}}
-    write_json(out/'summary.json', summary)
-    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [*args.labels, args.selection, args.pages_output/'run_manifest.json']},
-                   **{k: v for k, v in summary.items() if k != 'by_cut'}, best=readings[str(best)])
-    print(json.dumps({'best_cut': best, **readings[str(best)]}))
+    result = {'split': args.split, 'questions': len(chosen), 'pack_rows': len(rows), 'models': summary,
+              'rule': {'found': FOUND, 'min_found': MIN_FOUND, 'edge': EDGE, 'false_place': FALSE_PLACE}}
+    write_json(out/'summary.json', result)
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [*args.labels, args.selection,
+                   *(Path(d)/'run_manifest.json' for d in models.values()), *([args.cut_from] if args.cut_from else [])]},
+                   questions=len(chosen), pack_rows=len(rows), cuts={m: r['pack_cut'] for m, r in summary.items()})
+    for name, r in summary.items():
+        print(json.dumps({'model': name, 'cut': r['pack_cut'], **{k: round(v, 3) if isinstance(v, float) else v for k, v in r['at_pack_cut'].items()}}))
     return 0
 
 
@@ -164,10 +178,10 @@ def read(args):
             continue
         share = held(row['text'], reading['text'])
         if share is not None:
-            shares[(reading['condition'], row['kind'])].append(share)
-            shares[(reading['condition'], 'all')].append(share)
-    result = {f'{condition}/{kind}': {'revisions': len(v), 'held': float(np.mean(v)), 'whole': float(np.mean([s == 1 for s in v]))}
-              for (condition, kind), v in sorted(shares.items())}
+            shares[(row.get('model', ''), reading['condition'], row['kind'])].append(share)
+            shares[(row.get('model', ''), reading['condition'], 'all')].append(share)
+    result = {f'{model}/{condition}/{kind}': {'revisions': len(v), 'held': float(np.mean(v)), 'whole': float(np.mean([s == 1 for s in v]))}
+              for (model, condition, kind), v in sorted(shares.items())}
     write_json(args.output, {'pack': str(args.pack), 'readings': str(args.readings), 'held': result})
     print(json.dumps(result, ensure_ascii=False))
     return 0
@@ -180,10 +194,10 @@ def main(argv=None):
     b.add_argument('--labels', type=Path, action='append', required=True)
     b.add_argument('--selection', type=Path, required=True)
     b.add_argument('--split', choices=('val', 'test', 'train'), required=True)
-    b.add_argument('--pages-output', type=Path, required=True, help='revrender.pages run with the model on these questions')
+    b.add_argument('--model', action='append', required=True, help='NAME=DIR: a revrender.pages run of a model on these questions (repeatable)')
     b.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
     b.add_argument('--cuts', type=float, nargs='+', default=list(CUTS))
-    b.add_argument('--pack-cut', type=float, help='the score cut of the crops (default: the best one)')
+    b.add_argument('--cut-from', type=Path, help="the validation's summary: each model's crops at the cut chosen there")
     b.add_argument('--all', action='store_true', help='also questions not marked done')
     b.add_argument('--output-dir', type=Path, required=True)
     r = sub.add_parser('read', help='what a reader read on the crops against the struck text')

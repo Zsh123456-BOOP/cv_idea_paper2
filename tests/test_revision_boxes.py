@@ -31,19 +31,23 @@ def test_found_missed_and_false_places_and_the_held_share(tmp_path):
     selection = tmp_path/'selection.json'
     selection.write_text(json.dumps({'pages': [{'image_id': 'q_5_1', 'split': 'val'}]}))
     out = tmp_path/'read'
-    assert R.main(['boxes', '--labels', str(labels), '--selection', str(selection), '--split', 'val', '--pages-output', str(out_pages),
+    assert R.main(['boxes', '--labels', str(labels), '--selection', str(selection), '--split', 'val', '--model', f'ours={out_pages}',
                    '--pages', str(scans), '--cuts', '.2', '.5', '--output-dir', str(out)]) == 0
-    summary = json.loads((out/'summary.json').read_text())
+    summary = json.loads((out/'summary.json').read_text())['models']['ours']
     low, high = summary['by_cut']['0.2'], summary['by_cut']['0.5']
     assert (low['found'], low['false_places'], low['recall_line'], low['recall_blot']) == (1, 1, 1., 0.)
-    assert (high['found'], high['false_places'], high['precision']) == (1, 0, 1.) and summary['best_cut'] == .5
+    assert (high['found'], high['false_places'], high['precision']) == (1, 0, 1.) and summary['best_cut'] == summary['pack_cut'] == .5
     rows = json.loads((out/'pack'/'pack.json').read_text())['rows']
-    assert [r['id'] for r in rows] == ['q_5_1#r1']                       # an unreadable revision is not read
-    erased = np.asarray(Image.open(out/'pack'/rows[0]['images']['erased']).convert('L'))
-    assert erased[8:28, 6:36].min() == 255 and erased[8:28, 40:46].max() == 0
+    assert [r['id'] for r in rows] == ['scan|q_5_1#r1', 'ours|q_5_1#r1']            # an unreadable revision is not read
+    scan, erased = (np.asarray(Image.open(out/'pack'/r['images']['erased']).convert('L')) for r in rows)
+    assert scan[8:28, 8:36].max() == 0 and erased[8:28, 6:36].min() == 255 and erased[8:28, 40:46].max() == 0
     readings = tmp_path/'p.jsonl'
-    readings.write_text('\n'.join(json.dumps({'id': 'q_5_1#r1', 'condition': c, 'text': t}) for c, t in (('raw_neutral', '4'), ('erased_neutral', '40a'))))
+    readings.write_text('\n'.join(json.dumps({'id': i, 'condition': 'erased_neutral', 'text': t}) for i, t in (('scan|q_5_1#r1', '4'), ('ours|q_5_1#r1', '40a'))))
     assert R.main(['read', '--pack', str(out/'pack'), '--readings', str(readings), '--output', str(tmp_path/'read.json')]) == 0
     held = json.loads((tmp_path/'read.json').read_text())['held']
-    assert held['erased_neutral/line']['held'] == 1. and abs(held['raw_neutral/all']['held']-1/3) < 1e-9
+    assert held['ours/erased_neutral/line']['held'] == 1. and abs(held['scan/erased_neutral/all']['held']-1/3) < 1e-9
+    test = tmp_path/'test'
+    assert R.main(['boxes', '--labels', str(labels), '--selection', str(selection), '--split', 'val', '--model', f'ours={out_pages}', '--pages', str(scans),
+                   '--cuts', '.2', '.5', '--cut-from', str(out/'summary.json'), '--output-dir', str(test)]) == 0
+    assert json.loads((test/'summary.json').read_text())['models']['ours']['pack_cut'] == .5
     assert R.held('4?a', '4xa') == 1. and R.held('?', 'x') is None
