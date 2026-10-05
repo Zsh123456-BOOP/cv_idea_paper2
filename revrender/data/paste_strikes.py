@@ -60,11 +60,16 @@ class Bank:
         self.by_kind = {k: [p for p in self.pieces if p['kind'] == k] for k in ('line', 'blot')}
 
 
-def choose_style(rng, bank=None, gold_share=0.):
-    """A style: a real mark with probability ``gold_share`` when there is a bank (as many struck lines as blackouts), else a drawn one."""
-    if bank is not None and rng.random() < gold_share:
-        return rng.choice(GOLD_STYLES)
-    return rng.choice(STYLES)
+def choose_style(rng, bank=None, gold_share=0., whole=False):
+    """A style.  Without a bank one of the drawn ones.  With a bank a real mark with probability ``gold_share`` -- a struck line or a
+    blackout as often as the bank holds each -- else a drawn one; a whole line is struck through, never blacked out (a student
+    rarely blacks out a whole line)."""
+    if bank is None:
+        return rng.choice(STYLES)
+    if rng.random() < gold_share:
+        lines = len(bank.by_kind['line'])/max(1, len(bank.pieces))
+        return 'gold_line' if whole or rng.random() < lines else 'gold_blot'
+    return rng.choice([s for s in STYLES if not (whole and s in BLOT_STYLES)])
 
 
 def gold_piece(bank, p, rng, size):
@@ -304,7 +309,7 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., label
     host_ink = ink_of(host)
     rows = ink_rows(host_ink)
     if kind == 'whole' and rows is not None:
-        style = style or choose_style(rng, bank, gold_share)
+        style = style or choose_style(rng, bank, gold_share, whole=True)
         layer, opacity = strokes((host.shape[1], host.shape[0]), style, rng, ink_colour(host, host_ink, rng),
                                  max(2., rng.uniform(*STROKE)*(rows[1]-rows[0])), 0, bank, host.shape[0])
         canvas = host.copy()

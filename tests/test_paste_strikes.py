@@ -120,6 +120,10 @@ def test_a_real_mark_is_drawn_in_the_hosts_ink_across_its_region_with_room(tmp_p
     line_layer, line_opacity = S.strokes((120, 30), 'gold_line', random.Random(3), (0, 0, 0), 3, 6, bank, 40)
     assert (line_opacity > .5).any(0).mean() > .95                    # a struck line runs the whole width, room included
     assert S.choose_style(random.Random(1), bank, 1.) in S.GOLD_STYLES and S.choose_style(random.Random(1), bank, 0.) in S.STYLES
+    drawn = [S.choose_style(random.Random(k), bank, .7, whole=True) for k in range(200)]
+    assert 'gold_line' in drawn and not set(drawn) & set(S.BLOT_STYLES)        # a whole line is struck through, never blacked out
+    real = [S.choose_style(random.Random(k), bank, 1.) for k in range(400)]
+    assert 150 < real.count('gold_line') < 250                                 # the fake bank holds one line and one blot
 
 
 def test_removing_a_struck_line_keeps_the_writing_it_crosses_and_removing_a_blackout_takes_all_it_covers(tmp_path):
@@ -129,10 +133,11 @@ def test_removing_a_struck_line_keeps_the_writing_it_crosses_and_removing_a_blac
         out = S.compose(host, [], random.Random(seed), 'whole', bank=bank, gold_share=1.)
         writing = np.asarray(Image.fromarray(host).convert('L')) < S.WRITING_BELOW
         assert out['style'] in S.GOLD_STYLES and out['remove'].any()
-        if out['style'] == 'gold_line':
-            assert not (out['remove'] & writing).any() and (out['mask'] & ~writing <= out['remove']).all()
-        else:
-            assert (out['mask'] <= out['remove']).all()                 # a blackout's faint edge goes too
+        assert out['style'] == 'gold_line'                               # a whole line is struck through
+        assert not (out['remove'] & writing).any() and (out['mask'] & ~writing <= out['remove']).all()
+    for seed in range(6):
+        out = S.compose(host, [line([40, 30])], random.Random(seed), 'paste', style='gold_blot', bank=bank)
+        assert (out['mask'] <= out['remove']).all() and np.array_equal(out['remove'], out['labels'] == 1)   # a blackout's faint edge goes too
     for seed in range(6):
         out = S.compose(host, [line([40, 30])], random.Random(seed), 'paste', style='line')
         image, remove = np.asarray(out['image']), out['remove']
