@@ -262,7 +262,9 @@ def main(argv=None):
     summary = {'samples': len(records), 'by_split': dict(Counter(r['split'] for r in records)),
                'positive': sum(r['revisions'] > 0 for r in records), 'two_revisions': sum(r['revisions'] >= 2 for r in records),
                'by_kind': dict(Counter(r['kinds'][0] for r in records)), 'by_style': dict(Counter(s for r in records for s in r['styles'] if s)),
-               'writers': len({r['group_uuid'] for r in records}), 'lost_in_strip': sum(len(r['kinds']) > r['revisions'] and r['kinds'][0] != 'clean' for r in records)}
+               'writers': len({r['group_uuid'] for r in records})}
+    if not args.crops:                        # a crop holds one of a sample's revisions by design; a line should hold all of them
+        summary['lost_in_strip'] = sum(len(r['kinds']) > r['revisions'] and r['kinds'][0] != 'clean' for r in records)
     write_json(out/'summary.json', summary)
     files = {name: digest(out/name) for name in ('images.npy', 'labels.npy', 'records.json')}
     write_manifest(out, config=to_jsonable(args), inputs={str(args.corpus): digest(args.corpus), str(args.bank/'run_manifest.json'): digest(args.bank/'run_manifest.json')},
