@@ -16,8 +16,9 @@ stroke of its width and length holds (it carries writing).  ``line_height`` is t
 scaled to a host line by the ratio of the two lines' heights; ``ink_level`` is the grey of the piece's own ink (the median of its
 darkest third), so it can be drawn in another writer's ink.
 
-OUT/bank.npz holds ``piece_<n>`` (uint8 grey); OUT/pieces.json lists the pieces (id, image_id, writer, kind 'line', size, line_height,
-ink_level, pixels, width, length, ends, fill); OUT/left_out.json the marks left out and why; OUT/sheet_kept.png and
+OUT/bank.npz holds ``piece_<n>`` (uint8 grey); OUT/pieces.json lists the pieces (id, image_id, instance, writer, kind 'line', size,
+box on the page, line_height, ink_level, pixels, width, length, ends, fill); OUT/left_out.json the marks left out (their window on the
+page) and why; OUT/sheet_kept.png and
 OUT/sheet_left_out.png show a sample of each.  The pieces are student work: OUT stays out of Git.
 """
 import argparse
@@ -63,7 +64,8 @@ def training_writers(mapping, same_student):
 
 
 def window(grey, instance):
-    """(grey window round the instance's mask, the mask on it): the mask's box and ``MARGIN`` round it, inside the page."""
+    """(grey window round the instance's mask, the mask on it, the window's left and top on the page): the mask's box and ``MARGIN``
+    round it, inside the page."""
     l, t, _, _ = instance['box']
     ys, xs = np.nonzero(instance['mask'])
     if not len(ys):
@@ -72,7 +74,7 @@ def window(grey, instance):
     y1, x1 = min(grey.shape[0], t+ys.max()+1+MARGIN), min(grey.shape[1], l+xs.max()+1+MARGIN)
     mask = np.zeros((y1-y0, x1-x0), bool)
     mask[t+ys-y0, l+xs-x0] = True
-    return grey[y0:y1, x0:x1], mask
+    return grey[y0:y1, x0:x1], mask, (int(x0), int(y0))
 
 
 def ends_of(centre):
@@ -82,8 +84,8 @@ def ends_of(centre):
 
 
 def strike(grey, mask, line_height):
-    """(grey piece, its pixels, measures) of a struck line cut along the centre line of its gold band, or (None, None, measures with
-    the reason it is left out)."""
+    """(grey piece, its pixels, measures with the piece's left and top in the window) of a struck line cut along the centre line of its
+    gold band, or (None, None, measures with the reason it is left out)."""
     from skimage.morphology import skeletonize
     ink, soft = grey < INK_BELOW, non_white(grey)
     centre = skeletonize(mask)
@@ -103,7 +105,7 @@ def strike(grey, mask, line_height):
     ys, xs = np.nonzero(inside)
     y0, y1, x0, x1 = ys.min(), ys.max()+1, xs.min(), xs.max()+1
     inside = inside[y0:y1, x0:x1]
-    return np.where(inside, grey[y0:y1, x0:x1], 255).astype(np.uint8), inside, measures
+    return np.where(inside, grey[y0:y1, x0:x1], 255).astype(np.uint8), inside, {**measures, 'at': (int(x0), int(y0))}
 
 
 def ink_level(piece, inside):
@@ -151,11 +153,14 @@ def main(argv=None):
             if made is None:
                 continue
             line = record['lines'][instance['line']]['box']
-            piece, inside, measures = strike(*made, line[3]-line[1])
+            (x0, y0) = made[2]
+            piece, inside, measures = strike(made[0], made[1], line[3]-line[1])
             if piece is None:
-                left_out.append({'image_id': image_id, 'instance': k, **measures})
+                left_out.append({'image_id': image_id, 'instance': k, 'window': [x0, y0, x0+made[0].shape[1], y0+made[0].shape[0]], **measures})
                 left_windows.append(np.where(made[1], made[0], np.minimum(made[0], 235)).astype(np.uint8))
                 continue
+            ax, ay = measures.pop('at')
+            measures['box'] = [x0+ax, y0+ay, x0+ax+piece.shape[1], y0+ay+piece.shape[0]]
             n = f'piece_{len(pieces)}'
             bank[n] = piece
             pieces.append({'id': n, 'image_id': image_id, 'instance': k, 'writer': image_id.split('_')[0], 'kind': 'line',

@@ -80,6 +80,8 @@ def test_the_bank_holds_the_training_writers_struck_lines_with_their_lines_heigh
     assert B.main(['--gold', str(gold), '--pages', str(scans), '--mapping', str(mapping), '--same-student', str(same), '--output-dir', str(out)]) == 0
     pieces = json.loads((out/'pieces.json').read_text())
     assert [(p['image_id'], p['kind'], p['line_height']) for p in pieces] == [('a_5_1', 'line', 40)]
+    left, top, right, bottom = pieces[0]['box']
+    assert 18 <= left <= 21 and 28 <= top <= 30 and 30 <= bottom <= 35 and 197 <= right <= 202     # the stroke drawn at rows 30-32, columns 20-199
     assert [m['reason'] for m in json.loads((out/'left_out.json').read_text())] == ['wide']
     with np.load(out/'bank.npz') as arrays:
         assert arrays['piece_0'].shape[0] <= 7 and arrays['piece_0'].min() == 40
