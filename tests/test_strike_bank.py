@@ -1,7 +1,8 @@
-"""Real revision marks cut out of paper 1's gold for the synthetic revisions: which writers, how a mark is cut, its kind and ink."""
+"""Real struck lines cut out of paper 1's gold for the synthetic strikes: which writers, the cut along the centre line, what is left out."""
 import json
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from revrender import pages as pages_module
@@ -23,29 +24,47 @@ def test_only_training_writers_whose_other_id_is_not_elsewhere_give_marks(tmp_pa
     assert B.training_writers(mapping, same) == {'a'}
 
 
-def test_a_mark_is_cut_to_its_mask_on_paper_with_the_grey_of_its_own_ink(tmp_path):
-    grey = np.full((60, 100), 250, np.uint8)
-    grey[20:24, 10:80] = 50                   # the strike
-    grey[10:40, 30:34] = 20                   # a letter it crosses, outside the mask but where they meet
-    mask = np.zeros((40, 90), bool)
-    mask[10:14, 5:75] = True                  # on the box [5, 10, 95, 50]
-    piece, inside = B.cut(grey, {'box': [5, 10, 95, 50], 'mask': mask})
-    assert piece.shape == (4, 70) and inside.all() and piece.max() == 50 and B.ink_level(piece, inside) == 50          # the crossing letter does not set it
-    assert B.cut(grey, {'box': [0, 0, 4, 4], 'mask': np.zeros((4, 4), bool)}) is None
+def test_a_struck_line_is_cut_to_its_stroke_and_not_to_the_wider_band():
+    pytest.importorskip('skimage')
+    grey = np.full((40, 120), 250, np.uint8)
+    grey[19:22, 10:110] = 40                  # the strike, 3 pixels thick
+    grey[8:32, 50:54] = 20                    # a letter it crosses
+    band = np.zeros_like(grey, bool)
+    band[14:27, 8:112] = True                 # the gold band, much wider than the stroke
+    piece, inside, measures = B.strike(grey, band, 40)
+    assert piece is not None, measures
+    assert 2 <= measures['width'] <= 4 and inside.shape[0] <= 7          # the stroke and its edge, not the band
+    assert inside.sum() < band.sum()/2 and piece.min() == 20             # only where it crosses is the letter in it
 
 
-def test_the_bank_holds_the_training_writers_marks_with_their_lines_heights(tmp_path):
+def test_what_is_not_one_clean_stroke_is_left_out():
+    pytest.importorskip('skimage')
+    grey = np.full((40, 120), 250, np.uint8)
+    wide = np.zeros_like(grey, bool)
+    wide[5:35, 20:100] = True
+    grey[5:35, 20:100] = 30                   # a blackout
+    assert B.strike(grey, wide, 40)[2]['reason'] == 'wide'
+    grey = np.full((40, 120), 250, np.uint8)
+    grey[19:22, 10:110] = 40
+    grey[10:30, 15:105] = 40                  # writing all along the stroke
+    band = np.zeros_like(grey, bool)
+    band[18:23, 10:110] = True
+    assert B.strike(grey, band, 80)[2]['reason'] == 'writing'
+
+
+def test_the_bank_holds_the_training_writers_struck_lines_with_their_lines_heights(tmp_path):
+    pytest.importorskip('skimage')
     scans, gold = tmp_path/'scans', tmp_path/'gold'
     scans.mkdir()
     gold.mkdir()
     grey = np.full((100, 300), 250, np.uint8)
     grey[30:33, 20:200] = 40
-    grey[60:80, 220:240] = 30
+    grey[55:85, 220:250] = 30
     strike, blot = np.zeros((40, 280), bool), np.zeros((40, 280), bool)
-    strike[10:13, 10:180] = True
-    blot[30:40, 210:230] = True
+    strike[8:15, 8:182] = True
+    blot[5:35, 210:240] = True
     for name in ('a_5_1', 'c_5_1'):
-        Image.fromarray(grey).convert('RGB').save(scans/f'{name}.jpg', quality=98)
+        Image.fromarray(grey).convert('RGB').save(scans/f'{name}.png')
         pages_module.write_page(gold, name, (300, 100), [{'box': [10, 20, 290, 60], 'source': 'gold', 'ocr_type': None, 'ocr_text': ''}],
                                 [{'line': 0, 'score': 1., 'box': [10, 20, 290, 60], 'mask': strike}, {'line': 0, 'score': 1., 'box': [10, 50, 290, 90], 'mask': blot}])
     (gold/'run_manifest.json').write_text('{}')
@@ -55,7 +74,8 @@ def test_the_bank_holds_the_training_writers_marks_with_their_lines_heights(tmp_
     out = tmp_path/'bank'
     assert B.main(['--gold', str(gold), '--pages', str(scans), '--mapping', str(mapping), '--same-student', str(same), '--output-dir', str(out)]) == 0
     pieces = json.loads((out/'pieces.json').read_text())
-    assert [(p['image_id'], p['kind'], p['line_height']) for p in pieces] == [('a_5_1', 'line', 40), ('a_5_1', 'blot', 40)]
+    assert [(p['image_id'], p['kind'], p['line_height']) for p in pieces] == [('a_5_1', 'line', 40)]
+    assert [m['reason'] for m in json.loads((out/'left_out.json').read_text())] == ['wide']
     with np.load(out/'bank.npz') as arrays:
-        assert arrays['piece_0'].shape == (3, 170) and arrays['piece_0'].max() < 120
-    assert (out/'sheet_line.png').exists() and (out/'sheet_blot.png').exists()
+        assert arrays['piece_0'].shape[0] <= 7 and arrays['piece_0'].max() < 120
+    assert (out/'sheet_kept.png').exists() and (out/'sheet_left_out.png').exists()
