@@ -24,8 +24,9 @@ revrender/
                      page_gold.py（第一篇的金标放回整页坐标，写成与整页输出同一布局）、clean_pages.py（整页清洁：只留本题自己的虚线框、去杂点）、
                      prior_annotations.py（旧项目已有的人工前后对、盲判无涂改行、三个模型的行转写，按行 id 合并）、
                      line_pack.py（人工标注行的图包：原图 / 擦除 / 涂白列带 / 红色叠加 + 掩膜框）、
-                     annotation_set.py（第二篇要人工标注的整道题：按第一篇的书写者划分挑选）、page_labels.py（读回整道题的涂改标注：每笔要去掉的像素、每处的掩膜和作废区域、去掉涂改后的扫描图）、
-                     paste_strikes.py（干净行上的合成涂改：七种划法、贴进去的被划掉的字、整行划掉；目标文字由构造已知）、
+                     annotation_set.py（第二篇要人工标注的整道题：按第一篇的书写者划分挑选）、page_labels.py（读回几何版的涂改标注：每笔要去掉的像素、每处的掩膜和作废区域、去掉涂改后的扫描图）、
+                     strike_bank.py（从第一篇金标里抠出训练书写者的真实涂改：划线、涂黑）、
+                     paste_strikes.py（干净行上的合成涂改：七种划法或真实涂改、贴进去的被划掉的字、整行划掉；目标文字和要去掉的像素由构造已知）、
                      reader_corpus.py（合成涂改的配方：宿主行的挑选、与测试 / 评测书写者隔开、写成文字文件）、
                      journal.py（写作者子集、合成阳性）
   train.py           训练循环：smoke → 精确重放 → 仅训练集学习门槛 → formal（早停、挑步）
@@ -255,6 +256,14 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 5. 打包：`python -m revrender.tools.annotate.page_pack --prefill OUT --pages 扫描目录 … [--readings predictions.jsonl] [--first N] --output-dir PAGE` 写 `PAGE/标注.html`（一个文件，图、框、文字、规则都在里面，用 Chrome 打开；公式用 cdnjs 的 KaTeX 排版，没网就显示原文）。读数里的 □ 换成 ?，换行换成空格；涂黑默认「读不出」。包的 id 只由第 3 步的 `--which` 定：重新打包后，浏览器里已经改过的题保留。
 6. 标注页（`page_editor.html`，规则在 `page_rules.js`，一份实现）：每处一个框，拖白点改形状、拖边中点加点、⌥ 点白点删点；空白处拖出新框；`2` / `1` 改划线 / 涂黑，`X` 读不出，`D` 删；右边每处一个输入框，下面实时排版；点一处或在输入框里回车 / Tab，图放大到那一处；记每题的用时（两次操作之间的间隔，每段最多算 60 秒）；自动保存在浏览器里，「导出」下载 JSON（`paper2-revision-box-v1`：每题的框、种类、文字、读不出、是否完成，和每题用时），「导入」接着标。
 7. 几何版的读回（只用于那 7 题）：`python -m revrender.data.page_labels --export 涂改标注_….json [--export …] --selection selection.json --pages 扫描目录 … [--all] --output-dir OUT` 写每题的笔画和每处涂改（种类、像素数、区域）、掩膜（每笔、每处、每个区域）、去掉涂改后的扫描图（`OUT/removed/`），以及按划分的计数。划线的像素 = 画线两侧、按线下墨迹量出的笔宽之内的墨迹，方头、不越过画线的终点，再加不碰字的软边；涂黑 = 框内墨迹加软边。几何版的标注页在 git 历史里（提交 `1be20db`）。
+
+## 合成涂改：第一篇金标的真实涂改（2026-10-05）
+
+笔画和下面的字怎么分开，不靠人工逐笔标（太贵，见 RESULTS 里那 7 题的试验），靠合成数据：答案由构造已知。
+
+1. 素材库：`python -m revrender.data.strike_bank --gold paper2_gold_pages_tight_connected --pages 扫描目录 … --mapping index_manifest.json --same-student 对子.json --output-dir OUT`。第一篇金标（放回整页、收紧到墨迹）里，只取第一篇训练书写者的实例（同一学生的另一个编号在别的划分里的不取），每个实例按掩膜从扫描图上抠出灰度（掩膜外当白纸），记它所在行的高度和它自己的墨色。细长的算划线、其余算涂黑（第一篇的盖写框不到标注的 1%，落在涂黑里）。本机 `work/strike_bank`：1,431 页、320 位书写者、2,695 块（划线 1,687、涂黑 1,008）；`sheet_line.png` / `sheet_blot.png` 是抽样。
+2. 贴：`data/paste_strikes.compose(..., bank=Bank(OUT), gold_share=…)`。给了素材库，一部分划法（`gold_share`）换成真实涂改：划线取一块、按两行行高之比缩放、沿被划的那段拉长（最多比行高比偏 0.5–2 倍），涂黑按行高比取几块真实的涂黑并排盖过去（学生是一个字一个字涂的）；都用宿主的墨色，随机左右、上下翻转。不给素材库时，抽样和以前一个像素都不差（同一配方画出同一张图）。
+3. 答案：每个样本多给 `remove`，即去掉这处涂改要擦的像素（连淡边，不透明度 ≥0.1）。划线只擦不是字的像素（字连它的软边，灰度 <235，一个也不擦，所以被划过的字是完整的）；涂黑全擦（盖住的字本来就没了）。去掉之后的图 = 原图把 `remove` 涂白。抽样图在本机 `work/strike_previews/`。
 
 ## 数据
 

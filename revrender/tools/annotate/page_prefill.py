@@ -25,25 +25,16 @@ from scipy import ndimage
 
 from ... import pages as pages_module
 from ...data.page_labels import SCHEMA as GEOMETRY_SCHEMA, line_mask, polygon_mask
+from ...data.strike_bank import kind_of
 from ...eval.ink import INK_BELOW
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
-THIN = .45                 # an instance whose typical height is under this share of its piece's height ...
-LONG = 2.5                 # ... and that is this many times longer than high is a struck line
 WINDOW_X, WINDOW_Y = 14, 18    # the writing a revision voids is looked for this far round its ink (pixels)
 MARGIN = 3                 # a region is this much larger than the ink it holds
 REACH = 2.5                # ink this close to a drawn struck line is the stroke's
 OVERLAP = .3               # two regions are one revision when they share this much of the smaller one
 CROP = (30, 12)            # a revision's crop is its region and this margin (x, y)
 TALL = 1.5                 # an instance on leftover ink this many OCR lines high is on a figure
-
-
-def kind_of(mask, line_height):
-    """'line' for a thin, long instance (its mask on its piece), else 'blot'."""
-    ys, xs = np.nonzero(mask)
-    columns = np.unique(xs)
-    typical = float(np.median([int(ys[xs == c].max()-ys[xs == c].min())+1 for c in columns]))
-    return 'line' if typical <= THIN*line_height and len(columns) and xs.max()-xs.min()+1 >= LONG*typical else 'blot'
 
 
 def region_of(seeds, ink):

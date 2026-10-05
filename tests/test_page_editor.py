@@ -65,7 +65,7 @@ def test_a_thin_long_instance_is_a_struck_line_and_a_compact_one_a_blackout():
     line[18:22, 10:190] = True
     blob = np.zeros((40, 200), bool)
     blob[5:35, 50:90] = True
-    assert F.kind_of(line, 40) == 'line' and F.kind_of(blob, 40) == 'blot'
+    assert F.kind_of(line, 40) == 'line' and F.kind_of(blob, 40) == 'blot'          # data.strike_bank's rule
 
 
 def test_a_revisions_region_is_the_writing_its_ink_touches_and_not_the_next_line_or_word():
