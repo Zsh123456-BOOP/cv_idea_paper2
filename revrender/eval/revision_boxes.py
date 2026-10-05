@@ -3,6 +3,8 @@
     python -m revrender.eval.revision_boxes boxes --labels EXPORT.json [--labels ...] --selection selection.json --split val
         --model NAME=OUT_OF_revrender.pages [--model ...] --pages DIR [--pages DIR ...] [--cuts .2 .3 ...] [--cut-from SUMMARY] --output-dir OUT
     python -m revrender.eval.revision_boxes read --pack OUT/pack --readings predictions.jsonl --output read.json
+    python -m revrender.eval.revision_boxes pixels --geometry PAGE_LABELS_OUT --model NAME=DIR [--model ...] --pages DIR [...]
+        [--cut C | --cut-from SUMMARY] --output pixels.json
 
 ``boxes``: the model's removal on a question at a score cut is its instances at or above the cut, pasted on the page and cut to the
 page's non-white pixels (``tighten.non_white``).  A revision is found when the removal takes at least ``FOUND`` of the ink in its box
@@ -17,6 +19,9 @@ line pack (``recognize_lines``, condition ``erased_neutral``) with a row per mod
 
 ``read``: what a reader read on those crops against the struck text: the share of the text's characters a minimal edit alignment of
 the two keeps (``eval.coverage``; a ``?`` of the label is not counted), per model and condition, for struck lines and blackouts apart.
+``pixels``: on the questions a person labelled stroke by stroke (``data.page_labels``'s output: the pixels of every struck line, a
+struck line stopping where it crosses writing), counted on ink inside those questions' struck-line regions: of what a model removes,
+the share that is the strike (precision; the rest is writing it should have kept), and of the strike, the share it removes (recall).
 Student work: OUT stays out of Git.
 """
 import argparse
@@ -187,6 +192,41 @@ def read(args):
     return 0
 
 
+def unpacked(array, width):
+    return np.unpackbits(array, axis=-1)[:, :width].astype(bool)
+
+
+def pixels(args):
+    models = dict(m.split('=', 1) for m in args.model)
+    cuts = {m: r['pack_cut'] for m, r in json.loads(args.cut_from.read_text())['models'].items()} if args.cut_from else {}
+    questions = sorted(p.stem for p in args.geometry.glob('*.json') if p.stem not in ('run_manifest', 'summary'))
+    require(questions, f'{args.geometry}: no question')
+    scans = pages_module.page_files(args.pages, questions)
+    counts = {m: defaultdict(int) for m in models}
+    for image_id in questions:
+        record = json.loads((args.geometry/f'{image_id}.json').read_text())
+        with Image.open(scans[image_id]) as opened:
+            grey = np.asarray(opened.convert('L'))
+        ink, soft = grey < INK_BELOW, non_white(grey)
+        lines = [n for n, r in enumerate(record['revisions']) if r['kind'] == 'line']
+        with np.load(args.geometry/f'{image_id}.npz') as arrays:
+            strike = np.logical_or.reduce([unpacked(arrays[f'revision_{n}'], grey.shape[1]) for n in lines]) if lines else np.zeros(grey.shape, bool)
+            domain = np.logical_or.reduce([unpacked(arrays[f'region_{n}'], grey.shape[1]) for n in lines]) if lines else np.zeros(grey.shape, bool)
+        for name, directory in models.items():
+            _, instances = pages_module.read_output(Path(directory), image_id)
+            removed = removal(instances, grey.shape, cuts.get(name, args.cut), soft) & domain & ink
+            c = counts[name]
+            c['removed'] += int(removed.sum())
+            c['strike'] += int((strike & ink).sum())
+            c['hit'] += int((removed & strike).sum())
+    result = {m: {**c, 'precision': c['hit']/max(1, c['removed']), 'recall': c['hit']/max(1, c['strike']), 'cut': cuts.get(m, args.cut)}
+              for m, c in counts.items()}
+    write_json(args.output, {'geometry': str(args.geometry), 'questions': len(questions), 'models': result})
+    for m, r in result.items():
+        print(json.dumps({'model': m, 'precision': round(r['precision'], 3), 'recall': round(r['recall'], 3), 'removed': r['removed'], 'strike': r['strike']}))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -204,8 +244,15 @@ def main(argv=None):
     r.add_argument('--pack', type=Path, required=True)
     r.add_argument('--readings', type=Path, required=True)
     r.add_argument('--output', type=Path, required=True)
+    x = sub.add_parser('pixels', help="what each model removes against the strokes a person drew, on ink")
+    x.add_argument('--geometry', type=Path, required=True, help='data.page_labels output of the questions labelled stroke by stroke')
+    x.add_argument('--model', action='append', required=True, help='NAME=DIR: a run of a model on these questions (repeatable)')
+    x.add_argument('--pages', type=Path, action='append', required=True)
+    x.add_argument('--cut', type=float, default=0., help='the score cut (unless --cut-from gives the model one)')
+    x.add_argument('--cut-from', type=Path, help="the validation's summary: each model's cut chosen there")
+    x.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
-    return boxes(args) if args.command == 'boxes' else read(args)
+    return {'boxes': boxes, 'read': read, 'pixels': pixels}[args.command](args)
 
 
 if __name__ == '__main__':

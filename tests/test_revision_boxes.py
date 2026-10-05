@@ -51,3 +51,25 @@ def test_found_missed_and_false_places_and_the_held_share(tmp_path):
                    '--cuts', '.2', '.5', '--cut-from', str(out/'summary.json'), '--output-dir', str(test)]) == 0
     assert json.loads((test/'summary.json').read_text())['models']['ours']['pack_cut'] == .5
     assert R.held('4?a', '4xa') == 1. and R.held('?', 'x') is None
+
+
+def test_pixels_counts_what_a_model_removes_against_the_strokes_a_person_drew(tmp_path):
+    scans, geometry, model = tmp_path/'scans', tmp_path/'geometry', tmp_path/'model'
+    for d in (scans, geometry, model):
+        d.mkdir()
+    grey = np.full((60, 200), 250, np.uint8)
+    grey[30:33, 20:120] = 30                  # the strike
+    grey[20:45, 60:64] = 30                   # a letter it crosses
+    Image.fromarray(grey).convert('RGB').save(scans/'q_5_1.png')
+    strike, region = np.zeros((60, 200), bool), np.zeros((60, 200), bool)
+    strike[30:33, 20:60] = strike[30:33, 64:120] = True       # the person stopped at the letter
+    region[15:50, 15:125] = True
+    np.savez_compressed(geometry/'q_5_1.npz', revision_0=np.packbits(strike, axis=-1), region_0=np.packbits(region, axis=-1))
+    (geometry/'q_5_1.json').write_text(json.dumps({'revisions': [{'kind': 'line'}]}))
+    removed = np.zeros((60, 200), bool)
+    removed[30:33, 20:100] = True             # through the letter, and short of the strike's end
+    pages_module.write_page(model, 'q_5_1', (200, 60), [], [{'line': 0, 'score': .9, 'box': [0, 0, 200, 60], 'mask': removed}])
+    out = tmp_path/'pixels.json'
+    assert R.main(['pixels', '--geometry', str(geometry), '--model', f'ours={model}', '--pages', str(scans), '--output', str(out)]) == 0
+    got = json.loads(out.read_text())['models']['ours']
+    assert (got['removed'], got['strike'], got['hit']) == (240, 288, 228)
