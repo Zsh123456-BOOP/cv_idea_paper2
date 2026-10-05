@@ -115,6 +115,7 @@ def main(argv=None):
     p.add_argument('--backend', choices=('vllm', 'hf'), default='vllm')
     p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
     p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')
+    p.add_argument('--gpu-memory', type=float, default=.90, help='vllm: share of each card the engine may take (lower it when others hold memory there)')
     p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
     p.add_argument('--max-new-tokens', type=int, default=256)
     p.add_argument('--cell-threshold', type=float, default=.25, help='token rules: share of a token cell under the band that hides it')
@@ -137,7 +138,7 @@ def main(argv=None):
         reader = Reader(args.model, adapter=args.adapter)
     else:
         from vllm import LLM, SamplingParams
-        model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=4096, max_num_seqs=16, gpu_memory_utilization=.90,
+        model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=4096, max_num_seqs=16, gpu_memory_utilization=args.gpu_memory,
                     limit_mm_per_prompt={'image': 1}, tensor_parallel_size=args.tp, trust_remote_code=args.trust_remote_code, disable_log_stats=True)
         sampling = SamplingParams(temperature=0, max_tokens=args.max_new_tokens, seed=SEED)
     write_manifest(out, config=to_jsonable(args), inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'),
