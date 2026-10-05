@@ -264,6 +264,8 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 1. 素材库：`python -m revrender.data.strike_bank --gold paper2_gold_pages_tight_connected --pages 扫描目录 … --mapping index_manifest.json --same-student 对子.json --output-dir OUT`。第一篇金标（放回整页、收紧到墨迹）里，只取第一篇训练书写者的实例（同一学生的另一个编号在别的划分里的不取），每个实例按掩膜从扫描图上抠出灰度（掩膜外当白纸），记它所在行的高度和它自己的墨色。细长的算划线、其余算涂黑（第一篇的盖写框不到标注的 1%，落在涂黑里）。本机 `work/strike_bank`：1,431 页、320 位书写者、2,695 块（划线 1,687、涂黑 1,008）；`sheet_line.png` / `sheet_blot.png` 是抽样。
 2. 贴：`data/paste_strikes.compose(..., bank=Bank(OUT), gold_share=…)`。给了素材库，一部分划法（`gold_share`）换成真实涂改：划线取一块、按两行行高之比缩放、沿被划的那段拉长（最多比行高比偏 0.5–2 倍），涂黑按行高比取几块真实的涂黑并排盖过去（学生是一个字一个字涂的）；都用宿主的墨色，随机左右、上下翻转。不给素材库时，抽样和以前一个像素都不差（同一配方画出同一张图）。
 3. 答案：每个样本多给 `remove`，即去掉这处涂改要擦的像素（连淡边，不透明度 ≥0.1）。划线只擦不是字的像素（字连它的软边，灰度 <235，一个也不擦，所以被划过的字是完整的）；涂黑全擦（盖住的字本来就没了）。去掉之后的图 = 原图把 `remove` 涂白。抽样图在本机 `work/strike_previews/`。
+4. 训练集：`python -m revrender.data.synthetic_set --corpus 读者语料/corpus.jsonl --bank 素材库 --pages 扫描目录 … [--copies 4] [--gold-share .7] [--second .3] --output-dir OUT`。第三步读者语料的每个配方（第一篇训练书写者的干净行，不含测试书写者和图包的书写者，5% 的书写者按哈希留作验证）用自己的种子画 `--copies` 份（原样的行一份）；七成笔画用真实涂改（划线和涂黑按素材库里的比例），整行只划不涂；贴入和叠放三成再加第二处。每个样本按读行的方式（灰度、BILINEAR、白底）缩放到第一篇的 96 × 768 条带，涂改编号随之缩放（NEAREST）：一处涂改一个实例，实例 = 擦掉它要擦的像素。服务器 `paper2_synthetic_strokes`：49,820 条（训练 47,202、验证 2,618），128 位书写者，46,888 条有涂改、10,556 条有两处；笔画 57,444 笔里真实划线 28,274、真实涂黑 11,952，程序画的七种各约 2,500。
+5. 训练：`SYNTHETIC=1 MAPPING=index_manifest.json RECIPE=configs/revrender_strokes.toml bash scripts/launch_train_arm.sh control GPU NUMA 合成集 它的manifest的SHA - - OUT`：第一篇的 RevRender 和整条门（冒烟、精确重放、学习门、正式）不变，只换数据（`train --synthetic --mapping`：第一篇的验证 / 测试书写者一个都不许在里面）和目标（一处涂改一个实例，不按连通块切）；配方只改一处：不早停（`revrender_strokes.toml`）。每次验证都存权重（`step_<n>.pt`），不冻结：版本在用户的验证题上选。
 
 ## 数据
 
