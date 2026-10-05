@@ -104,3 +104,22 @@ def test_mixing_needs_both_sources_and_a_share():
                   ['--corrected-bundle', 'c', '--corrected-sha', 'z']):
         with pytest.raises(SystemExit):
             train.parse(base+wrong)
+
+
+def test_crops_hold_each_revision_and_its_voided_writing_and_clean_crops_hold_none(tmp_path):
+    scans, corpus, bank = write_inputs(tmp_path)
+    out = tmp_path/'crops'
+    assert T.main(['--corpus', str(corpus), '--bank', str(bank), '--pages', str(scans), '--copies', '1', '--over', '1', '--no-blots', '--crops',
+                   '--workers', '1', '--output-dir', str(out)]) == 0
+    records, images, labels = T.read_set(out)
+    clean = [i for i, r in enumerate(records) if r['kinds'] == ['clean']]
+    positive = [i for i, r in enumerate(records) if r['kinds'] != ['clean']]
+    assert len(clean) == 6*T.CLEAN_CROPS and not labels[clean].any()
+    assert positive and all(labels[i].any() for i in positive) and all('#' in records[i]['id'] and len(records[i]['crop']) == 4 for i in positive)
+    assert not {s for r in records for s in r['styles'] if s} & {'blot', 'gold_blot'}
+    numbers = np.zeros((40, 100), np.uint8)
+    numbers[20:22, 30:60] = 1
+    ink = np.zeros((40, 100), bool)
+    ink[12:30, 32:58] = True                  # the struck word
+    ink[34:38, 0:100] = True                  # the next line, apart
+    assert T.region_of(numbers, 1, ink) == [30, 12, 60, 30]

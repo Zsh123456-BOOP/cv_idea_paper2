@@ -1,0 +1,25 @@
+# The box remover: RevRender fine-tuned on crops round synthetic struck lines (data.synthetic_set --crops --no-blots), from a checkpoint
+# already trained on synthetic strikes (train --init).  Changes from paper 1's recipe, declared here: a fifth of its learning rate
+# and half its steps (it starts trained), and no early stop (the version is chosen on the user's validation boxes from the kept
+# checkpoints).
+
+[model]
+variant = "control"
+
+[train]
+batch_size = 8
+negative_ratio = 1.0
+optimizer_steps = 14000
+warmup_steps = 300
+validation_interval = 500
+select_from_step = 7000
+early_validation_multiplier = 4
+learning_rate = 6e-5
+weight_decay = 1e-4
+grad_clip = 5.0
+clip_groups = ["find.mask_iou"]
+early_stop_patience = 0
+
+[stages]
+smoke = 4
+learning = 512

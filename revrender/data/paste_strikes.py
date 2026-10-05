@@ -63,16 +63,16 @@ class Bank:
         self.by_kind = {k: [p for p in self.pieces if p['kind'] == k] for k in ('line', 'blot')}
 
 
-def choose_style(rng, bank=None, gold_share=0., whole=False):
+def choose_style(rng, bank=None, gold_share=0., whole=False, blots=True):
     """A style.  Without a bank one of the drawn ones.  With a bank a real mark with probability ``gold_share`` -- a struck line or a
     blackout as often as the bank holds each -- else a drawn one; a whole line is struck through, never blacked out (a student
-    rarely blacks out a whole line)."""
+    rarely blacks out a whole line), and with ``blots`` False nothing is (blackouts are taken as unreadable, not removed)."""
     if bank is None:
         return rng.choice(STYLES)
     if rng.random() < gold_share:
         lines = len(bank.by_kind['line'])/max(1, len(bank.pieces))
-        return 'gold_line' if whole or rng.random() < lines else 'gold_blot'
-    return rng.choice([s for s in STYLES if not (whole and s in BLOT_STYLES)])
+        return 'gold_line' if whole or not blots or rng.random() < lines else 'gold_blot'
+    return rng.choice([s for s in STYLES if not ((whole or not blots) and s in BLOT_STYLES)])
 
 
 def gold_piece(bank, p, rng, size):
@@ -263,7 +263,7 @@ def boxes_of(mask):
     return out
 
 
-def struck_segment(donor, host, rng, style=None, overlap=True, bank=None, gold_share=0.):
+def struck_segment(donor, host, rng, style=None, overlap=True, bank=None, gold_share=0., blots=True):
     """A stretch of the donor, scaled to the host's writing and struck out: (image [h, w, 3] with the room of the overshoot on both sides, the
     opacity of the strokes in it, the room, the same image without the strokes, the style), or None when the donor has no writing to take."""
     host_ink = ink_of(host)
@@ -278,7 +278,7 @@ def struck_segment(donor, host, rng, style=None, overlap=True, bank=None, gold_s
     scale = float(np.clip(host_height/max(1, rows[1]-rows[0]), .6, 1.6)*rng.uniform(.9, 1.15))
     segment = np.asarray(Image.fromarray(segment).resize((max(8, round(segment.shape[1]*scale)), max(4, round(segment.shape[0]*scale))), Image.LANCZOS))
     room = int(rng.uniform(*OVERSHOOT)*host_height) if overlap else 0
-    style = style or choose_style(rng, bank, gold_share)
+    style = style or choose_style(rng, bank, gold_share, blots=blots)
     layer, opacity = strokes((segment.shape[1], segment.shape[0]), style, rng, ink_colour(host, host_ink, rng),
                              max(2., rng.uniform(*STROKE)*host_height), room, bank, host.shape[0])
     plain = np.full((segment.shape[0], segment.shape[1]+2*room, 3), 255, np.uint8)
@@ -301,10 +301,11 @@ def numbered(labels, remove):
     return out
 
 
-def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., labels=None):
+def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., labels=None, blots=True):
     """One sample from a host line (array [h, w, 3] uint8) and donor lines of the same writer (arrays): a dict (image: PIL RGB, mask: bool
     [h, w], boxes, kind, pasted, remove: bool [h, w], style, labels).  ``kind`` is one of ``KINDS``; a ``paste`` or ``stack`` with no donor to
-    take writing from comes out ``clean`` (``kind`` says so).  ``bank`` and ``gold_share``: the real marks some strikes are drawn with.
+    take writing from comes out ``clean`` (``kind`` says so).  ``bank`` and ``gold_share``: the real marks some strikes are drawn with;
+    ``blots`` False: no blackouts, only struck lines.
     ``labels`` (uint8 [h, w]) numbers the revisions the host already has (a sample made from another one): they move with the host's
     pixels, and the new revision's ``remove`` is numbered next in the sample's ``labels``."""
     host = np.asarray(host, np.uint8)
@@ -312,7 +313,7 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., label
     host_ink = ink_of(host)
     rows = ink_rows(host_ink)
     if kind == 'whole' and rows is not None:
-        style = style or choose_style(rng, bank, gold_share, whole=True)
+        style = style or choose_style(rng, bank, gold_share, whole=True, blots=blots)
         layer, opacity = strokes((host.shape[1], host.shape[0]), style, rng, ink_colour(host, host_ink, rng),
                                  max(2., rng.uniform(*STROKE)*(rows[1]-rows[0])), 0, bank, host.shape[0])
         canvas = host.copy()
@@ -324,7 +325,7 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., label
         spans = word_spans(host_ink, host.shape[0])
         cuts = [0, host.shape[1]]+[(a[1]+b[0])//2 for a, b in zip(spans, spans[1:])]
         for donor in rng.sample(list(donors), len(donors)):
-            made = struck_segment(np.asarray(donor, np.uint8), host, rng, style, rng.random() < .4, bank, gold_share)
+            made = struck_segment(np.asarray(donor, np.uint8), host, rng, style, rng.random() < .4, bank, gold_share, blots)
             if made is None:
                 continue
             piece, opacity, room, plain_piece, used = made
@@ -347,7 +348,7 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., label
     if kind == 'stack' and rows is not None:
         spans = word_spans(host_ink, host.shape[0])
         for donor in rng.sample(list(donors), len(donors)):
-            made = struck_segment(np.asarray(donor, np.uint8), host, rng, style, rng.random() < .4, bank, gold_share)
+            made = struck_segment(np.asarray(donor, np.uint8), host, rng, style, rng.random() < .4, bank, gold_share, blots)
             if made is None:
                 continue
             piece, opacity, room, plain_piece, used = made
@@ -379,7 +380,7 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., label
             left = a+rng.randint(0, b-a-width)
             columns = host_ink[:, left:left+width].any(1)
             top, bottom = int(np.flatnonzero(columns)[0]), int(np.flatnonzero(columns)[-1])+1
-            style = style or choose_style(rng, bank, gold_share)
+            style = style or choose_style(rng, bank, gold_share, blots=blots)
             room = int(rng.uniform(0, .3)*height)
             layer, opacity = strokes((width, bottom-top), style, rng, ink_colour(host, host_ink, rng), max(2., rng.uniform(*STROKE)*height),
                                      room, bank, host.shape[0])

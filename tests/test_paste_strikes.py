@@ -175,3 +175,13 @@ def test_over_strikes_a_few_characters_of_the_hosts_own_writing_where_they_stand
         assert columns[-1]-columns[0] < 2*40+2*12                    # at most about three characters and the stroke's room
         assert np.array_equal(out['labels'] == 1, out['remove'])
     assert S.compose(np.full((40, 100, 3), 255, np.uint8), [], random.Random(1), 'over')['kind'] == 'clean'
+
+
+def test_without_blots_only_struck_lines_are_drawn(tmp_path):
+    bank = fake_bank(tmp_path)
+    styles = {S.choose_style(random.Random(k), bank, .5, blots=False) for k in range(300)}
+    assert styles and not styles & set(S.BLOT_STYLES)
+    host = line([50, 60, 40])
+    host[:, np.arange(host.shape[1]) % 6 >= 2] = 255
+    drawn = {S.compose(host, [line([40, 30])], random.Random(k), kind, bank=bank, gold_share=.5, blots=False)['style'] for k in range(40) for kind in ('paste', 'over', 'stack')}
+    assert not drawn & set(S.BLOT_STYLES)
