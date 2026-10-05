@@ -1,10 +1,11 @@
 """Whole-question images end to end: cut the page, read every piece with RevRender, paste the instances back.
 
-    python -m revrender.pages --checkpoint best.pt --freeze freeze.json --pages DIR [--pages DIR ...] --output-dir OUT
+    python -m revrender.pages --checkpoint best.pt (--freeze freeze.json | --point MASK NMS SCORE) --pages DIR [--pages DIR ...] --output-dir OUT
         (--ocr-model MODEL_DIR | --ocr-text ocr.jsonl [--ocr-text ...]) [--templates templates.npz] [--frames frames.json] [--ids FILE] [--limit N] [--overlay]
 
 A page is cut into pieces and each piece is read the way paper 1 read a line: cropped, letterboxed to the 96x768 strip, read by RevRender
-at the checkpoint's frozen point (mask threshold, NMS, score cut), every delivered instance resized back and pasted into the page.  The
+at the checkpoint's frozen point (mask threshold, NMS, score cut; ``--point`` gives one directly, for a checkpoint not frozen yet: a
+low score cut keeps the instances a later reading cuts at its own), every delivered instance resized back and pasted into the page.  The
 pieces (``page_lines``): the OCR model's own lines (``ocr``: the catalogue's lines, which paper 1 trained on); the lines of a region the
 OCR returned as one block of several lines, cut where the ink has gaps (``split``); and the handwriting no line covers -- a line the OCR
 skipped, a stroke that ran past the end of a line, a note in the margin (``ink``).  Where the handwriting is comes from the page against
@@ -180,7 +181,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--checkpoint-sha')
-    parser.add_argument('--freeze', type=Path, required=True, help="the checkpoint's freeze record: its mask threshold, NMS and score cut")
+    parser.add_argument('--freeze', type=Path, help="the checkpoint's freeze record: its mask threshold, NMS and score cut")
+    parser.add_argument('--point', type=float, nargs=3, metavar=('MASK', 'NMS', 'SCORE'), help='the operating point itself, instead of --freeze')
     parser.add_argument('--pages', type=Path, action='append', required=True, help='a folder of <image_id>.jpg (repeatable)')
     parser.add_argument('--ids', type=Path, help='a file of image ids, one per line (default: every jpg in --pages)')
     parser.add_argument('--ocr-model', type=Path, help='the Unlimited-OCR folder: run the model on pages without stored text')
@@ -192,12 +194,13 @@ def main(argv=None):
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
     require(args.ocr_model or args.ocr_text, 'give --ocr-model or --ocr-text')
+    require((args.freeze is None) != (args.point is None), 'give --freeze or --point')
     ids = [line.strip() for line in args.ids.read_text().splitlines() if line.strip()] if args.ids else None
     files = page_files(args.pages, ids)
     names = sorted(files)[:args.limit or None] if ids is None else ids[:args.limit or None]
     stored = read_ocr_text(args.ocr_text)
     out = make_output_dir(args.output_dir)
-    point = frozen_point(args.freeze, None)
+    point = frozen_point(args.freeze, None) if args.freeze else dict(zip(('mask_threshold', 'nms', 'score_threshold'), args.point))
     model, payload = infer.load_checkpoint(args.checkpoint, expected_sha=args.checkpoint_sha)
     ocr = None
     templates = dict(np.load(args.templates)) if args.templates else {}
@@ -238,7 +241,7 @@ def main(argv=None):
             print(json.dumps({'pages_done': totals['pages'], **{k: round(v, 1) for k, v in totals.items()}}), flush=True)
     weights = sorted(Path(args.ocr_model).glob('*.safetensors')) if ocr is not None else []
     write_manifest(out, config=to_jsonable(args),
-                   inputs={str(args.checkpoint): digest(args.checkpoint), str(args.freeze): digest(args.freeze),
+                   inputs={str(args.checkpoint): digest(args.checkpoint), **({str(args.freeze): digest(args.freeze)} if args.freeze else {}),
                            **{str(p): digest(p) for p in args.ocr_text}, **{str(p): digest(p) for p in weights},
                            **({str(args.templates): digest(args.templates)} if args.templates else {}),
                            **({str(args.frames): digest(args.frames)} if args.frames else {})},
