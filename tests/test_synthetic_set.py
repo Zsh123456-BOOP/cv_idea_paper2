@@ -59,6 +59,11 @@ def test_the_set_is_strips_with_numbered_revisions_and_its_pools_keep_writers_ap
         T.pools(out, None, excluded={'b'})
     with pytest.raises(Exception, match='changed'):
         T.read_set(out, expected_sha='0'*64)
+    more = tmp_path/'over'
+    assert T.main(['--corpus', str(corpus), '--bank', str(bank), '--pages', str(scans), '--copies', '1', '--over', '2', '--second', '0', '--workers', '1',
+                   '--output-dir', str(more)]) == 0
+    records, _, _ = T.read_set(more)
+    assert sum(r['kinds'][0] == 'over' for r in records) == 2*6 and len(records) == 6*(1+3+2)
 
 
 def test_a_labelled_line_trains_one_instance_per_revision_however_many_pieces_it_has():
@@ -79,3 +84,23 @@ def test_training_takes_a_bundle_or_a_synthetic_set_with_the_mapping():
         with pytest.raises(SystemExit):
             train.parse(base+wrong)
     assert train.grey({'image': np.zeros((3, 96, 768))}).shape == (96, 768) and train.grey({'image': np.zeros((96, 768))}).shape == (96, 768)
+
+
+def test_a_mixed_batch_takes_its_share_of_revised_and_clean_lines_from_the_real_pools():
+    import random
+    row = lambda name, k: {'line_id': f'{name}{k}', 'image': np.zeros((96, 768), np.uint8), 'mask': np.zeros((96, 768), np.uint8)}
+    cycles = [sampling.ShuffledCycle([row(n, k) for k in range(10)], random.Random(1)) for n in ('sp', 'sc', 'rp', 'rc')]
+    rows = sampling.take_mixed_batch(cycles, 8, 1., .5)
+    assert [r['line_id'][:2] for r in rows] == ['sp', 'sp', 'rp', 'rp', 'sc', 'sc', 'rc', 'rc']
+    rows = sampling.take_mixed_batch(cycles, 8, 1., .25)
+    assert sum(r['line_id'].startswith('r') for r in rows) == 2
+
+
+def test_mixing_needs_both_sources_and_a_share():
+    base = ['--stage', 'smoke', '--backbone-weights', 'w.pkl', '--output-dir', 'out', '--synthetic', 's', '--synthetic-sha', 'x', '--mapping', 'm']
+    mixed = train.parse(base+['--bundle', 'b', '--bundle-sha', 'y', '--real-share', '.5', '--corrected-bundle', 'c', '--corrected-sha', 'z', '--init', 'p.pt'])
+    assert mixed.real_share == .5 and mixed.init is not None
+    for wrong in (['--bundle', 'b', '--bundle-sha', 'y'], ['--real-share', '.5'], ['--bundle', 'b', '--bundle-sha', 'y', '--real-share', '1.5'],
+                  ['--corrected-bundle', 'c', '--corrected-sha', 'z']):
+        with pytest.raises(SystemExit):
+            train.parse(base+wrong)

@@ -2,12 +2,14 @@
 draws from it.
 
     python -m revrender.data.synthetic_set --corpus corpus.jsonl --bank STRIKE_BANK --pages DIR [--pages DIR ...]
-        [--copies 4] [--gold-share .7] [--second .3] [--workers 16] --output-dir OUT
+        [--copies 4] [--over 0] [--gold-share .7] [--second .3] [--workers 16] --output-dir OUT
 
 Every recipe of the reader's corpus (``data.reader_corpus``: clean lines of paper 1's training writers -- never a test writer's, nor one
 of a writer of the line pack -- a small share of the writers its own validation split) is drawn ``--copies`` times with seeds of its own
 (a clean line once): ``data.paste_strikes.compose`` with the bank of real marks (``data.strike_bank``) for ``--gold-share`` of the
-strikes, and a paste or a stack gets a second revision with probability ``--second``.  A sample is letterboxed onto the 96 x 768 strip
+strikes, and a paste or a stack gets a second revision with probability ``--second``.  ``--over N`` adds N samples per host line of
+one to three of its own characters struck or blacked out where they stand (``paste_strikes``'s ``over``), and an ``over`` may then
+be a sample's second revision too.  A sample is letterboxed onto the 96 x 768 strip
 the way a line is read (``pages.read_page``: grey, BILINEAR on white) and its revisions' numbers with it (NEAREST): RevRender trains on
 one instance per revision, the pixels removing it takes (a struck line's that are not writing, a blackout's all).
 
@@ -33,6 +35,7 @@ from .gold import CANVAS, letterbox
 from .paste_strikes import Bank, compose
 
 SECOND_KINDS = ('paste', 'stack')
+OVER_KINDS = ('paste', 'stack', 'over')     # the kinds that take a second revision when --over is given
 POOLS = ('fit_positive', 'fit_clean', 'validation_positive', 'validation_clean')
 _BANK = None                # each worker's bank of real marks
 
@@ -48,14 +51,15 @@ def strip(image, labels):
     return grey, np.asarray(letterbox(Image.fromarray(labels), width, height, 0, mask=True))
 
 
-def draw(recipe, copy, crops, bank, gold_share, second):
+def draw(recipe, copy, crops, bank, gold_share, second, second_kinds=SECOND_KINDS):
     """One sample of a recipe: (grey strip, numbers strip, record)."""
     rng = random.Random(sample_seed(recipe['seed'], copy))
     host, donors = crops[recipe['line_id']], [crops[d] for d in recipe['donors']]
     made = compose(host, donors, rng, recipe['kind'], bank=bank, gold_share=gold_share)
     kinds, styles = [made['kind']], [made['style']]
-    if made['kind'] in SECOND_KINDS and donors and rng.random() < second:
-        again = compose(np.asarray(made['image']), donors, rng, rng.choice(SECOND_KINDS), bank=bank, gold_share=gold_share, labels=made['labels'])
+    if made['kind'] in second_kinds and (donors or 'over' in second_kinds) and rng.random() < second:
+        kind = rng.choice([k for k in second_kinds if donors or k == 'over'])
+        again = compose(np.asarray(made['image']), donors, rng, kind, bank=bank, gold_share=gold_share, labels=made['labels'])
         if again['kind'] != 'clean':
             made = again
             kinds.append(again['kind'])
@@ -73,7 +77,7 @@ def _start(bank_dir):
 
 def _writer(task):
     """The samples of one writer's recipes (the writer's pages opened once)."""
-    recipes, boxes, folders, copies, gold_share, second = task
+    recipes, boxes, folders, copies, over, gold_share, second = task
     needed = sorted({r['line_id'] for r in recipes} | {d for r in recipes for d in r['donors']})
     files = pages_module.page_files(folders, sorted({boxes[i][0] for i in needed}))
     crops, opened = {}, {}
@@ -84,10 +88,14 @@ def _writer(task):
                 opened[image_id] = page.convert('RGB')
         page = opened[image_id]
         crops[line_id] = np.asarray(page.crop(lines_module.crop_box(box, *page.size)))
-    out = []
+    out, second_kinds = [], OVER_KINDS if over else SECOND_KINDS
     for recipe in recipes:
         for copy in range(1 if recipe['kind'] == 'clean' else copies):
-            out.append(draw(recipe, copy, crops, _BANK, gold_share, second))
+            out.append(draw(recipe, copy, crops, _BANK, gold_share, second, second_kinds))
+        if recipe['kind'] == 'clean':
+            for copy in range(over):
+                in_place = {**recipe, 'id': recipe['id']+'+over', 'kind': 'over'}
+                out.append(draw(in_place, copy, crops, _BANK, gold_share, second, second_kinds))
     return out
 
 
@@ -147,6 +155,7 @@ def main(argv=None):
     parser.add_argument('--bank', type=Path, required=True, help='the bank of real marks (data.strike_bank)')
     parser.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
     parser.add_argument('--copies', type=int, default=4, help='samples drawn from each recipe with a revision (a clean one: one)')
+    parser.add_argument('--over', type=int, default=0, help='samples per host line of a few of its own characters struck where they stand')
     parser.add_argument('--gold-share', type=float, default=.7, help='share of the strikes that are real marks')
     parser.add_argument('--second', type=float, default=.3, help='chance that a paste or stack gets a second revision')
     parser.add_argument('--workers', type=int, default=16)
@@ -158,7 +167,7 @@ def main(argv=None):
     by_writer = defaultdict(list)
     for r in recipes:
         by_writer[r['writer']].append(r)
-    tasks = [(by_writer[w], boxes, args.pages, args.copies, args.gold_share, args.second) for w in sorted(by_writer)]
+    tasks = [(by_writer[w], boxes, args.pages, args.copies, args.over, args.gold_share, args.second) for w in sorted(by_writer)]
     with Pool(args.workers, initializer=_start, initargs=(args.bank,)) as pool:
         drawn = [s for chunk in pool.imap(_writer, tasks) for s in chunk]
     out = make_output_dir(args.output_dir)

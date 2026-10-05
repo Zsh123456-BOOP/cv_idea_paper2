@@ -55,6 +55,20 @@ def take_balanced_batch(positive_cycle, clean_cycle, batch_size, negative_ratio)
     return rows, positive_count, clean_count
 
 
+def take_mixed_batch(cycles, batch_size, negative_ratio, share):
+    """A balanced batch with ``share`` of its revised and of its clean lines from the second pair of cycles (positive, clean, positive,
+    clean): the synthetic set's lines first, then the real ones."""
+    positive_count = int(round(batch_size / (1.0 + negative_ratio)))
+    clean_count = batch_size - positive_count
+    real_positive, real_clean = int(round(share*positive_count)), int(round(share*clean_count))
+    positive, clean, other_positive, other_clean = cycles
+    rows = (positive.take_distinct(positive_count-real_positive)+other_positive.take_distinct(real_positive)
+            + clean.take_distinct(clean_count-real_clean)+other_clean.take_distinct(real_clean))
+    line_ids = [str(row['line_id']) for row in rows]
+    require(len(line_ids) == len(set(line_ids)), 'mixed batch contains a duplicate line')
+    return rows
+
+
 def gold_instances(mask):
     """Connected components (8-neighbour) of one 0..1 gold mask: the targets a line is trained on."""
     labels, count = ndimage.label(np.asarray(mask) > 0.5, structure=np.ones((3, 3), bool))
@@ -81,10 +95,12 @@ def prepare_batch(images, masks, labelled=None):
 class BatchStream:
     """Single-producer, depth-one prefetcher; ``next()`` returns the prepared (images, gold blocks) of one step."""
 
-    def __init__(self, data, rng: random.Random, steps, batch_size, negative_ratio):
+    def __init__(self, data, rng: random.Random, steps, batch_size, negative_ratio, mix=None):
+        """``mix`` = (pools with fit_positive and fit_clean, share): that share of every batch comes from those pools."""
         self.rng, self.steps, self.batch_size, self.negative_ratio = rng, steps, batch_size, negative_ratio
         self.positive_cycle = ShuffledCycle(data['fit_positive'], rng)
         self.clean_cycle = ShuffledCycle(data['fit_clean'], rng)
+        self.mix = None if mix is None else (ShuffledCycle(mix[0]['fit_positive'], rng), ShuffledCycle(mix[0]['fit_clean'], rng), mix[1])
         self.items = queue.Queue(maxsize=PREFETCH_DEPTH)
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._produce, name='batch-prefetch', daemon=True)
@@ -101,7 +117,10 @@ class BatchStream:
         return False
 
     def make_batch(self):
-        rows, _, _ = take_balanced_batch(self.positive_cycle, self.clean_cycle, self.batch_size, self.negative_ratio)
+        if self.mix is None:
+            rows, _, _ = take_balanced_batch(self.positive_cycle, self.clean_cycle, self.batch_size, self.negative_ratio)
+        else:
+            rows = take_mixed_batch((self.positive_cycle, self.clean_cycle, *self.mix[:2]), self.batch_size, self.negative_ratio, self.mix[2])
         order = list(range(len(rows)))
         self.rng.shuffle(order)
         rows = [rows[index] for index in order]

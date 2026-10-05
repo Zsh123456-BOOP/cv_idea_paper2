@@ -6,7 +6,9 @@
 # STOP_AFTER=learning runs the three gates (smoke, replay, learning) and stops: it checks a commit or an environment without
 # the formal run.  SYNTHETIC=1 trains on a synthetic set (data.synthetic_set): BUNDLE and BUNDLE_SHA name the set and its
 # manifest's sha, MAPPING=<index_manifest.json> names paper 1's splits, CORRECTED must be '-', every validation's weights are
-# kept and nothing is frozen (the version is chosen later on the user's validation questions).
+# kept and nothing is frozen (the version is chosen later on the user's validation questions).  With SYNTHETIC=1 also:
+# SAME_STUDENT=<pairs.json> (a test student's other id is a test writer), INIT=<checkpoint> (start from its weights), and
+# REAL=<bundle> REAL_SHA=<sha> [REAL_SHARE=.5] [REAL_CORRECTED=<dir> REAL_CORRECTED_SHA=<sha>] (mix paper 1's real training lines in).
 # Holds the card's lock shared; OUT must not exist.  No test split is read.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
@@ -26,6 +28,12 @@ DATA=(--bundle "$BUNDLE" --bundle-sha "$BUNDLE_SHA")
 if [ -n "${SYNTHETIC:-}" ]; then
     test "$CORRECTED" = - && test -f "${MAPPING:-}" || { echo 'SYNTHETIC needs MAPPING and no corrected rows'; exit 2; }
     DATA=(--synthetic "$BUNDLE" --synthetic-sha "$BUNDLE_SHA" --mapping "$MAPPING" --keep-checkpoints)
+    if [ -n "${SAME_STUDENT:-}" ]; then DATA+=(--same-student "$SAME_STUDENT"); fi
+    if [ -n "${INIT:-}" ]; then DATA+=(--init "$INIT"); fi
+    if [ -n "${REAL:-}" ]; then
+        DATA+=(--bundle "$REAL" --bundle-sha "$REAL_SHA" --real-share "${REAL_SHARE:-.5}")
+        if [ -n "${REAL_CORRECTED:-}" ]; then DATA+=(--corrected-bundle "$REAL_CORRECTED" --corrected-sha "$REAL_CORRECTED_SHA"); fi
+    fi
 fi
 echo "GPU lock held (shared) $(date -u +%FT%TZ)"
 run() {

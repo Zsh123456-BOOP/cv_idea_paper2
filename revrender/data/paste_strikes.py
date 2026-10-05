@@ -9,6 +9,8 @@ samples; the target text is always the host's own, so no character under a strok
   stack   the same struck writing put above or below one of the host's words, in the same columns, as a correction is written over what
           it replaces: the host's text, and the strokes overlap writing that is valid
   whole   the whole line struck out with strokes across it: nothing (an empty reading)
+  over    one to three characters of the host's own writing struck out or blacked out where they stand (for the stroke remover: the
+          reader's text would have to lose them, so its corpus does not use this kind)
 
 Strikes are drawn in seven styles (``STYLES``), in the colour of the host's ink, with the stroke width scaled to the line's height; a
 stroke may run on over the host's neighbouring writing (``OVERSHOOT``), and then overlaps valid ink.  Given a ``Bank`` of real marks cut
@@ -33,7 +35,8 @@ GOLD_STYLES = ('gold_line', 'gold_blot')
 BLOT_STYLES = ('blot', 'gold_blot')    # removing these removes everything they cover
 GOLD_SCALE = (.85, 1.15)   # a real mark is scaled by the ratio of the lines' heights times this
 FIT = (.5, 2.)             # a struck line is stretched along its place to at most this much off that ratio
-KINDS = ('clean', 'paste', 'stack', 'whole')
+KINDS = ('clean', 'paste', 'stack', 'whole', 'over')
+OVER_CHARACTERS = (1, 3)    # an ``over`` strikes this many characters (a character as wide as the line's writing is high, give or take)
 SUPER = 3                  # strokes are drawn at this many times the size and brought down: soft edges
 GAP = .35                  # words are separated by this many line heights of blank columns (at least MIN_GAP pixels)
 MIN_GAP = 8
@@ -367,5 +370,23 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., label
             remove = removal(placed(canvas.shape, opacity >= REMOVE_ALPHA, left+pad_left, top_piece), plain, used)
             return {'image': Image.fromarray(canvas), 'mask': mask, 'boxes': boxes_of(mask), 'kind': 'stack', 'pasted': 1,
                     'remove': remove, 'style': used, 'labels': numbered(moved, remove)}
+    if kind == 'over' and rows is not None:
+        spans = [s for s in word_spans(host_ink, host.shape[0]) if s[1]-s[0] >= 4]
+        if spans:
+            a, b = rng.choice(spans)
+            height = rows[1]-rows[0]
+            width = int(min(b-a, max(4, rng.randint(*OVER_CHARACTERS)*height*rng.uniform(.6, 1.1))))
+            left = a+rng.randint(0, b-a-width)
+            columns = host_ink[:, left:left+width].any(1)
+            top, bottom = int(np.flatnonzero(columns)[0]), int(np.flatnonzero(columns)[-1])+1
+            style = style or choose_style(rng, bank, gold_share)
+            room = int(rng.uniform(0, .3)*height)
+            layer, opacity = strokes((width, bottom-top), style, rng, ink_colour(host, host_ink, rng), max(2., rng.uniform(*STROKE)*height),
+                                     room, bank, host.shape[0])
+            canvas = host.copy()
+            mask = place(canvas, layer.round().astype(np.uint8), opacity >= MASK_ALPHA, left-room, top)
+            remove = removal(placed(canvas.shape, opacity >= REMOVE_ALPHA, left-room, top), host, style)
+            return {'image': Image.fromarray(canvas), 'mask': mask, 'boxes': boxes_of(mask), 'kind': 'over', 'pasted': 0,
+                    'remove': remove, 'style': style, 'labels': numbered(labels, remove)}
     return {'image': Image.fromarray(host), 'mask': np.zeros(host.shape[:2], bool), 'boxes': [], 'kind': 'clean', 'pasted': 0,
             'remove': np.zeros(host.shape[:2], bool), 'style': None, 'labels': labels.copy()}

@@ -161,3 +161,17 @@ def test_a_second_revision_on_a_sample_moves_the_first_with_the_writing_and_is_n
         assert labels.shape == np.asarray(second['image']).shape[:2] and set(np.unique(labels)) == {0, 1, 2}
         assert (labels == 1).sum() == first['remove'].sum()             # the first revision moved whole, nothing of it lost
         assert ((labels == 2) <= second['remove']).all() and (labels == 2).any()
+
+
+def test_over_strikes_a_few_characters_of_the_hosts_own_writing_where_they_stand(tmp_path):
+    bank = fake_bank(tmp_path)
+    host = line([50, 60, 40])
+    host[:, np.arange(host.shape[1]) % 6 >= 2] = 255              # letters of thin upright strokes, not solid blocks
+    for seed in range(10):
+        out = S.compose(host, [], random.Random(seed), 'over', bank=bank, gold_share=.5)
+        image = np.asarray(out['image'])
+        assert out['kind'] == 'over' and image.shape == host.shape and out['remove'].any()
+        columns = np.flatnonzero(out['remove'].any(0))
+        assert columns[-1]-columns[0] < 2*40+2*12                    # at most about three characters and the stroke's room
+        assert np.array_equal(out['labels'] == 1, out['remove'])
+    assert S.compose(np.full((40, 100, 3), 255, np.uint8), [], random.Random(1), 'over')['kind'] == 'clean'

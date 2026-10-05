@@ -11,8 +11,12 @@ split (plus the corrected rows if given), validates every ``validation_interval`
 ``select_from_step``), keeps the best checkpoint by (F1@0.5, pixel IoU) from ``select_from_step`` on, and stops early
 after ``early_stop_patience`` validations in a row without a better one (0: never).  ``--synthetic`` trains on a synthetic
 set (``data.synthetic_set``) instead of a bundle, its own validation writers in place of the bundle's development split,
-one instance per revision; ``--mapping`` (paper 1's split mapping) then names the writers no row may come from.
-``--keep-checkpoints`` keeps the weights of every validation (step_<n>.pt), for a choice made later on other data.  Output directories are create-only; the run
+one instance per revision; ``--mapping`` (paper 1's split mapping, with ``--same-student`` the other ids of its test students) then
+names the writers no row may come from.  ``--synthetic`` with ``--bundle`` (and the corrected rows) and ``--real-share`` mixes them:
+that share of every batch's revised and of its clean lines comes from the bundle's training lines (paper 1's gold, its targets
+paper 1's), the rest from the synthetic set, and the in-loop validation reads the bundle's development lines.  ``--init`` starts from a
+checkpoint's weights instead of ImageNet's.  ``--keep-checkpoints`` keeps the weights of every validation (step_<n>.pt), for a choice
+made later on other data.  Output directories are create-only; the run
 manifest records the recipe, seed, git commit and the hashes of the input files.  A formal run refuses to start unless
 the smoke run, its exact replay and the learning gate passed under the same profile (configuration + code commit).
 """
@@ -31,7 +35,7 @@ import numpy as np
 
 from .config import load_recipe
 from .data import synthetic_set
-from .data.bundle import excluded_writers, load_bundle, train_pools
+from .data.bundle import excluded_writers, load_bundle, make_rows, train_pools
 from .data.prior_annotations import writer_splits
 from .data.extra import extra_rows
 from .data.sampling import BatchStream
@@ -118,7 +122,9 @@ def make_profile(torch, recipe, variant, args, configuration, determinism_descri
     """Everything that must be the same across a run's gate stages and its formal run."""
     from .models.backbone import RESNET50_SHA
     git = git_state()
-    profile = {'seed': SEED, 'variant': variant, 'dataset_sha256': args.bundle_sha or args.synthetic_sha,
+    profile = {'seed': SEED, 'variant': variant, 'dataset_sha256': args.synthetic_sha or args.bundle_sha,
+               'real_bundle_sha256': args.bundle_sha if args.synthetic else None, 'real_share': args.real_share,
+               'init_sha256': digest(args.init) if args.init else None,
                'extra_sha256': args.corrected_sha, 'pretrained_sha256': RESNET50_SHA,
                'configuration': configuration, 'recipe': recipe, 'git_commit': git['commit'],
                'torch': torch.__version__, 'cuda': torch.version.cuda, 'python': platform.python_version(),
@@ -144,6 +150,9 @@ def parse(argv=None):
     p.add_argument('--synthetic', type=Path, help='a synthetic set (data.synthetic_set) to train on instead of a bundle')
     p.add_argument('--synthetic-sha', help="the sha256 of the synthetic set's run_manifest.json")
     p.add_argument('--mapping', type=Path, help="with --synthetic: paper 1's split mapping (index_manifest.json)")
+    p.add_argument('--same-student', type=Path, help="with --synthetic: the students with two writer ids (another id of a test student is a test writer)")
+    p.add_argument('--real-share', type=float, help='with --synthetic and --bundle: the share of each batch drawn from the bundle')
+    p.add_argument('--init', type=Path, help="start from this checkpoint's weights (the model is built as usual first)")
     p.add_argument('--keep-checkpoints', action='store_true', help='keep the weights of every validation as step_<n>.pt')
     p.add_argument('--corrected-bundle', type=Path, help='the user-corrected rows added to the training pools')
     p.add_argument('--corrected-sha')
@@ -156,10 +165,12 @@ def parse(argv=None):
                    help="default: the recipe's [model] variant")
     p.add_argument('--allow-dirty', action='store_true', help='run from an uncommitted tree (local development only)')
     a = p.parse_args(argv)
-    if (a.bundle is None) == (a.synthetic is None) or (a.bundle is None) != (a.bundle_sha is None) or (a.synthetic is None) != (a.synthetic_sha is None):
-        p.error('train on --bundle with --bundle-sha, or on --synthetic with --synthetic-sha')
-    if a.synthetic is not None and (a.mapping is None or a.corrected_bundle is not None):
-        p.error('--synthetic needs --mapping and takes no corrected rows')
+    if (a.bundle is None) != (a.bundle_sha is None) or (a.synthetic is None) != (a.synthetic_sha is None) or (a.bundle is None and a.synthetic is None):
+        p.error('train on --bundle with --bundle-sha, on --synthetic with --synthetic-sha, or on both with --real-share')
+    if (a.bundle is not None and a.synthetic is not None) != (a.real_share is not None) or not 0 < (a.real_share or .5) < 1:
+        p.error('--real-share (between 0 and 1) goes with --bundle and --synthetic together')
+    if a.synthetic is not None and (a.mapping is None or (a.corrected_bundle is not None and a.bundle is None)):
+        p.error('--synthetic needs --mapping; corrected rows only with a bundle')
     if (a.corrected_bundle is None) != (a.corrected_sha is None):
         p.error('--corrected-bundle and --corrected-sha go together')
     if a.stage == 'formal' and a.gate_root is None:
@@ -208,11 +219,20 @@ def run(args):
                 and learn['passed'], 'replay and training-only learning gates required')
         expected = json.loads((Path(args.gate_root)/'smoke_a'/'trace.json').read_text())
 
-    extra = extra_info = None
+    extra = extra_info = mix = mix_info = None
     if args.synthetic is not None:
-        excluded = {w for w, split in writer_splits(args.mapping).items() if split in ('dev', 'test')}
+        excluded = {w for w, split in writer_splits(args.mapping, args.same_student).items() if split in ('dev', 'test')}
         data = synthetic_set.pools(args.synthetic, args.synthetic_sha, excluded)
         train_rows = data['fit_positive']+data['fit_clean']
+        if args.bundle is not None:
+            bundle = load_bundle(args.bundle, args.bundle_sha)
+            real = make_rows(bundle)
+            if args.corrected_bundle is not None:
+                extra, extra_info = extra_rows(args.corrected_bundle, args.corrected_sha, excluded_writers(args.bundle))
+            pools = {p: real[p]+(extra[p] if extra else []) for p in ('fit_positive', 'fit_clean')}
+            mix = {p: [r for r in rows if r['split'] == 'train' and r['group_uuid'] not in excluded] for p, rows in pools.items()}
+            mix_info = {p: {'rows': len(mix[p]), 'left_out': len(pools[p])-len(mix[p])} for p in mix}
+            data['validation_positive'], data['validation_clean'] = real['validation_positive'], real['validation_clean']
     else:
         bundle = load_bundle(args.bundle, args.bundle_sha)
         excluded = excluded_writers(args.bundle)
@@ -226,6 +246,8 @@ def run(args):
     torch.manual_seed(SEED)
     torch.cuda.manual_seed_all(SEED)
     model = build_model(variant, args.backbone_weights).cuda()
+    if args.init is not None:
+        model.load_state_dict(torch.load(args.init, map_location='cpu', weights_only=False)['state_dict'], strict=True)
     require(list(dict(model.named_children())) == ['see', 'find', 'draw'] and all(p.requires_grad for p in model.parameters()),
             'three fully trainable parts required')
     initial = {name: state_digest(part) for name, part in model.named_children()}
@@ -233,12 +255,12 @@ def run(args):
                                   foreach=False, fused=False)
     clipper = Clipper(model, train['clip_groups'], train['grad_clip'])
     out = make_output_dir(args.output_dir)
-    inputs = input_hashes([args.bundle or args.synthetic, args.backbone_weights] + ([args.corrected_bundle] if extra else [])
-                          + ([args.mapping] if args.synthetic else []))
+    inputs = input_hashes([p for p in (args.bundle, args.synthetic) if p] + [args.backbone_weights] + ([args.corrected_bundle] if extra else [])
+                          + ([args.mapping] if args.synthetic else []) + [p for p in (args.same_student, args.init) if p])
     write_manifest(out, config=to_jsonable(args), inputs=inputs, profile=profile, stage=args.stage, arm=variant,
                    recipe=recipe, git_revision=state['commit'], command=[sys.executable, *sys.argv],
                    parameters=sum(p.numel() for p in model.parameters()), initial_part_sha256=initial,
-                   full_joint_training=True, frozen_test_touched=False, extra_rows=extra_info,
+                   full_joint_training=True, frozen_test_touched=False, extra_rows=extra_info, real_rows=mix_info,
                    gpu_uuid=str(torch.cuda.get_device_properties(0).uuid), visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'),
                    cpu_affinity=sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else None,
                    numa_node=os.environ.get('HME_NUMA_NODE'), encoder_class=type(model.see.encoder).__name__)
@@ -249,7 +271,8 @@ def run(args):
         fixed_targets = [[torch.from_numpy(t.astype(np.float32)).cuda() for t in r['instances']] for r in selected]
         stream, positive_count = None, 4
     else:
-        stream = BatchStream(data, random.Random(SEED), train['optimizer_steps'], train['batch_size'], train['negative_ratio'])
+        stream = BatchStream(data, random.Random(SEED), train['optimizer_steps'], train['batch_size'], train['negative_ratio'],
+                             (mix, args.real_share) if mix else None)
         dev = data['validation_positive']+data['validation_clean']
         positive_count = len(data['validation_positive'])
         if args.stage == 'smoke':
