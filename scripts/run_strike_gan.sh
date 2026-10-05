@@ -47,7 +47,7 @@ stamp "1. real and host lines"
     --catalogue $CATALOGUE --output-dir "${OUT}_sets"
 
 stamp "2. the GAN"
-gpu $C1 0 "${OUT}_gan" -- "$PY" -m revrender.train_gan --sets "${OUT}_sets" --bank $BANK --max-hours "$GAN_HOURS" --output-dir "${OUT}_gan"
+gpu $C1 0 "${OUT}_gan" -- "$PY" -m revrender.train_gan --sets "${OUT}_sets" --bank $BANK --steps 300000 --max-hours "$GAN_HOURS" --output-dir "${OUT}_gan"
 
 stamp "3. the box remover's training set"
 gpu $C1 0 "${OUT}_boxes" -- "$PY" -m revrender.data.gan_strikes --generator "${OUT}_gan/generator_last.pt" --sets "${OUT}_sets" --bank $BANK "${PAGES[@]}" \

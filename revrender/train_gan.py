@@ -118,9 +118,9 @@ def run(args):
         require(torch.isfinite(loss_d) and torch.isfinite(loss_g), f'a loss is not finite at step {step}', RuntimeError)
         if step % 100 == 0:
             used = generator.placements(host, noise_a, aspect[si], length[si], host_height[hi])[0].sum(1).mean()
-            entry = {'step': step, 'seconds': round(time.monotonic()-started, 1), 'loss_d': float(loss_d), 'loss_g': float(loss_g),
-                     'real_score': float(real_scores.mean()), 'fake_score': float(fake_scores.mean()), 'spread': float(-spread),
-                     'places_used': float(used)}
+            entry = {'step': step, 'seconds': round(time.monotonic()-started, 1), 'loss_d': float(loss_d.detach()), 'loss_g': float(loss_g.detach()),
+                     'real_score': float(real_scores.detach().mean()), 'fake_score': float(fake_scores.detach().mean()), 'spread': float(-spread.detach()),
+                     'places_used': float(used.detach())}
             log.write(json.dumps(entry)+'\n')
             log.flush()
         if step % args.sample_every == 0:
