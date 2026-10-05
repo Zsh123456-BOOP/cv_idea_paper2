@@ -39,17 +39,22 @@ def test_a_struck_line_is_cut_to_its_stroke_and_not_to_the_wider_band():
 
 def test_what_is_not_one_clean_stroke_is_left_out():
     pytest.importorskip('skimage')
+    from PIL import ImageDraw
     grey = np.full((40, 120), 250, np.uint8)
     wide = np.zeros_like(grey, bool)
     wide[5:35, 20:100] = True
     grey[5:35, 20:100] = 30                   # a blackout
     assert B.strike(grey, wide, 40)[2]['reason'] == 'wide'
-    grey = np.full((40, 120), 250, np.uint8)
-    grey[19:22, 10:110] = 40
-    grey[10:30, 15:105] = 40                  # writing all along the stroke
-    band = np.zeros_like(grey, bool)
-    band[18:23, 10:110] = True
-    assert B.strike(grey, band, 80)[2]['reason'] == 'writing'
+    canvas = Image.new('L', (120, 60), 0)
+    draw = ImageDraw.Draw(canvas)
+    for a, b in (((10, 10), (110, 50)), ((10, 50), (110, 10)), ((10, 30), (110, 30)), ((60, 2), (60, 58))):
+        draw.line([a, b], fill=255, width=5)  # a scribble: strokes every way across a word
+    band = np.asarray(canvas) > 0
+    grey = np.where(band, 40, 250).astype(np.uint8)
+    assert B.strike(grey, band, 120)[2]['reason'] == 'scribble'
+    dot = np.zeros((40, 120), bool)
+    dot[18:22, 50:56] = True
+    assert B.strike(np.where(dot, 40, 250).astype(np.uint8), dot, 40)[2]['reason'] in ('short', 'no centre line')
 
 
 def test_the_bank_holds_the_training_writers_struck_lines_with_their_lines_heights(tmp_path):
@@ -77,5 +82,5 @@ def test_the_bank_holds_the_training_writers_struck_lines_with_their_lines_heigh
     assert [(p['image_id'], p['kind'], p['line_height']) for p in pieces] == [('a_5_1', 'line', 40)]
     assert [m['reason'] for m in json.loads((out/'left_out.json').read_text())] == ['wide']
     with np.load(out/'bank.npz') as arrays:
-        assert arrays['piece_0'].shape[0] <= 7 and arrays['piece_0'].max() < 120
+        assert arrays['piece_0'].shape[0] <= 7 and arrays['piece_0'].min() == 40
     assert (out/'sheet_kept.png').exists() and (out/'sheet_left_out.png').exists()
