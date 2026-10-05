@@ -4,10 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>涂改标注</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js" onload="window.katexLoaded && window.katexLoaded()"></script>
 <style>
-:root { --bg:#f3f3ef; --panel:#fff; --ink:#1e1e1c; --muted:#6b6b65; --rule:#d9d9d2; --sel:#1565c0; --done:#2e7d32; }
+:root { --bg:#f3f3ef; --panel:#fff; --ink:#1e1e1c; --muted:#6b6b65; --rule:#d9d9d2; --sel:#1565c0; --done:#2e7d32; --field:#fff; }
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#151515; --panel:#1f1f1f; --ink:#ececea; --muted:#9d9d97; --rule:#353531; --sel:#64b5f6; --done:#6fcf79; }
+  :root { --bg:#151515; --panel:#1f1f1f; --ink:#ececea; --muted:#9d9d97; --rule:#353531; --sel:#64b5f6; --done:#6fcf79; --field:#2a2a28; }
 }
 * { box-sizing:border-box; }
 html, body { height:100%; margin:0; }
@@ -26,15 +28,22 @@ button[aria-pressed="true"] kbd { color:#dfe9f7; }
 .work { position:relative; flex:1; min-width:0; overflow:hidden; background:#888; }
 #cv { position:absolute; inset:0; display:block; touch-action:none; }
 .hud { position:absolute; left:8px; bottom:6px; color:#fff; background:rgba(0,0,0,.6); padding:3px 9px; border-radius:5px; font-size:12.5px; pointer-events:none; max-width:calc(100% - 16px); }
-.side { width:300px; flex:0 0 auto; border-left:1px solid var(--rule); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+.side { width:380px; flex:0 0 auto; border-left:1px solid var(--rule); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
 .side .head { padding:8px 10px; border-bottom:1px solid var(--rule); font-size:13px; color:var(--muted); }
 .side .head b { color:var(--ink); }
 .list { flex:1; overflow:auto; }
-.item { display:flex; gap:8px; align-items:center; padding:6px 10px; border-bottom:1px solid var(--rule); cursor:pointer; }
-.item.sel { background:rgba(21,101,192,.10); }
+.item { padding:7px 10px 8px; border-bottom:1px solid var(--rule); cursor:pointer; }
+.item.sel { background:rgba(21,101,192,.10); box-shadow:inset 3px 0 0 var(--sel); }
+.item .row { display:flex; gap:7px; align-items:center; }
+.item .grow { flex:1; }
 .num { font:600 12px ui-monospace, Menlo, monospace; border-radius:5px; padding:1px 7px; color:#fff; }
-.item .what { flex:1; font-size:12.5px; }
-.item button { padding:0 6px; font-size:12px; }
+.item button { padding:0 7px; font-size:12px; }
+.item label { font-size:12.5px; color:var(--muted); display:flex; align-items:center; gap:3px; cursor:pointer; }
+.item input[type=text] { width:100%; margin-top:6px; font:15px/1.4 ui-monospace, Menlo, "PingFang SC", monospace; padding:4px 7px; border:1px solid var(--rule); border-radius:5px; background:var(--field); color:var(--ink); }
+.item input[type=text]:focus { outline:2px solid var(--sel); outline-offset:-1px; }
+.item.unreadable input[type=text], .item.unreadable .preview { opacity:.4; text-decoration:line-through; }
+.preview { min-height:22px; margin-top:4px; font-size:16px; overflow-x:auto; }
+.preview .none { color:var(--muted); font-size:12.5px; }
 .empty { padding:20px 10px; color:var(--muted); font-size:13px; }
 dialog { border:1px solid var(--rule); border-radius:10px; background:var(--panel); color:var(--ink); max-width:780px; }
 dialog textarea { width:100%; height:150px; font:11px ui-monospace, monospace; }
@@ -47,6 +56,7 @@ dialog textarea { width:100%; height:150px; font:11px ui-monospace, monospace; }
   <span class="pill" id="state">未完成</span>
   <span class="pill" id="pilot" hidden>试标</span>
   <span id="progress" style="color:var(--muted)"></span>
+  <span id="clock" style="color:var(--muted)"></span>
   <span class="grow"></span>
   <button id="prev">上一题<kbd>←</kbd></button>
   <button id="next">下一题<kbd>→</kbd></button>
@@ -58,22 +68,19 @@ dialog textarea { width:100%; height:150px; font:11px ui-monospace, monospace; }
   <button id="helpBtn">规则</button>
 </div>
 <div class="tools">
-  <button id="t-line" data-tool="line">划线<kbd>2</kbd></button>
-  <button id="t-blot" data-tool="blot">涂黑<kbd>1</kbd></button>
-  <button id="t-join">连成一条<kbd>C</kbd></button>
-  <button id="t-group">组成一处<kbd>G</kbd></button>
-  <button id="t-ungroup">拆出来<kbd>U</kbd></button>
-  <button id="t-region">重算区域<kbd>R</kbd></button>
+  <button id="t-line" data-kind="line">划线<kbd>2</kbd></button>
+  <button id="t-blot" data-kind="blot">涂黑<kbd>1</kbd></button>
+  <button id="t-unread">读不出<kbd>X</kbd></button>
   <button id="t-del">删除<kbd>D</kbd></button>
   <button id="t-undo">撤销<kbd>Z</kbd></button>
   <button id="t-redo">重做<kbd>⇧Z</kbd></button>
   <button id="t-fit">整页<kbd>0</kbd></button>
-  <button id="t-hide" aria-pressed="false">暂时隐藏标注<kbd>H</kbd></button>
+  <button id="t-hide" aria-pressed="false">暂时隐藏框<kbd>H</kbd></button>
 </div>
 <div class="main">
   <div class="work" id="work"><canvas id="cv"></canvas><span class="hud" id="hud"></span></div>
   <div class="side">
-    <div class="head"><b>这一题的涂改</b>　点一处放大；回车下一处</div>
+    <div class="head"><b>这一题的涂改</b>　写下被划掉的字；回车到下一处</div>
     <div class="list" id="list"></div>
   </div>
 </div>
@@ -81,14 +88,14 @@ dialog textarea { width:100%; height:150px; font:11px ui-monospace, monospace; }
   <h3 style="margin-top:0">标注规则</h3>
   <ol>
     <li><b>只标让字作废的痕迹</b>：划线和涂黑。下划线、圈、箭头、着重号都不算。</li>
-    <li><b>划线</b>（<kbd>2</kbd>）：沿着划线<b>拖</b>一下画一段。划线压到字的笔画时就停，跳过这个字，在字后面再拖下一段——画出来的就是要去掉、又不伤字的那部分。弯的线：画几段，点选相邻两段按 <kbd>C</kbd> 连成一条。</li>
-    <li><b>涂黑</b>（<kbd>1</kbd>）：拖一个框盖住涂黑的墨迹；形状不规则就拖边上的小圆点，多出一个角。框里的墨迹会全部去掉。</li>
-    <li><b>组成一处</b>：同一处涂改的几笔（几条线、几块涂黑），点选它们按 <kbd>G</kbd>。点一下选一笔，再点别的笔加进来，再点一次取消。按 <kbd>U</kbd> 把选中的笔拆出来。</li>
-    <li><b>作废区域</b>（虚线框）：每一处自动算出被它作废的那些字的范围。不对就点虚线框选中，拖白点调整；调过的不会再自动变，按 <kbd>R</kbd> 重新算。</li>
-    <li>拖白点改形状；拖边中间的小圆点加一个点；按住 <kbd>⌥/Alt</kbd> 点白点删掉它。</li>
-    <li>做完一题点「本题完成 ✓」。页面自动保存在这个浏览器里；换浏览器或电脑前先「导出」，到那边「导入」。</li>
+    <li><b>框</b>：每一处涂改一个框，框住<b>被作废的那些字</b>（不是划线本身）。漏了就在空白处拖一个新框；多了就删（<kbd>D</kbd>）；同一处被拆成两个框，删掉一个、把另一个拉大。拖白点改形状；拖边中间的小圆点加一个点；按住 <kbd>⌥/Alt</kbd> 点白点删掉它。</li>
+    <li><b>划线 / 涂黑</b>（<kbd>2</kbd> / <kbd>1</kbd>）：选中一处后按键改它的种类；没选中时决定下一个新框的种类。</li>
+    <li><b>被划掉的字</b>：在右边的输入框里写这一处被划掉的内容，能认出多少写多少；看不清的一个字写 <code>?</code>。公式写在 <code>$ $</code> 之间（如 <code>$\frac{5a^2}{60a+1}$</code>），下面会排版出来给你核对。</li>
+    <li><b>读不出</b>（<kbd>X</kbd>）：一个字也认不出（多半是涂黑）就勾上。涂黑默认勾上；在它的输入框里改字会自动取消。</li>
+    <li>点右边一处或在输入框里按 <kbd>Tab</kbd>/<kbd>回车</kbd>，图会放大到那一处；<kbd>⇧回车</kbd> 回上一处；<kbd>Esc</kbd> 离开输入框。</li>
+    <li>做完一题点「本题完成 ✓」。页面自动保存在这个浏览器里，也记下每题用了多久；换浏览器或电脑前先「导出」，到那边「导入」。</li>
   </ol>
-  <p style="color:var(--muted)">滚轮缩放；按住 <kbd>⇧</kbd>、空格或右键拖动平移；<kbd>0</kbd> 看整页；<kbd>H</kbd> 暂时隐藏标注看原图。</p>
+  <p style="color:var(--muted)">滚轮缩放；按住 <kbd>⇧</kbd>、空格或右键拖动平移；<kbd>0</kbd> 看整页；<kbd>H</kbd> 暂时隐藏框看原图。</p>
   <button id="helpClose">关闭</button>
 </dialog>
 <dialog id="dlgDump"><h3 style="margin-top:0">导出</h3><p id="dumpNote" style="color:var(--muted)"></p><textarea id="dump" readonly></textarea>
@@ -98,71 +105,63 @@ dialog textarea { width:100%; height:150px; font:11px ui-monospace, monospace; }
 <!--PACK--><script src="pack.js"></script><!--/PACK-->
 <script>
 "use strict";
-const PACK = window.PACK, PAGES = PACK.pages, KEY = "paper2-revision-annotation:" + PACK.id, SCHEMA = "paper2-revision-annotation-v1";
+const PACK = window.PACK, PAGES = PACK.pages, KEY = "paper2-revision-boxes:" + PACK.id, SCHEMA = "paper2-revision-box-v1";
 const PALETTE = ["#e53935", "#1e88e5", "#43a047", "#8e24aa", "#fb8c00", "#00897b", "#3949ab", "#d81b60", "#6d4c41", "#00acc1"];
 const $ = id => document.getElementById(id);
 const clone = v => JSON.parse(JSON.stringify(v));
 const NEAR = 7, CLICK = 4;                     // screen pixels: how far a click may miss, how far a press may move and still be a click
 
-let store = { pages: {} };
-try { store = JSON.parse(localStorage.getItem(KEY) || "") || store; } catch (e) { store = { pages: {} }; }
+let store = { pages: {}, seconds: {} };
+try { store = JSON.parse(localStorage.getItem(KEY) || "") || store; } catch (e) { store = { pages: {}, seconds: {} }; }
 if (!store.pages) store.pages = {};
+if (!store.seconds) store.seconds = {};
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { hud("浏览器存不下了：请先导出"); } };
 
 let at = Math.max(0, PAGES.findIndex(p => !(store.pages[p.id] || {}).done));
-let tool = "line", picked = [], region = null, drag = null, spaceDown = false, hidden = false;
-let scale = 0, panX = 0, panY = 0, image = null, ink = null, undo = [], redo = [];
+let kind = "line", chosen = null, drag = null, spaceDown = false, hidden = false, lastAction = 0, typingFrom = null, stay = false;
+let scale = 0, panX = 0, panY = 0, image = null, undo = [], redo = [];
 const scratch = {};
 const page = () => PAGES[at];
 function state() {
   // A question not yet changed is read from the pack (a rebuilt pack's better prefill shows through); the first change stores it.
   const id = page().id;
   if (store.pages[id]) return store.pages[id];
-  if (!scratch[id]) scratch[id] = { strokes: clone(page().strokes), groups: clone(page().groups), next: page().next || 0, done: false };
+  if (!scratch[id]) scratch[id] = { revisions: clone(page().revisions), next: page().next || 0, done: false };
   return scratch[id];
 }
-function remember() { undo.push(JSON.stringify(state())); if (undo.length > 100) undo.shift(); redo = []; }
-function changed() {
+const revision = id => state().revisions.find(r => r.id === id);
+function remember(snapshot) { undo.push(snapshot || JSON.stringify(state())); if (undo.length > 100) undo.shift(); redo = []; }
+function changed(list = true) {
   const s = state();
-  if (ink) refreshRegions(s, ink, page().width, page().height);
   s.updated_at = new Date().toISOString(); store.pages[page().id] = s; save();
-  renderList(); draw();
+  if (list) renderList();
+  draw(); status();
+}
+function acted() {
+  // Time on a question: the gaps between the annotator's actions on it, each counted up to IDLE seconds.
+  const now = Date.now();
+  if (lastAction) store.seconds[page().id] = (store.seconds[page().id] || 0) + activeSeconds([(now - lastAction) / 1000]);
+  lastAction = now;
+  save(); showClock();
+}
+function showClock() {
+  const t = Math.round(store.seconds[page().id] || 0);
+  $("clock").textContent = `本题用时 ${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
 }
 
 // ---------- geometry ----------
 const toImage = (sx, sy) => [(sx - panX) / scale, (sy - panY) / scale];
 const toScreen = (x, y) => [x * scale + panX, y * scale + panY];
-function stroke(id) { return state().strokes.find(s => s.id === id); }
-function shapeOf(sel) {                          // {points, closed} of a selected stroke or region
-  if (!sel) return null;
-  if (sel.kind === "stroke") { const s = stroke(sel.id); return s && { points: s.path, closed: s.kind === "blot" }; }
-  const g = state().groups.find(g => g.id === sel.id);
-  return g && g.region && { points: g.region, closed: true };
-}
-function active() { return region ? { kind: "region", id: region } : picked.length ? { kind: "stroke", id: picked[picked.length - 1] } : null; }
 function handleAt(p) {
-  // {index, midpoint} of the handle of the active shape under the point, or null.
-  const shape = shapeOf(active());
-  if (!shape) return null;
-  const pts = shape.points;
+  // {index, midpoint} of the handle of the chosen region under the point, or null.
+  const r = chosen && revision(chosen);
+  if (!r) return null;
+  const pts = r.region;
   for (let i = 0; i < pts.length; i++) if (Math.hypot(pts[i][0] - p[0], pts[i][1] - p[1]) * scale <= NEAR) return { index: i, midpoint: false };
-  const last = shape.closed ? pts.length : pts.length - 1;
-  for (let i = 0; i < last; i++) {
+  for (let i = 0; i < pts.length; i++) {
     const a = pts[i], b = pts[(i + 1) % pts.length], m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
     if (Math.hypot(m[0] - p[0], m[1] - p[1]) * scale <= NEAR) return { index: i + 1, midpoint: true };
   }
-  return null;
-}
-function strokeAt(p) {
-  let best = null, bestD = Infinity;
-  for (const s of state().strokes) {
-    const d = s.kind === "blot" ? (pointInPolygon(p, s.path) ? 0 : distanceToPath(p, s.path, true)) : distanceToPath(p, s.path, false);
-    if (d * scale <= NEAR + 2 && d < bestD) { best = s; bestD = d; }
-  }
-  return best;
-}
-function regionAt(p) {
-  for (const g of state().groups) if (g.region && distanceToPath(p, g.region, true) * scale <= NEAR) return g;
   return null;
 }
 
@@ -175,16 +174,16 @@ function fit() {
   panX = (w - p.width * scale) / 2; panY = (h - p.height * scale) / 2;
   draw();
 }
-function focusOn(box, margin = 2.2) {
+function focusOn(box, margin = 2.4) {
   const w = $("work").clientWidth, h = $("work").clientHeight, [l, t, r, b] = box;
-  const bw = Math.max(40, r - l) * margin, bh = Math.max(30, b - t) * margin * 1.6;
-  scale = Math.min(8, w / bw, h / bh);
+  const bw = Math.max(60, r - l) * margin, bh = Math.max(40, b - t) * margin * 1.8;
+  scale = Math.min(6, w / bw, h / bh);
   panX = w / 2 - (l + r) / 2 * scale; panY = h / 2 - (t + b) / 2 * scale; draw();
 }
-function path(ctx, points, closed) {
+function path(ctx, points) {
   ctx.beginPath();
   points.forEach((q, i) => { const [x, y] = toScreen(q[0], q[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-  if (closed) ctx.closePath();
+  ctx.closePath();
 }
 function draw() {
   const cv = $("cv"), box = $("work"), ratio = window.devicePixelRatio || 1;
@@ -196,37 +195,22 @@ function draw() {
   if (!scale) return;
   if (image) { ctx.imageSmoothingEnabled = scale < 2; ctx.drawImage(image, panX, panY, p.width * scale, p.height * scale); }
   if (!hidden) {
-    s.groups.forEach((g, k) => {
-      const colour = PALETTE[k % PALETTE.length];
-      if (g.region) {
-        ctx.save(); ctx.strokeStyle = colour; ctx.setLineDash([6, 4]); ctx.lineWidth = region === g.id ? 2.5 : 1.3;
-        path(ctx, g.region, true); ctx.stroke(); ctx.restore();
-        const [x, y] = toScreen(Math.min(...g.region.map(q => q[0])), Math.min(...g.region.map(q => q[1])));
-        ctx.font = "600 12px ui-monospace, Menlo, monospace"; const label = String(k + 1), w = ctx.measureText(label).width + 6;
-        ctx.fillStyle = colour; ctx.fillRect(x, y - 15, w, 15); ctx.fillStyle = "#fff"; ctx.fillText(label, x + 3, y - 3.5);
-      }
-      for (const st of strokesOf(s, g)) {
-        const chosen = picked.includes(st.id);
-        ctx.save(); ctx.strokeStyle = colour; ctx.fillStyle = colour; ctx.lineCap = "round"; ctx.lineJoin = "round";
-        if (st.kind === "blot") {
-          path(ctx, st.path, true); ctx.globalAlpha = .18; ctx.fill(); ctx.globalAlpha = 1; ctx.lineWidth = chosen ? 2.5 : 1.4; ctx.stroke();
-        } else {
-          ctx.globalAlpha = .35; ctx.lineWidth = Math.max(4, 4 * Math.min(scale, 3)); path(ctx, st.path, false); ctx.stroke();
-          ctx.globalAlpha = 1; ctx.lineWidth = chosen ? 2.2 : 1.2; path(ctx, st.path, false); ctx.stroke();
-        }
-        if (chosen) {
-          const [l, t, r, b] = bounds(st.path), [x0, y0] = toScreen(l, t), [x1, y1] = toScreen(r, b);
-          ctx.setLineDash([4, 3]); ctx.strokeStyle = "#1565c0"; ctx.lineWidth = 1.5;
-          ctx.strokeRect(x0 - 5, y0 - 5, x1 - x0 + 10, y1 - y0 + 10);
-        }
-        ctx.restore();
-      }
+    s.revisions.forEach((r, k) => {
+      const colour = PALETTE[k % PALETTE.length], sel = r.id === chosen;
+      ctx.save(); ctx.strokeStyle = colour; ctx.fillStyle = colour;
+      path(ctx, r.region);
+      if (r.kind === "blot") { ctx.globalAlpha = .13; ctx.fill(); ctx.globalAlpha = 1; }
+      ctx.setLineDash(r.kind === "blot" ? [7, 4] : []); ctx.lineWidth = sel ? 2.6 : 1.4; ctx.stroke();
+      const [x, y] = toScreen(...bounds(r.region).slice(0, 2));
+      ctx.setLineDash([]); ctx.font = "600 12px ui-monospace, Menlo, monospace"; const label = String(k + 1), w = ctx.measureText(label).width + 6;
+      ctx.fillRect(x, y - 15, w, 15); ctx.fillStyle = "#fff"; ctx.fillText(label, x + 3, y - 3.5);
+      ctx.restore();
     });
-    const shape = shapeOf(active());
-    if (shape) {
-      const pts = shape.points, last = shape.closed ? pts.length : pts.length - 1;
+    const r = chosen && revision(chosen);
+    if (r) {
+      const pts = r.region;
       ctx.lineWidth = 1.5; ctx.strokeStyle = "#1565c0";
-      for (let i = 0; i < last; i++) {
+      for (let i = 0; i < pts.length; i++) {
         const a = pts[i], b = pts[(i + 1) % pts.length], [x, y] = toScreen((a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
         ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fillStyle = "rgba(255,255,255,.75)"; ctx.fill(); ctx.stroke();
       }
@@ -237,59 +221,98 @@ function draw() {
   if (drag && drag.kind === "draw" && drag.moved) {
     ctx.save(); ctx.setLineDash([5, 4]); ctx.lineWidth = 1.8; ctx.strokeStyle = "#ffb300";
     const [x0, y0] = toScreen(...drag.from), [x1, y1] = toScreen(...drag.to);
-    if (tool === "line") { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); } else ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-    ctx.restore();
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0); ctx.restore();
   }
 }
 
 // ---------- the list of revisions ----------
+function escapeHtml(text) { return text.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+function rendered(text) {
+  const parts = mathParts(text);
+  if (!parts.length) return '<span class="none">（还没有字）</span>';
+  return parts.map(part => part.math && window.katex
+    ? window.katex.renderToString(part.text, { throwOnError: false, strict: "ignore", output: "html" })
+    : escapeHtml(part.text)).join("");
+}
 function renderList() {
   const s = state(), list = $("list");
   list.replaceChildren();
-  if (!s.groups.length) { const e = document.createElement("div"); e.className = "empty"; e.textContent = "这一题还没有涂改。用「划线」「涂黑」画出来。"; list.appendChild(e); }
-  s.groups.forEach((g, k) => {
-    const item = document.createElement("div"), members = strokesOf(s, g);
-    item.className = "item" + (members.some(m => picked.includes(m.id)) || region === g.id ? " sel" : "");
+  if (!s.revisions.length) { const e = document.createElement("div"); e.className = "empty"; e.textContent = "这一题还没有涂改。在图上拖一个框框住被作废的字。"; list.appendChild(e); }
+  s.revisions.forEach((r, k) => {
+    const item = document.createElement("div");
+    item.className = "item" + (r.id === chosen ? " sel" : "") + (r.unreadable ? " unreadable" : "");
+    item.dataset.id = r.id;
+    const row = document.createElement("div"); row.className = "row";
     const num = document.createElement("span"); num.className = "num"; num.textContent = k + 1; num.style.background = PALETTE[k % PALETTE.length];
-    const lines = members.filter(m => m.kind === "line").length, blots = members.length - lines;
-    const what = document.createElement("span"); what.className = "what";
-    what.textContent = [lines ? `划线 ${lines}` : "", blots ? `涂黑 ${blots}` : ""].filter(Boolean).join("，") + (g.region ? (g.region_auto ? "　区域自动" : "　区域手调") : "　没有区域");
+    const kindBtn = document.createElement("button"); kindBtn.textContent = r.kind === "blot" ? "涂黑" : "划线"; kindBtn.title = "点一下换成另一种";
+    kindBtn.onclick = e => { e.stopPropagation(); acted(); remember(); setKind(state(), r.id, r.kind === "blot" ? "line" : "blot"); changed(); };
+    const grow = document.createElement("span"); grow.className = "grow";
+    const label = document.createElement("label"), box = document.createElement("input"); box.type = "checkbox"; box.checked = !!r.unreadable;
+    box.onclick = e => e.stopPropagation();
+    box.onchange = () => { acted(); remember(); revision(r.id).unreadable = box.checked; changed(); };
+    label.append(box, "读不出"); label.onclick = e => e.stopPropagation();
     const del = document.createElement("button"); del.textContent = "删"; del.title = "删掉这一处";
-    del.onclick = e => { e.stopPropagation(); remember(); remove(s, g.strokes.slice()); picked = []; region = null; changed(); status(); };
-    item.append(num, what, del);
-    item.onclick = () => showGroup(k);
+    del.onclick = e => { e.stopPropagation(); acted(); remember(); removeRevision(state(), r.id); if (chosen === r.id) chosen = null; changed(); };
+    row.append(num, kindBtn, grow, label, del);
+    const input = document.createElement("input"); input.type = "text"; input.value = r.text; input.spellcheck = false;
+    input.placeholder = r.kind === "blot" ? "涂黑下面的字（读不出就勾上「读不出」）" : "被划掉的字，看不清的写 ?";
+    const preview = document.createElement("div"); preview.className = "preview"; preview.innerHTML = rendered(r.text);
+    input.onfocus = () => { typingFrom = JSON.stringify(state()); choose(r.id, !stay); stay = false; };
+    input.oninput = () => {
+      acted();
+      if (typingFrom) { remember(typingFrom); typingFrom = null; }
+      const rev = revision(r.id); rev.text = input.value;
+      if (rev.unreadable && input.value.trim()) { rev.unreadable = false; box.checked = false; item.classList.remove("unreadable"); }
+      preview.innerHTML = rendered(input.value);
+      changed(false);
+    };
+    input.onkeydown = e => {
+      if (e.key === "Enter") { e.preventDefault(); acted(); step(e.shiftKey ? -1 : 1); }
+      else if (e.key === "Escape") { input.blur(); }
+    };
+    item.append(row, input, preview);
+    item.onclick = () => input.focus();
     list.appendChild(item);
   });
 }
-function showGroup(k) {
-  const g = state().groups[k];
-  if (!g) return;
-  picked = g.strokes.slice(); region = null;
-  focusOn(bounds((g.region || []).concat(strokesOf(state(), g).flatMap(s => s.path))));
-  renderList(); status(); hud(`第 ${k + 1} 处（共 ${state().groups.length} 处）　回车下一处，⇧回车上一处`);
+function inputOf(id) { const item = $("list").querySelector(`.item[data-id="${id}"]`); return item && item.querySelector("input[type=text]"); }
+function choose(id, zoom) {
+  chosen = id;
+  for (const item of $("list").querySelectorAll(".item")) item.classList.toggle("sel", item.dataset.id === id);
+  const r = id && revision(id);
+  if (r && zoom) focusOn(bounds(r.region)); else draw();
+  const k = state().revisions.findIndex(x => x.id === id);
+  if (r) { hud(`第 ${k + 1} 处（共 ${state().revisions.length} 处）　回车下一处，⇧回车上一处`); $("list").querySelector(`.item[data-id="${id}"]`).scrollIntoView({ block: "nearest" }); }
+  status();
 }
-function currentGroupIndex() {
-  const s = state(), id = region || picked[picked.length - 1];
-  return s.groups.findIndex(g => g.id === id || g.strokes.includes(id));
+function step(by) {
+  const s = state(), n = s.revisions.length;
+  if (!n) return;
+  const k = s.revisions.findIndex(r => r.id === chosen);
+  const next = k < 0 ? (by > 0 ? 0 : n - 1) : k + by;
+  if (next >= n) { document.activeElement.blur(); hud("这是最后一处了；没有漏掉的就点「本题完成 ✓」"); return; }
+  if (next < 0) return;
+  inputOf(s.revisions[next].id).focus();
 }
 
 // ---------- pointer ----------
 const cv = $("cv");
 cv.addEventListener("contextmenu", e => e.preventDefault());
 cv.addEventListener("pointerdown", e => {
+  acted();
+  if (document.activeElement && document.activeElement.tagName === "INPUT") document.activeElement.blur();
   const box = cv.getBoundingClientRect(), sx = e.clientX - box.left, sy = e.clientY - box.top, p = toImage(sx, sy);
   cv.setPointerCapture(e.pointerId);
   if (e.button === 1 || e.button === 2 || e.shiftKey || spaceDown) { drag = { kind: "pan", sx, sy, panX, panY }; return; }
   const h = hidden ? null : handleAt(p);
   if (h && e.altKey && !h.midpoint) {
-    const shape = shapeOf(active());
-    if (shape.points.length > (shape.closed ? 3 : 2)) { remember(); shape.points.splice(h.index, 1); if (region) markManual(); changed(); }
+    const r = revision(chosen);
+    if (r.region.length > 3) { remember(); r.region.splice(h.index, 1); changed(); }
     return;
   }
   if (h) {
     remember();
-    const shape = shapeOf(active());
-    if (h.midpoint) shape.points.splice(h.index, 0, [Math.round(p[0]), Math.round(p[1])]);
+    if (h.midpoint) revision(chosen).region.splice(h.index, 0, [Math.round(p[0]), Math.round(p[1])]);
     drag = { kind: "handle", index: h.index };
     return;
   }
@@ -299,39 +322,28 @@ cv.addEventListener("pointermove", e => {
   if (!drag) return;
   const box = cv.getBoundingClientRect(), sx = e.clientX - box.left, sy = e.clientY - box.top, p = toImage(sx, sy);
   if (drag.kind === "pan") { panX = drag.panX + sx - drag.sx; panY = drag.panY + sy - drag.sy; draw(); return; }
-  if (drag.kind === "handle") { const shape = shapeOf(active()); shape.points[drag.index] = [Math.round(p[0]), Math.round(p[1])]; draw(); return; }
+  if (drag.kind === "handle") { revision(chosen).region[drag.index] = [Math.round(p[0]), Math.round(p[1])]; draw(); return; }
   drag.to = p;
   if (!drag.moved && Math.hypot(sx - drag.sx, sy - drag.sy) > CLICK) drag.moved = true;
   if (drag.moved) draw();
 });
-function markManual() { const g = state().groups.find(g => g.id === region); if (g) g.region_auto = false; }
 cv.addEventListener("pointerup", () => {
   if (!drag) return;
   const d = drag; drag = null;
   if (d.kind === "pan") return;
-  if (d.kind === "handle") { if (region) markManual(); changed(); return; }
-  if (!d.moved) {                                                 // a click picks a stroke, or a region's frame, or clears
-    const s = hidden ? null : strokeAt(d.from);
-    if (s) {
-      region = null;
-      const k = picked.indexOf(s.id);
-      if (k >= 0) picked.splice(k, 1); else picked.push(s.id);
-    } else {
-      const g = hidden ? null : regionAt(d.from);
-      picked = []; region = g ? g.id : null;
-    }
-    renderList(); draw(); status(); return;
+  if (d.kind === "handle") { changed(); return; }
+  if (!d.moved) {                                                 // a click picks the region under it, or clears
+    const r = hidden ? null : revisionAt(state(), d.from, NEAR / scale);
+    if (r) { stay = true; inputOf(r.id).focus(); } else choose(null, false);
+    return;
   }
   const [x0, y0] = d.from, [x1, y1] = d.to;
+  const l = Math.min(x0, x1), t = Math.min(y0, y1), r = Math.max(x0, x1), b = Math.max(y0, y1);
+  if ((r - l) * scale < CLICK || (b - t) * scale < CLICK) { draw(); return; }
   remember();
-  if (tool === "line") {
-    const s = addStroke(state(), "line", [d.from, d.to]); picked = [s.id];
-  } else {
-    const l = Math.min(x0, x1), t = Math.min(y0, y1), r = Math.max(x0, x1), b = Math.max(y0, y1);
-    if ((r - l) * scale < CLICK || (b - t) * scale < CLICK) { undo.pop(); draw(); return; }
-    const s = addStroke(state(), "blot", [[l, t], [r, t], [r, b], [l, b]]); picked = [s.id];
-  }
-  region = null; changed(); status();
+  const added = addRevision(state(), kind, [[l, t], [r, t], [r, b], [l, b]]);
+  changed();
+  stay = true; inputOf(added.id).focus();
 });
 cv.addEventListener("wheel", e => {
   e.preventDefault();
@@ -346,120 +358,84 @@ function status() {
   $("state").textContent = done ? "已完成" : "未完成"; $("state").className = "pill" + (done ? " done" : "");
   $("doneBtn").textContent = done ? "改回未完成" : "本题完成 ✓";
   $("progress").textContent = `已完成 ${PAGES.filter(q => (store.pages[q.id] || {}).done).length} / ${PAGES.length}`;
-  const lines = picked.filter(id => (stroke(id) || {}).kind === "line").length;
-  $("t-join").disabled = !(picked.length === 2 && lines === 2);
-  $("t-group").disabled = picked.length < 2;
-  $("t-ungroup").disabled = !picked.length;
-  $("t-del").disabled = !picked.length && !region;
-  $("t-region").disabled = !picked.length && !region;
+  $("t-del").disabled = $("t-unread").disabled = !chosen;
+  document.querySelectorAll(".tools [data-kind]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.kind === kind)));
+  showClock();
 }
-function setTool(t) {
-  tool = t;
-  document.querySelectorAll(".tools [data-tool]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
-  hud({ line: "划线：沿着线拖一段；压到字就停，跳过字再拖下一段。点一下选中；选两段按 C 连成一条", blot: "涂黑：拖一个框盖住；拖边中间的小圆点加角" }[t]);
+function setKindKey(k) {
+  kind = k;
+  if (chosen) { remember(); if (!setKind(state(), chosen, k)) undo.pop(); else changed(); }
+  status();
+  hud(chosen ? `这一处改成${k === "blot" ? "涂黑" : "划线"}` : `下一个新框是${k === "blot" ? "涂黑" : "划线"}：在图上拖一个框`);
 }
-function joinPicked() {
-  if (picked.length !== 2) { hud("先点选两段划线"); return; }
-  remember();
-  if (!join(state(), picked[0], picked[1])) { undo.pop(); hud("只能把两段划线连成一条；涂黑不能连"); return; }
-  picked = [picked[0]]; changed(); status();
+function toggleUnreadable() {
+  const r = chosen && revision(chosen);
+  if (!r) return;
+  remember(); r.unreadable = !r.unreadable; changed();
 }
-function groupPicked() {
-  if (picked.length < 2) { hud("先点选要组成一处的几笔"); return; }
-  remember();
-  if (!group(state(), picked)) { undo.pop(); hud("它们已经是同一处了"); return; }
-  changed(); status(); hud("已组成一处，作废区域重新算过");
+function deleteChosen() {
+  if (!chosen) return;
+  remember(); removeRevision(state(), chosen); chosen = null; changed();
 }
-function ungroupPicked() {
-  if (!picked.length) return;
-  remember();
-  if (!ungroup(state(), picked)) { undo.pop(); hud("选中的笔本来就是单独的一处"); return; }
-  changed(); status();
+function restore(from, to) {
+  if (!from.length) return;
+  to.push(JSON.stringify(state())); store.pages[page().id] = JSON.parse(from.pop()); chosen = null; save(); renderList(); draw(); status();
 }
-function deletePicked() {
-  if (!picked.length && !region) return;
-  remember();
-  const s = state();
-  if (picked.length) remove(s, picked.slice());
-  else { const g = s.groups.find(g => g.id === region); if (g) { g.region = null; g.region_auto = true; } }
-  picked = []; region = null; changed(); status();
-}
-function regionAgain() {
-  const s = state(), groups = new Set(picked.map(id => groupOf(s, id)).concat(region ? [s.groups.find(g => g.id === region)] : []).filter(Boolean));
-  if (!groups.size) return;
-  remember();
-  for (const g of groups) { g.region_auto = true; g.region = null; }
-  changed(); hud("作废区域已按墨迹重新算");
-}
-$("t-join").onclick = joinPicked;
-$("t-group").onclick = groupPicked;
-$("t-ungroup").onclick = ungroupPicked;
-$("t-del").onclick = deletePicked;
-$("t-region").onclick = regionAgain;
-$("t-undo").onclick = () => { if (!undo.length) return; redo.push(JSON.stringify(state())); store.pages[page().id] = JSON.parse(undo.pop()); picked = []; region = null; save(); renderList(); draw(); status(); };
-$("t-redo").onclick = () => { if (!redo.length) return; undo.push(JSON.stringify(state())); store.pages[page().id] = JSON.parse(redo.pop()); picked = []; region = null; save(); renderList(); draw(); status(); };
+$("t-line").onclick = () => setKindKey("line");
+$("t-blot").onclick = () => setKindKey("blot");
+$("t-unread").onclick = toggleUnreadable;
+$("t-del").onclick = deleteChosen;
+$("t-undo").onclick = () => restore(undo, redo);
+$("t-redo").onclick = () => restore(redo, undo);
 $("t-fit").onclick = fit;
 $("t-hide").onclick = () => { hidden = !hidden; $("t-hide").setAttribute("aria-pressed", String(hidden)); draw(); };
-for (const b of document.querySelectorAll(".tools [data-tool]")) b.onclick = () => setTool(b.dataset.tool);
 
 document.addEventListener("keydown", e => {
   if ($("dlgHelp").open || $("dlgDump").open || e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
+  acted();
   if (e.key === " ") { spaceDown = true; e.preventDefault(); return; }
   const key = e.key.toLowerCase();
-  if (key === "2") setTool("line");
-  else if (key === "1") setTool("blot");
-  else if (key === "c") joinPicked();
-  else if (key === "g") groupPicked();
-  else if (key === "u") ungroupPicked();
-  else if (key === "r") regionAgain();
-  else if (key === "d" || key === "delete") { e.preventDefault(); deletePicked(); }
+  if (key === "2") setKindKey("line");
+  else if (key === "1") setKindKey("blot");
+  else if (key === "x") toggleUnreadable();
+  else if (key === "d" || key === "delete") { e.preventDefault(); deleteChosen(); }
   else if (key === "z" && e.shiftKey) $("t-redo").click();
   else if (key === "z") $("t-undo").click();
   else if (key === "0") fit();
   else if (key === "h") $("t-hide").click();
-  else if (key === "enter") { const n = state().groups.length; if (n) showGroup((currentGroupIndex() + (e.shiftKey ? n - 1 : 1)) % n); }
-  else if (key === "escape") { picked = []; region = null; renderList(); draw(); status(); }
+  else if (key === "enter") { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
+  else if (key === "escape") choose(null, false);
   else if (key === "arrowleft") $("prev").click();
   else if (key === "arrowright") $("next").click();
 });
 document.addEventListener("keyup", e => { if (e.key === " ") spaceDown = false; });
 
 // ---------- questions ----------
-function inkOf(img) {
-  // 1 where the scan is ink (grey below 200, the threshold the masks are cut to).
-  const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
-  const g = c.getContext("2d"); g.drawImage(img, 0, 0);
-  const data = g.getImageData(0, 0, c.width, c.height).data, out = new Uint8Array(c.width * c.height);
-  for (let i = 0; i < out.length; i++) out[i] = (data[4 * i] * .299 + data[4 * i + 1] * .587 + data[4 * i + 2] * .114) < 200 ? 1 : 0;
-  return out;
-}
 function show(k) {
-  at = Math.max(0, Math.min(PAGES.length - 1, k)); picked = []; region = null; drag = null; undo = []; redo = [];
+  at = Math.max(0, Math.min(PAGES.length - 1, k)); chosen = null; drag = null; undo = []; redo = []; lastAction = Date.now(); save();
   const p = page();
   $("pilot").hidden = !p.pilot;
-  image = null; ink = null;
+  image = null;
   const img = new Image();
-  img.onload = () => {
-    if (page() !== p) return;
-    image = img; ink = inkOf(img);
-    const s = state();
-    if (s.groups.some(g => !g.region || g.region_auto)) refreshRegions(s, ink, p.width, p.height);   // shown only; stored on the first change
-    renderList(); fit();
-  };
+  img.onload = () => { if (page() === p) { image = img; fit(); } };
   img.src = p.image;
   renderList(); status(); fit();
+  hud("点右边第一处开始（或按回车）；漏掉的涂改在图上拖框补上");
 }
-$("prev").onclick = () => show(at - 1);
-$("next").onclick = () => show(at + 1);
+$("prev").onclick = () => { acted(); show(at - 1); };
+$("next").onclick = () => { acted(); show(at + 1); };
 $("nextOpen").onclick = () => { for (let i = 1; i <= PAGES.length; i++) { const k = (at + i) % PAGES.length; if (!(store.pages[PAGES[k].id] || {}).done) return show(k); } hud("全部完成了"); };
-$("doneBtn").onclick = () => { const s = state(); s.done = !s.done; s.updated_at = new Date().toISOString(); store.pages[page().id] = s; save(); status(); };
-$("resetBtn").onclick = () => { if (!confirm("把这一题还原成预填的样子？你在这一题上的修改都会丢掉。")) return; delete store.pages[page().id]; delete scratch[page().id]; save(); show(at); };
+$("doneBtn").onclick = () => { acted(); const s = state(); s.done = !s.done; s.updated_at = new Date().toISOString(); store.pages[page().id] = s; save(); status(); };
+$("resetBtn").onclick = () => { if (!confirm("把这一题还原成预填的样子？你在这一题上的修改都会丢掉（用时保留）。")) return; delete store.pages[page().id]; delete scratch[page().id]; save(); show(at); };
 $("helpBtn").onclick = () => $("dlgHelp").showModal();
 $("helpClose").onclick = () => $("dlgHelp").close();
 function exported() {
-  const pages = {};
-  for (const p of PAGES) if (store.pages[p.id]) pages[p.id] = store.pages[p.id];
-  return { schema: SCHEMA, pack: PACK.id, exported_at: new Date().toISOString(), pages };
+  const pages = {}, seconds = {};
+  for (const p of PAGES) {
+    if (store.pages[p.id]) pages[p.id] = store.pages[p.id];
+    if (store.seconds[p.id]) seconds[p.id] = Math.round(store.seconds[p.id]);
+  }
+  return { schema: SCHEMA, pack: PACK.id, exported_at: new Date().toISOString(), pages, seconds };
 }
 $("exportBtn").onclick = () => {
   const value = exported(), n = Object.keys(value.pages).length, done = Object.values(value.pages).filter(p => p.done).length;
@@ -477,17 +453,17 @@ $("importFile").onchange = async () => {
   const file = $("importFile").files[0]; if (!file) return;
   try {
     const value = JSON.parse(await file.text());
-    if (value.schema !== SCHEMA) throw new Error("不是涂改标注页导出的文件");
+    if (value.schema !== SCHEMA) throw new Error("不是这个标注页导出的文件");
     const ids = new Set(PAGES.map(p => p.id)), incoming = Object.keys(value.pages).filter(id => ids.has(id));
     if (!incoming.length) throw new Error("文件里没有这个标注包里的题");
     if (!confirm(`导入 ${incoming.length} 道题的标注，覆盖这个浏览器里这些题的内容？`)) return;
-    for (const id of incoming) store.pages[id] = value.pages[id];
+    for (const id of incoming) { store.pages[id] = value.pages[id]; if ((value.seconds || {})[id]) store.seconds[id] = value.seconds[id]; }
     save(); show(at);
   } catch (err) { alert("导入失败：" + err.message); }
   $("importFile").value = "";
 };
+window.katexLoaded = () => renderList();
 window.addEventListener("resize", () => (scale ? draw() : fit()));
-setTool("line");
 show(at);
 </script>
 </body>

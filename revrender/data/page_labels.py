@@ -4,12 +4,13 @@ of writing it voids, and per question the scan with the revisions removed.
     python -m revrender.data.page_labels --export 涂改标注_….json [--export …] --selection selection.json --pages DIR [--pages DIR ...]
         --output-dir OUT [--all]
 
-``--export`` is what the page editor (``tools/annotate/page_editor.html``) downloads; several exports are merged, a later file winning for
+``--export`` is what the geometry version of the annotation page (git history, commit 1be20db) downloaded: the test questions labelled to
+the pixel, a small check of what strike removal leaves.  Several exports are merged, a later file winning for
 a question it also holds.  Only questions marked done are read unless ``--all``.  A struck line was drawn along the stroke and stopped where
 the stroke crosses writing, so its pixels are the ink within half the stroke's width of the line (the width measured on the ink under it),
 cut to ink with its soft edge (``tighten.non_white``); a blackout's pixels are the ink inside its polygon.  The removed scan sets those
 pixels white: the writing a struck line crossed keeps the pixels the annotator skipped, so it is whole.  A revision's region is the polygon
-of the writing it voids (``page_rules.js`` computes it from the ink; the annotator may have moved it).
+of the writing it voids (computed from the ink on that page; the annotator may have moved it).
 
 Per question OUT/<image_id>.json (strokes and revisions with their kinds and pixel counts), OUT/<image_id>.npz (``stroke_<n>``,
 ``revision_<n>``, ``region_<n>``: masks on the page, packed bits) and OUT/removed/<image_id>.png; OUT/summary.json the counts per split.

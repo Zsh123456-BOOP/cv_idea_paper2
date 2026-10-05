@@ -13,6 +13,7 @@ formulas, □ for what cannot be read, no solving or correcting -- and what a co
   blanked_final    the same, and the instruction above
   overlay_final    the revision tinted red in the one image, said to be a marker and not writing, and the instruction above
   hint_final       the scan, the places of the masks in words (thousandths of the width and height), and the instruction above
+  raw_struck       the scan, and the instruction to give only what is struck out or blacked out (the annotation page's starting text)
 
 Token conditions (``--backend hf``, Qwen3-VL; ``models.vlm_tokens``) leave the image alone and hide visual tokens from the text, each
 token keeping its position:
@@ -44,6 +45,7 @@ SYSTEM = 'You are an OCR transcription assistant.'
 SKELETON = ('请转写图中的手写数学作答。保留原来的换行；公式使用 LaTeX。无法辨认的字符写 □，不猜测、不解题、不纠错、不补全。'
             '没有可转写的内容时输出 [空]。仅返回 <transcription>转写结果</transcription>，不附带解释。')
 FINAL = '只转写学生最终保留的有效作答：被划掉、涂黑或作废的内容不要输出，保留替换后的内容。'
+STRUCK = '只转写被划线划掉或涂黑的那部分内容，能认出多少写多少；没有被划掉的内容不要输出。公式写在 $ $ 之间。'
 OVERLAY = '图中的红色是已检测出的涂改位置，是辅助标记，不是学生的笔迹。'
 CONDITIONS = {
     'raw_neutral': ('raw', (), None),
@@ -54,6 +56,7 @@ CONDITIONS = {
     'blanked_final': ('blanked', (FINAL,), None),
     'overlay_final': ('overlay', (OVERLAY, FINAL), None),
     'hint_final': ('raw', ('hint', FINAL), None),
+    'raw_struck': ('raw', (STRUCK,), None),
     'hide_band_neutral': ('raw', (), 'band'),
     'hide_ink_neutral': ('raw', (), 'ink'),
     'soft_band_neutral': ('raw', (), 'soft_band'),
@@ -108,7 +111,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     p.add_argument('--pack', type=Path, required=True)
     p.add_argument('--model', type=Path, required=True)
-    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES])
+    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | {'raw_struck'}])
     p.add_argument('--backend', choices=('vllm', 'hf'), default='vllm')
     p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
     p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')

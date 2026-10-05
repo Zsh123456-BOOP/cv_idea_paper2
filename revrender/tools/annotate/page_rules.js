@@ -1,19 +1,12 @@
-// The rules of the revision annotation page that do not touch the screen: the strokes of a question, how they are joined and grouped
-// into revisions, and the region of writing each revision voids.  page_editor.html inlines this file; tests/test_page_editor.py runs it
-// with node.
+// The rules of the revision annotation page that do not touch the screen.  page_editor.html inlines this file; tests/test_page_editor.py
+// runs it with node.
 //
-// A question's state is {strokes, groups, next}:
-//   stroke  {id, kind: "line" | "blot", path: [[x, y], ...]}    a struck line is a polyline drawn along the stroke (it stops where the
-//           stroke crosses writing and starts again after it); a blackout is a polygon round the blackened ink
-//   group   {id, strokes: [stroke ids], region: [[x, y], ...] | null, region_auto: true | false}
-//           one revision: the strokes that together void some writing, and the region of that writing (computed from the ink the
-//           strokes touch until the annotator moves it, then kept)
-// Every stroke is in exactly one group.
+// A question's state is {revisions, next}:
+//   revision {id, kind: "line" | "blot", region: [[x, y], ...], text, unreadable}
+//            one place where writing was voided: the region of that writing (a polygon, four corners to start with), whether it was
+//            struck through or blacked out, and what the voided writing says (? for a character that cannot be read; unreadable when
+//            none of it can, the text then kept but not counted)
 "use strict";
-
-const LINE_REACH = 2.5;     // ink this close to a struck line's path is where the stroke is
-const WINDOW_X = 14, WINDOW_Y = 28;   // the ink a revision voids is looked for this far round its strokes (pixels)
-const MARGIN = 3;           // a computed region is this much larger than the ink it holds
 
 function distanceToSegment(p, a, b) {
   const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy;
@@ -44,116 +37,67 @@ function bounds(points) {
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
-function joinPaths(a, b) {
-  // One polyline from two: the pair of ends that lie closest is joined, so the line reads in order (paper 1's editor, key C).
-  const d = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
-  const ra = a.slice().reverse(), rb = b.slice().reverse();
-  const options = [[a.concat(b), d(a[a.length - 1], b[0])], [a.concat(rb), d(a[a.length - 1], b[b.length - 1])],
-                   [ra.concat(b), d(a[0], b[0])], [b.concat(a), d(b[b.length - 1], a[0])]];
-  options.sort((x, y) => x[1] - y[1]);
-  return options[0][0].map(p => [p[0], p[1]]);
+function polygonArea(points) {
+  let twice = 0;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) twice += (points[j][0] + points[i][0]) * (points[j][1] - points[i][1]);
+  return Math.abs(twice) / 2;
 }
 
-function autoRegion(strokes, ink, width, height) {
-  // The writing a revision voids: the ink its strokes lie on, grown through touching ink inside a window round the strokes, as a box.
-  // ink is a Uint8Array of width * height (1 = ink).  Null when the strokes touch no ink.
-  const all = strokes.flatMap(s => s.path);
-  if (!all.length) return null;
-  const [l, t, r, b] = bounds(all);
-  const x0 = Math.max(0, Math.floor(l - WINDOW_X)), x1 = Math.min(width - 1, Math.ceil(r + WINDOW_X));
-  const y0 = Math.max(0, Math.floor(t - WINDOW_Y)), y1 = Math.min(height - 1, Math.ceil(b + WINDOW_Y));
-  const seen = new Uint8Array((x1 - x0 + 1) * (y1 - y0 + 1)), queue = [];
-  const at = (x, y) => (y - y0) * (x1 - x0 + 1) + (x - x0);
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    if (!ink[y * width + x]) continue;
-    const p = [x + .5, y + .5];
-    const on = strokes.some(s => s.kind === "blot" ? pointInPolygon(p, s.path) : distanceToPath(p, s.path, false) <= LINE_REACH);
-    if (on) { seen[at(x, y)] = 1; queue.push(x, y); }
-  }
-  if (!queue.length) return null;
-  let bl = Infinity, bt = Infinity, br = -Infinity, bb = -Infinity;
-  for (let k = 0; k < queue.length; k += 2) {
-    const x = queue[k], y = queue[k + 1];
-    bl = Math.min(bl, x); bt = Math.min(bt, y); br = Math.max(br, x); bb = Math.max(bb, y);
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      const nx = x + dx, ny = y + dy;
-      if (nx < x0 || nx > x1 || ny < y0 || ny > y1 || !ink[ny * width + nx] || seen[at(nx, ny)]) continue;
-      seen[at(nx, ny)] = 1; queue.push(nx, ny);
-    }
-  }
-  const L = Math.max(0, Math.min(bl, l) - MARGIN), T = Math.max(0, Math.min(bt, t) - MARGIN);
-  const R = Math.min(width, Math.max(br + 1, r) + MARGIN), B = Math.min(height, Math.max(bb + 1, b) + MARGIN);
-  return [[L, T], [R, T], [R, B], [L, B]].map(p => [Math.round(p[0]), Math.round(p[1])]);
-}
-
-// ---------- state changes (each returns nothing; it changes the state it is given) ----------
-function groupOf(state, strokeId) { return state.groups.find(g => g.strokes.includes(strokeId)); }
-function strokesOf(state, group) { return group.strokes.map(id => state.strokes.find(s => s.id === id)).filter(Boolean); }
-
-function addStroke(state, kind, path) {
-  // A new stroke in a new group of its own; returns the stroke.
+// ---------- state changes (each changes the state it is given) ----------
+function addRevision(state, kind, region) {
+  // A new revision after the others; returns it.  A blackout starts unreadable.
   state.next = (state.next || 0) + 1;
-  const stroke = { id: "s" + state.next, kind, path: path.map(p => [Math.round(p[0]), Math.round(p[1])]) };
-  state.strokes.push(stroke);
-  state.next += 1;
-  state.groups.push({ id: "g" + state.next, strokes: [stroke.id], region: null, region_auto: true });
-  return stroke;
+  const revision = { id: "r" + state.next, kind, region: region.map(p => [Math.round(p[0]), Math.round(p[1])]), text: "", unreadable: kind === "blot" };
+  state.revisions.push(revision);
+  return revision;
 }
 
-function dropEmpty(state) { state.groups = state.groups.filter(g => g.strokes.length); }
+function removeRevision(state, id) {
+  const before = state.revisions.length;
+  state.revisions = state.revisions.filter(r => r.id !== id);
+  return state.revisions.length !== before;
+}
 
-function join(state, a, b) {
-  // Two struck lines into one polyline (in a's group, which takes b's group's other strokes too).  False when either is a blackout.
-  const sa = state.strokes.find(s => s.id === a), sb = state.strokes.find(s => s.id === b);
-  if (!sa || !sb || sa.kind !== "line" || sb.kind !== "line" || a === b) return false;
-  sa.path = joinPaths(sa.path, sb.path);
-  const ga = groupOf(state, a), gb = groupOf(state, b);
-  state.strokes = state.strokes.filter(s => s.id !== b);
-  gb.strokes = gb.strokes.filter(id => id !== b);
-  if (gb !== ga) { ga.strokes.push(...gb.strokes); gb.strokes = []; ga.region_auto = ga.region_auto && gb.region_auto; }
-  dropEmpty(state);
+function setKind(state, id, kind) {
+  // A revision becomes struck through or blacked out; a blackout made from a struck line becomes unreadable unless it has text.
+  const r = state.revisions.find(r => r.id === id);
+  if (!r || r.kind === kind) return false;
+  r.kind = kind;
+  if (kind === "blot" && !r.text.trim()) r.unreadable = true;
   return true;
 }
 
-function group(state, ids) {
-  // The groups of the given strokes become one (the first stroke's), its region computed again.
-  const groups = [...new Set(ids.map(id => groupOf(state, id)).filter(Boolean))];
-  if (groups.length < 2) return false;
-  const [keep, ...rest] = groups;
-  for (const g of rest) { keep.strokes.push(...g.strokes); g.strokes = []; }
-  keep.region_auto = true;
-  dropEmpty(state);
-  return true;
-}
-
-function ungroup(state, ids) {
-  // Each given stroke leaves its group for a group of its own.
-  let changed = false;
-  for (const id of ids) {
-    const g = groupOf(state, id);
-    if (!g || g.strokes.length < 2) continue;
-    g.strokes = g.strokes.filter(s => s !== id);
-    state.next = (state.next || 0) + 1;
-    state.groups.push({ id: "g" + state.next, strokes: [id], region: null, region_auto: true });
-    changed = true;
+function revisionAt(state, p, tolerance) {
+  // The revision whose border passes within tolerance of p, else the smallest whose region holds p; null when none.
+  let border = null, borderD = Infinity, inside = null, insideA = Infinity;
+  for (const r of state.revisions) {
+    const d = distanceToPath(p, r.region, true);
+    if (d <= tolerance && d < borderD) { border = r; borderD = d; }
+    const a = polygonArea(r.region);
+    if (pointInPolygon(p, r.region) && a < insideA) { inside = r; insideA = a; }
   }
-  return changed;
+  return border || inside;
 }
 
-function remove(state, ids) {
-  state.strokes = state.strokes.filter(s => !ids.includes(s.id));
-  for (const g of state.groups) {
-    const before = g.strokes.length;
-    g.strokes = g.strokes.filter(id => !ids.includes(id));
-    if (g.strokes.length !== before && g.region_auto) g.region = null;
+// ---------- the text ----------
+function mathParts(text) {
+  // [{math, text}] of a text for rendering: what is between $ $ (or $$ $$) is a formula, the rest is words; a text without $ that holds
+  // a LaTeX command, ^ or _ is one formula.
+  const parts = [], re = /\$\$([\s\S]+?)\$\$|\$([^$]+?)\$/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push({ math: false, text: text.slice(last, m.index) });
+    parts.push({ math: true, text: m[1] !== undefined ? m[1] : m[2] });
+    last = re.lastIndex;
   }
-  dropEmpty(state);
+  if (last < text.length) parts.push({ math: false, text: text.slice(last) });
+  if (parts.length === 1 && !parts[0].math && !text.includes("$") && /\\[a-zA-Z]+|[\^_]/.test(text)) parts[0].math = true;
+  return parts.filter(p => p.text.trim());
 }
 
-function refreshRegions(state, ink, width, height) {
-  // Every group whose region is the computed one gets it computed again (null regions first of all).
-  for (const g of state.groups) if (g.region_auto || !g.region) { g.region = autoRegion(strokesOf(state, g), ink, width, height); if (!g.region) g.region_auto = true; }
-}
+// ---------- time ----------
+const IDLE = 60;            // seconds: a gap between two actions longer than this counts as this long (the annotator was away)
+function activeSeconds(gaps) { return gaps.reduce((sum, g) => sum + Math.min(Math.max(0, g), IDLE), 0); }
 
-if (typeof module !== "undefined") module.exports = { distanceToSegment, distanceToPath, pointInPolygon, bounds, joinPaths, autoRegion, groupOf, strokesOf,
-                                                      addStroke, join, group, ungroup, remove, refreshRegions };
+if (typeof module !== "undefined") module.exports = { distanceToSegment, distanceToPath, pointInPolygon, bounds, polygonArea, addRevision, removeRevision,
+                                                      setKind, revisionAt, mathParts, activeSeconds, IDLE };
