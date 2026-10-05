@@ -20,6 +20,7 @@ C1=GPU-d0bcc564-5bd9-b943-f995-8536415088e3; C2=GPU-56971197-483f-7ec4-a71a-4e09
 O=/home/zsh/hme/outputs; L=$O/paper2_annotation_labels; SPLITS=$O/paper2_splits
 VAL="$L/涂改标注_paper2-revision-boxes-val_2026-10-05-08-08.json"; TEST="$L/涂改标注_paper2-revision-boxes-test_2026-10-05-04-28.json"
 BANK=$O/paper2_strike_bank_strokes; PAPER1=/home/zsh/hme/work/revision_tune880_v1/control
+CATALOGUE=/home/zsh/hme/code_358_spatial_v1/gold/line_edit_all5002_policy_decisions_20260814_v1/canonical/exact_crops_46902.jsonl
 PAGES=(--pages /home/zsh/hme/data/unlabeled_v1/images --pages /home/zsh/hme/data/full1026_v1/images)
 IMAGES=(--images /home/zsh/hme/data/unlabeled_v1/images --images /home/zsh/hme/data/full1026_v1/images)
 OCR=(--ocr-text /home/zsh/hme/annot_v1/ulocr_dedup.jsonl)
@@ -32,7 +33,7 @@ gpu() { bash "$ROOT/scripts/launch_gpu_job.sh" "$@"; }
 
 stamp "0. pages without detections"
 "$PY" -m revrender.data.gan_sets --detections $O/paper2_pages_unlabeled3976_complete_tight_connected "${PAGES[@]}" --mapping $SPLITS/index_manifest.json \
-    --same-student $SPLITS/same_student_pairs.json --missing "${OUT}_missing.txt"
+    --same-student $SPLITS/same_student_pairs.json --catalogue $CATALOGUE --missing "${OUT}_missing.txt"
 DETECTIONS=(--detections $O/paper2_pages_unlabeled3976_complete_tight_connected)
 if [ -s "${OUT}_missing.txt" ]; then
     gpu $C1 0 "${OUT}_detections" -- "$PY" -m revrender.pages --checkpoint $PAPER1/formal/best.pt --freeze $PAPER1/freeze.json "${PAGES[@]}" "${OCR[@]}" \
@@ -43,7 +44,7 @@ fi
 
 stamp "1. real and host lines"
 "$PY" -m revrender.data.gan_sets "${DETECTIONS[@]}" "${PAGES[@]}" --mapping $SPLITS/index_manifest.json --same-student $SPLITS/same_student_pairs.json \
-    --output-dir "${OUT}_sets"
+    --catalogue $CATALOGUE --output-dir "${OUT}_sets"
 
 stamp "2. the GAN"
 gpu $C1 0 "${OUT}_gan" -- "$PY" -m revrender.train_gan --sets "${OUT}_sets" --bank $BANK --max-hours "$GAN_HOURS" --output-dir "${OUT}_gan"
