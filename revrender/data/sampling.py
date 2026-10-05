@@ -61,12 +61,18 @@ def gold_instances(mask):
     return [(labels == index) for index in range(1, count + 1)]
 
 
-def prepare_batch(images, masks):
-    """Strips as an N x 1 x H x W float array in [-1, 1] and each line's gold components as a float block."""
+def numbered_instances(numbers):
+    """One instance per revision number of a labelled mask (0 none), the numbers a warp left on the strip."""
+    return [numbers == k for k in range(1, int(numbers.max())+1) if (numbers == k).any()]
+
+
+def prepare_batch(images, masks, labelled=None):
+    """Strips as an N x 1 x H x W float array in [-1, 1] and each line's gold components as a float block (a ``labelled`` line's
+    mask numbers its revisions: one instance per number)."""
     values = np.stack(images)[:, None].astype(np.float32)/127.5-1
     blocks = []
-    for mask in masks:
-        instances = gold_instances(mask.astype(np.float32)/255)
+    for mask, numbers in zip(masks, labelled or [False]*len(masks)):
+        instances = numbered_instances(mask) if numbers else gold_instances(mask.astype(np.float32)/255)
         blocks.append(np.stack([t.astype(np.float32) for t in instances]) if instances
                       else np.empty((0, *mask.shape), dtype=np.float32))
     return values, blocks
@@ -106,7 +112,7 @@ class BatchStream:
             masks.append(mask)
         if self.track:
             self.lines.append([r['line_id'] for r in rows])
-        return prepare_batch(images, masks), rows
+        return prepare_batch(images, masks, [bool(row.get('labelled')) for row in rows]), rows
 
     def _produce(self):
         try:

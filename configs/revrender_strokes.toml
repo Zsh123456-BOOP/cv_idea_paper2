@@ -1,0 +1,24 @@
+# RevRender on synthetic revisions (data.synthetic_set): the paper-1 recipe with one change, declared here.  The version is
+# chosen afterwards on the user's validation questions from the checkpoints every validation keeps (--keep-checkpoints), so
+# the run does not stop early on its synthetic validation writers.
+
+[model]
+variant = "control"
+
+[train]
+batch_size = 8
+negative_ratio = 1.0
+optimizer_steps = 28300
+warmup_steps = 500
+validation_interval = 500
+select_from_step = 14150
+early_validation_multiplier = 4
+learning_rate = 3e-4
+weight_decay = 1e-4
+grad_clip = 5.0
+clip_groups = ["find.mask_iou"]
+early_stop_patience = 0            # paper 1: 6; here never (see above)
+
+[stages]
+smoke = 4
+learning = 512

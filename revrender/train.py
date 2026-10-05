@@ -9,7 +9,10 @@
 The recipe is configs/revrender.toml.  The run draws batches of 4 revised + 4 clean lines from the bundle's training
 split (plus the corrected rows if given), validates every ``validation_interval`` steps (every 4 x until
 ``select_from_step``), keeps the best checkpoint by (F1@0.5, pixel IoU) from ``select_from_step`` on, and stops early
-after ``early_stop_patience`` validations in a row without a better one.  Output directories are create-only; the run
+after ``early_stop_patience`` validations in a row without a better one (0: never).  ``--synthetic`` trains on a synthetic
+set (``data.synthetic_set``) instead of a bundle, its own validation writers in place of the bundle's development split,
+one instance per revision; ``--mapping`` (paper 1's split mapping) then names the writers no row may come from.
+``--keep-checkpoints`` keeps the weights of every validation (step_<n>.pt), for a choice made later on other data.  Output directories are create-only; the run
 manifest records the recipe, seed, git commit and the hashes of the input files.  A formal run refuses to start unless
 the smoke run, its exact replay and the learning gate passed under the same profile (configuration + code commit).
 """
@@ -27,7 +30,9 @@ from pathlib import Path
 import numpy as np
 
 from .config import load_recipe
+from .data import synthetic_set
 from .data.bundle import excluded_writers, load_bundle, train_pools
+from .data.prior_annotations import writer_splits
 from .data.extra import extra_rows
 from .data.sampling import BatchStream
 from .eval.inloop import MASK_THRESHOLDS, evaluate, match_pairs
@@ -37,6 +42,11 @@ from .util import (ROOT, SEED, RefusedError, digest, git_state, input_hashes, ma
 
 STAGES = ('smoke', 'learning', 'formal')
 CANVAS = (96, 768)
+
+
+def grey(row):
+    """A row's grey strip: a bundle row holds three channels, a synthetic row one."""
+    return row['image'] if row['image'].ndim == 2 else row['image'][0]
 
 
 def learning_rows(rows):
@@ -108,7 +118,7 @@ def make_profile(torch, recipe, variant, args, configuration, determinism_descri
     """Everything that must be the same across a run's gate stages and its formal run."""
     from .models.backbone import RESNET50_SHA
     git = git_state()
-    profile = {'seed': SEED, 'variant': variant, 'dataset_sha256': args.bundle_sha,
+    profile = {'seed': SEED, 'variant': variant, 'dataset_sha256': args.bundle_sha or args.synthetic_sha,
                'extra_sha256': args.corrected_sha, 'pretrained_sha256': RESNET50_SHA,
                'configuration': configuration, 'recipe': recipe, 'git_commit': git['commit'],
                'torch': torch.__version__, 'cuda': torch.version.cuda, 'python': platform.python_version(),
@@ -129,8 +139,12 @@ def make_profile(torch, recipe, variant, args, configuration, determinism_descri
 def parse(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     p.add_argument('--stage', choices=STAGES, required=True)
-    p.add_argument('--bundle', type=Path, required=True)
-    p.add_argument('--bundle-sha', required=True)
+    p.add_argument('--bundle', type=Path)
+    p.add_argument('--bundle-sha')
+    p.add_argument('--synthetic', type=Path, help='a synthetic set (data.synthetic_set) to train on instead of a bundle')
+    p.add_argument('--synthetic-sha', help="the sha256 of the synthetic set's run_manifest.json")
+    p.add_argument('--mapping', type=Path, help="with --synthetic: paper 1's split mapping (index_manifest.json)")
+    p.add_argument('--keep-checkpoints', action='store_true', help='keep the weights of every validation as step_<n>.pt')
     p.add_argument('--corrected-bundle', type=Path, help='the user-corrected rows added to the training pools')
     p.add_argument('--corrected-sha')
     p.add_argument('--backbone-weights', type=Path, required=True, help='ImageNet R-50 .pkl (R-50-torchvision.pkl)')
@@ -142,6 +156,10 @@ def parse(argv=None):
                    help="default: the recipe's [model] variant")
     p.add_argument('--allow-dirty', action='store_true', help='run from an uncommitted tree (local development only)')
     a = p.parse_args(argv)
+    if (a.bundle is None) == (a.synthetic is None) or (a.bundle is None) != (a.bundle_sha is None) or (a.synthetic is None) != (a.synthetic_sha is None):
+        p.error('train on --bundle with --bundle-sha, or on --synthetic with --synthetic-sha')
+    if a.synthetic is not None and (a.mapping is None or a.corrected_bundle is not None):
+        p.error('--synthetic needs --mapping and takes no corrected rows')
     if (a.corrected_bundle is None) != (a.corrected_sha is None):
         p.error('--corrected-bundle and --corrected-sha go together')
     if a.stage == 'formal' and a.gate_root is None:
@@ -163,7 +181,7 @@ def run(args):
     variant = args.variant or recipe['model']['variant']
     train, stages = recipe['train'], recipe['stages']
     run_steps = {'smoke': stages['smoke'], 'learning': stages['learning'], 'formal': train['optimizer_steps']}[args.stage]
-    for path in (args.bundle, args.backbone_weights, args.output_dir, args.gate_root, args.replay_of, args.corrected_bundle):
+    for path in (args.bundle, args.synthetic, args.backbone_weights, args.output_dir, args.gate_root, args.replay_of, args.corrected_bundle):
         if path is not None:
             safe_path(path)
     require(not Path(args.output_dir).exists() and not Path(args.output_dir).is_symlink(),
@@ -190,12 +208,18 @@ def run(args):
                 and learn['passed'], 'replay and training-only learning gates required')
         expected = json.loads((Path(args.gate_root)/'smoke_a'/'trace.json').read_text())
 
-    bundle = load_bundle(args.bundle, args.bundle_sha)
-    excluded = excluded_writers(args.bundle)
     extra = extra_info = None
-    if args.corrected_bundle is not None:
-        extra, extra_info = extra_rows(args.corrected_bundle, args.corrected_sha, excluded)
-    data = train_pools(bundle, excluded, extra)
+    if args.synthetic is not None:
+        excluded = {w for w, split in writer_splits(args.mapping).items() if split in ('dev', 'test')}
+        data = synthetic_set.pools(args.synthetic, args.synthetic_sha, excluded)
+        train_rows = data['fit_positive']+data['fit_clean']
+    else:
+        bundle = load_bundle(args.bundle, args.bundle_sha)
+        excluded = excluded_writers(args.bundle)
+        if args.corrected_bundle is not None:
+            extra, extra_info = extra_rows(args.corrected_bundle, args.corrected_sha, excluded)
+        data = train_pools(bundle, excluded, extra)
+        train_rows = bundle['train']
     # Seeds, then the model: the draws of the build are part of the recipe (models/legacy_init.py).
     random.seed(SEED)
     np.random.seed(SEED)
@@ -209,7 +233,8 @@ def run(args):
                                   foreach=False, fused=False)
     clipper = Clipper(model, train['clip_groups'], train['grad_clip'])
     out = make_output_dir(args.output_dir)
-    inputs = input_hashes([args.bundle, args.backbone_weights] + ([args.corrected_bundle] if extra else []))
+    inputs = input_hashes([args.bundle or args.synthetic, args.backbone_weights] + ([args.corrected_bundle] if extra else [])
+                          + ([args.mapping] if args.synthetic else []))
     write_manifest(out, config=to_jsonable(args), inputs=inputs, profile=profile, stage=args.stage, arm=variant,
                    recipe=recipe, git_revision=state['commit'], command=[sys.executable, *sys.argv],
                    parameters=sum(p.numel() for p in model.parameters()), initial_part_sha256=initial,
@@ -218,8 +243,8 @@ def run(args):
                    cpu_affinity=sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else None,
                    numa_node=os.environ.get('HME_NUMA_NODE'), encoder_class=type(model.see.encoder).__name__)
     if args.stage == 'learning':
-        selected = learning_rows(bundle['train'])
-        dev = [{**r, 'image': r['image'][0]} for r in selected]
+        selected = learning_rows(train_rows)
+        dev = [{**r, 'image': grey(r)} for r in selected]
         fixed_images = torch.from_numpy(np.stack([r['image'] for r in dev])[:, None].astype(np.float32)/127.5-1).cuda()
         fixed_targets = [[torch.from_numpy(t.astype(np.float32)).cuda() for t in r['instances']] for r in selected]
         stream, positive_count = None, 4
@@ -291,6 +316,9 @@ def run(args):
             with (out/'curve.jsonl').open('a') as f:
                 f.write(json.dumps(curve[-1], allow_nan=False)+'\n')
             key = reading['instance']['0.50']['f1'], reading['pixel_iou']
+            if args.keep_checkpoints:
+                torch.save({'state_dict': {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
+                            'step': step, 'profile': profile}, out/f'step_{step}.pt')
             if (args.stage != 'formal' or step >= train['select_from_step']) and (best_key is None or key > best_key):
                 best_key, best_step, best_reading = key, step, reading
                 torch.save({'state_dict': {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},

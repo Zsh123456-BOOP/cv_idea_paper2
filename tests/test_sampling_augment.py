@@ -70,7 +70,7 @@ def test_balanced_batches_pick_the_same_lines_as_before():
 
 def test_the_producer_builds_the_same_batches_as_before(monkeypatch):
     positives, clean = rows()
-    monkeypatch.setattr(sampling, 'prepare_batch', lambda images, masks: (images, masks))
+    monkeypatch.setattr(sampling, 'prepare_batch', lambda images, masks, labelled=None: (images, masks))
     stream = sampling.BatchStream({'fit_positive': positives, 'fit_clean': clean}, random.Random(42), 6, 8, 1.)
     expected = GOLDEN['stream']
     same_images = 0

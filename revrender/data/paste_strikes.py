@@ -286,11 +286,21 @@ def removal(faint, plain, style):
     return faint & ~(np.asarray(Image.fromarray(plain).convert('L')) < WRITING_BELOW)
 
 
-def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0.):
+def numbered(labels, remove):
+    """The revisions' numbers on the image (0 none) with the new one's ``remove`` numbered next (where no earlier one is)."""
+    out = labels.copy()
+    out[remove & (out == 0)] = int(labels.max())+1
+    return out
+
+
+def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., labels=None):
     """One sample from a host line (array [h, w, 3] uint8) and donor lines of the same writer (arrays): a dict (image: PIL RGB, mask: bool
-    [h, w], boxes, kind, pasted, remove: bool [h, w], style).  ``kind`` is one of ``KINDS``; a ``paste`` or ``stack`` with no donor to take
-    writing from comes out ``clean`` (``kind`` says so).  ``bank`` and ``gold_share``: the real marks some strikes are drawn with."""
+    [h, w], boxes, kind, pasted, remove: bool [h, w], style, labels).  ``kind`` is one of ``KINDS``; a ``paste`` or ``stack`` with no donor to
+    take writing from comes out ``clean`` (``kind`` says so).  ``bank`` and ``gold_share``: the real marks some strikes are drawn with.
+    ``labels`` (uint8 [h, w]) numbers the revisions the host already has (a sample made from another one): they move with the host's
+    pixels, and the new revision's ``remove`` is numbered next in the sample's ``labels``."""
     host = np.asarray(host, np.uint8)
+    labels = np.zeros(host.shape[:2], np.uint8) if labels is None else np.asarray(labels, np.uint8)
     host_ink = ink_of(host)
     rows = ink_rows(host_ink)
     if kind == 'whole' and rows is not None:
@@ -299,8 +309,9 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0.):
                                  max(2., rng.uniform(*STROKE)*(rows[1]-rows[0])), 0, bank, host.shape[0])
         canvas = host.copy()
         mask = place(canvas, layer.round().astype(np.uint8), opacity >= MASK_ALPHA, 0, 0)
+        remove = removal(placed(canvas.shape, opacity >= REMOVE_ALPHA, 0, 0), host, style)
         return {'image': Image.fromarray(canvas), 'mask': mask, 'boxes': boxes_of(mask), 'kind': 'whole', 'pasted': 0,
-                'remove': removal(placed(canvas.shape, opacity >= REMOVE_ALPHA, 0, 0), host, style), 'style': style}
+                'remove': remove, 'style': style, 'labels': numbered(labels, remove)}
     if kind == 'paste' and rows is not None:
         spans = word_spans(host_ink, host.shape[0])
         cuts = [0, host.shape[1]]+[(a[1]+b[0])//2 for a, b in zip(spans, spans[1:])]
@@ -315,13 +326,16 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0.):
             top = (height-host.shape[0])//2
             canvas[top:top+host.shape[0], :cut] = host[:, :cut]
             canvas[top:top+host.shape[0], cut+core+2*pad:] = host[:, cut:]
+            moved = np.zeros((height, width), np.uint8)
+            moved[top:top+host.shape[0], :cut] = labels[:, :cut]
+            moved[top:top+host.shape[0], cut+core+2*pad:] = labels[:, cut:]
             top_piece = int(np.clip((height-piece.shape[0])//2+rng.uniform(-.1, .1)*host.shape[0], 0, height-piece.shape[0]))
             plain = canvas.copy()
             place(plain, plain_piece, opacity >= MASK_ALPHA, cut+pad-room, top_piece)
             mask = place(canvas, piece, opacity >= MASK_ALPHA, cut+pad-room, top_piece)
-            faint = placed(canvas.shape, opacity >= REMOVE_ALPHA, cut+pad-room, top_piece)
+            remove = removal(placed(canvas.shape, opacity >= REMOVE_ALPHA, cut+pad-room, top_piece), plain, used)
             return {'image': Image.fromarray(canvas), 'mask': mask, 'boxes': boxes_of(mask), 'kind': 'paste', 'pasted': 1,
-                    'remove': removal(faint, plain, used), 'style': used}
+                    'remove': remove, 'style': used, 'labels': numbered(moved, remove)}
     if kind == 'stack' and rows is not None:
         spans = word_spans(host_ink, host.shape[0])
         for donor in rng.sample(list(donors), len(donors)):
@@ -339,12 +353,14 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0.):
             canvas = np.full((height, width, 3), 255, np.uint8)
             top_host = piece.shape[0]-shared if above else 0
             canvas[top_host:top_host+host.shape[0], pad_left:pad_left+host.shape[1]] = host
+            moved = np.zeros((height, width), np.uint8)
+            moved[top_host:top_host+host.shape[0], pad_left:pad_left+host.shape[1]] = labels
             top_piece = 0 if above else host.shape[0]-shared
             plain = canvas.copy()
             place(plain, plain_piece, opacity >= MASK_ALPHA, left+pad_left, top_piece)
             mask = place(canvas, piece, opacity >= MASK_ALPHA, left+pad_left, top_piece)
-            faint = placed(canvas.shape, opacity >= REMOVE_ALPHA, left+pad_left, top_piece)
+            remove = removal(placed(canvas.shape, opacity >= REMOVE_ALPHA, left+pad_left, top_piece), plain, used)
             return {'image': Image.fromarray(canvas), 'mask': mask, 'boxes': boxes_of(mask), 'kind': 'stack', 'pasted': 1,
-                    'remove': removal(faint, plain, used), 'style': used}
+                    'remove': remove, 'style': used, 'labels': numbered(moved, remove)}
     return {'image': Image.fromarray(host), 'mask': np.zeros(host.shape[:2], bool), 'boxes': [], 'kind': 'clean', 'pasted': 0,
-            'remove': np.zeros(host.shape[:2], bool), 'style': None}
+            'remove': np.zeros(host.shape[:2], bool), 'style': None, 'labels': labels.copy()}

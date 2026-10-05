@@ -142,3 +142,17 @@ def test_removing_a_struck_line_keeps_the_writing_it_crosses_and_removing_a_blac
         assert S.ink_of(restored).sum() >= S.ink_of(host).sum()      # the host and the struck writing are still there
     clean = S.compose(host, [], random.Random(1), 'clean', bank=bank, gold_share=1.)
     assert not clean['remove'].any() and clean['style'] is None
+
+
+def test_a_second_revision_on_a_sample_moves_the_first_with_the_writing_and_is_numbered_next(tmp_path):
+    bank = fake_bank(tmp_path)
+    host = line([50, 60, 40])
+    for seed in range(8):
+        first = S.compose(host, [line([40, 30])], random.Random(seed), 'paste', bank=bank, gold_share=.5)
+        assert set(np.unique(first['labels'])) == {0, 1} and np.array_equal(first['labels'] == 1, first['remove'])
+        second = S.compose(np.asarray(first['image']), [line([30, 30])], random.Random(seed+100), 'stack' if seed % 2 else 'paste',
+                           bank=bank, gold_share=.5, labels=first['labels'])
+        labels = second['labels']
+        assert labels.shape == np.asarray(second['image']).shape[:2] and set(np.unique(labels)) == {0, 1, 2}
+        assert (labels == 1).sum() == first['remove'].sum()             # the first revision moved whole, nothing of it lost
+        assert ((labels == 2) <= second['remove']).all() and (labels == 2).any()
