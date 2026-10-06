@@ -26,14 +26,23 @@ def pack(args):
     selected=prefill['questions'][:args.first or None]
     require(selected and all(q['split']=='train' for q in selected),'this review pilot accepts training questions only')
     paths=pages_module.page_files(args.pages,[q['id'] for q in selected])
+    checkpoint=getattr(args,'checkpoint',None)
+    if checkpoint:
+        from ... import infer
+        from ...box_remover import read_boxes
+        model,_=infer.load_checkpoint(checkpoint)
     out=make_output_dir(args.output_dir);(out/'pages').mkdir()
     pages=[];rows=[]
     for qi,q in enumerate(selected):
         with Image.open(paths[q['id']]) as image:
             image.convert('RGB').save(out/'pages'/f'{qi}.png')
             grey=np.asarray(image.convert('L'))
-        record,instances=pages_module.read_output(args.masks,q['id'])
-        require(tuple(record['size'])==(grey.shape[1],grey.shape[0]),'prediction and scan size differ')
+        if checkpoint:
+            boxes=[crop_of(r['region'],(grey.shape[1],grey.shape[0])) for r in q['revisions'] if r['kind']=='line']
+            instances=read_boxes(model,{'mask_threshold':.4,'nms':.5,'score_threshold':0},grey,boxes,top=1) if boxes else []
+        else:
+            record,instances=pages_module.read_output(args.masks,q['id'])
+            require(tuple(record['size'])==(grey.shape[1],grey.shape[0]),'prediction and scan size differ')
         union=np.zeros(grey.shape,bool)
         for item in instances:
             l,t,r,b=item['box'];union[t:b,l:r]|=item['mask']
@@ -51,7 +60,7 @@ def pack(args):
     for name in ['pixel_editor.html','pixel_editor.js']:
         (out/('index.html' if name.endswith('.html') else name)).write_text((HERE/name).read_text())
     write_manifest(out,config=to_jsonable(args),inputs={str(p):digest(p) for p in
-                   [args.prefill/'prefill.json',args.masks/'run_manifest.json',HERE/'pixel_editor.html',HERE/'pixel_editor.js']},
+                   [args.prefill/'prefill.json',checkpoint or args.masks/'run_manifest.json',HERE/'pixel_editor.html',HERE/'pixel_editor.js']},
                    questions=len(pages),revisions=len(rows),human_labels=False)
     print(json.dumps({'questions':len(pages),'revisions':len(rows),'url':'http://127.0.0.1:8769/'}))
 
@@ -108,7 +117,8 @@ def serve(args):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__,allow_abbrev=False)
     sub=parser.add_subparsers(dest='command',required=True)
-    p=sub.add_parser('pack');p.add_argument('--prefill',type=Path,required=True);p.add_argument('--masks',type=Path,required=True)
+    p=sub.add_parser('pack');p.add_argument('--prefill',type=Path,required=True)
+    source=p.add_mutually_exclusive_group(required=True);source.add_argument('--masks',type=Path);source.add_argument('--checkpoint',type=Path)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--first',type=int,default=5)
     p.add_argument('--name',required=True);p.add_argument('--output-dir',type=Path,required=True)
     s=sub.add_parser('serve');s.add_argument('--pack',type=Path,required=True);s.add_argument('--checkpoint',type=Path,required=True)

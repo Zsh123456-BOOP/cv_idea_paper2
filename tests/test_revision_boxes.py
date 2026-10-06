@@ -1,11 +1,24 @@
 """A model's revisions read against the user's boxes: found, missed, removed outside every box, and what a reader holds of the struck text."""
 import json
+from argparse import Namespace
 
 import numpy as np
 from PIL import Image
 
 from revrender import pages as pages_module
 from revrender.eval import revision_boxes as R
+
+
+def test_exact_transcription_penalises_extra_characters_and_skips_unknown_labels(tmp_path):
+    pack=tmp_path/'pack';pack.mkdir()
+    (pack/'pack.json').write_text(json.dumps({'rows':[{'id':str(i),'model':'m','kind':'line','text':t}
+                                                   for i,t in enumerate(['abc','abc','a?c'])]}))
+    readings=tmp_path/'pred.jsonl'
+    readings.write_text('\n'.join(json.dumps({'id':str(i),'condition':'erased_neutral','text':t})
+                                  for i,t in enumerate(['abcd','abc','abc'])))
+    R.read(Namespace(pack=pack,readings=readings,output=tmp_path/'scores.json'))
+    result=json.loads((tmp_path/'scores.json').read_text())['held']['m/erased_neutral/line']
+    assert result['whole']==1 and result['exact']==.5 and result['exact_revisions']==2
 
 
 def test_found_missed_and_false_places_and_the_held_share(tmp_path):

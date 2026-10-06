@@ -175,7 +175,7 @@ def held(label, reading):
 
 def read(args):
     rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
-    shares = defaultdict(list)
+    shares, exact = defaultdict(list), defaultdict(list)
     for line in args.readings.read_text(encoding='utf-8').splitlines():
         reading = json.loads(line)
         row = rows.get(reading['id'])
@@ -183,10 +183,16 @@ def read(args):
             continue
         share = held(row['text'], reading['text'])
         if share is not None:
-            shares[(row.get('model', ''), reading['condition'], row['kind'])].append(share)
-            shares[(row.get('model', ''), reading['condition'], 'all')].append(share)
-    result = {f'{model}/{condition}/{kind}': {'revisions': len(v), 'held': float(np.mean(v)), 'whole': float(np.mean([s == 1 for s in v]))}
-              for (model, condition, kind), v in sorted(shares.items())}
+            for kind in (row['kind'], 'all'):
+                key = (row.get('model', ''), reading['condition'], kind)
+                shares[key].append(share)
+                # Legacy whole means all labelled characters survived, not exact transcription.
+                # Partially unreadable labels have no exact-match denominator.
+                if '?' not in prepare(row['text']):
+                    exact[key].append(prepare(row['text']) == prepare(reading['text']))
+    result = {f'{key[0]}/{key[1]}/{key[2]}': {'revisions': len(v), 'held': float(np.mean(v)),
+              'whole': float(np.mean([s == 1 for s in v])), 'exact': float(np.mean(exact[key])) if exact[key] else None,
+              'exact_revisions': len(exact[key])} for key, v in sorted(shares.items())}
     write_json(args.output, {'pack': str(args.pack), 'readings': str(args.readings), 'held': result})
     print(json.dumps(result, ensure_ascii=False))
     return 0
