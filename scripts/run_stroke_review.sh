@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Matched material pilot. prepare writes banks/sets; train runs both arms and validation.
-# Review the prepared sheets before starting training. No test question is used here.
+# Review the prepared sheets before training. Test mode only records held-out readouts.
 #   bash scripts/run_stroke_review.sh /home/zsh/hme/outputs/paper2_stroke_review prepare|train|read-val|test
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"

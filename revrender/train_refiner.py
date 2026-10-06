@@ -96,16 +96,19 @@ def validate(model, images, labels, indices, batch_size, device):
     import torch
     rng = np.random.default_rng(SEED)
     counts = np.zeros(5, np.float64)
+    loss_sum=0.
     model.eval()
     with torch.no_grad():
         for start in range(0,len(indices),batch_size):
             x,y = batch(images,labels,indices[start:start+batch_size],rng,device)
-            p = (model(x).sigmoid() >= .5) & (x[:,0:1] < .93)
+            logits=model(x)
+            loss_sum+=float(losses(logits,y,x))*len(x)
+            p = (logits.sigmoid() >= .5) & (x[:,0:1] < .93)
             truth = y.bool()
             prior = x[:,1:2] > .5
             counts += [int((p & truth).sum()), int(p.sum()), int(truth.sum()), int((prior != truth).sum()), int((p != truth).sum())]
     hit, predicted, gold, before, after = counts
-    return {'precision': hit/max(1,predicted), 'recall': hit/max(1,gold), 'f1': 2*hit/max(1,predicted+gold),
+    return {'loss':loss_sum/max(1,len(indices)), 'precision': hit/max(1,predicted), 'recall': hit/max(1,gold), 'f1': 2*hit/max(1,predicted+gold),
             'error_pixels_before': int(before), 'error_pixels_after': int(after), 'samples': len(indices)}
 
 
