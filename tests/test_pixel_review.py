@@ -8,7 +8,7 @@ from PIL import Image
 
 from revrender.data import pixel_masks as M
 from revrender.data.page_labels import merge_exports, stroke_pixels
-from revrender.tools.annotate.pixel_review import crop_request, pack
+from revrender.tools.annotate.pixel_review import crop_request, pack, refresh
 from revrender import pages
 
 
@@ -50,3 +50,31 @@ def test_pack_refuses_nontraining_questions_and_crop_is_bounded(tmp_path):
     q['split']='test';(pre/'prefill.json').write_text(json.dumps({'questions':[q]}))
     args.output_dir=tmp_path/'refused'
     with pytest.raises(RuntimeError):pack(args)
+
+
+def test_refresh_uses_clean_images_and_preserves_identity_and_native_coordinates(tmp_path):
+    old=tmp_path/'old';old.mkdir();clean=tmp_path/'clean';clean.mkdir()
+    grey=np.full((20,30),255,np.uint8);grey[7,9:16]=20
+    Image.fromarray(grey).save(clean/'p.png');(clean/'run_manifest.json').write_text('{}')
+    mask=np.zeros((8,12),bool);mask[2,2:9]=True;mask[5,10]=True
+    row={'id':'p#r1','page':0,'box':[7,5,19,13],'region':[[7,5],[19,5],[19,13],[7,13]],'runs':M.encode(mask)}
+    payload={'id':'kept-id','pages':[{'id':'p','size':[30,20],'image':'pages/0.png'}],'rows':[row]}
+    source=json.dumps(payload);(old/'pack.json').write_text(source)
+    args=Namespace(pack=old,clean_pages=clean,output_dir=tmp_path/'new')
+    refresh(args)
+    new=json.loads((args.output_dir/'pack.json').read_text())
+    assert new['id']=='kept-id' and new['rows'][0]['id']==row['id']
+    assert new['rows'][0]['box']==row['box'] and new['rows'][0]['region']==row['region']
+    assert new['image_revision'] and new['image_source']==str(clean)
+    assert np.array_equal(np.asarray(Image.open(args.output_dir/'pages/0.png').convert('L')),grey)
+    got=M.decode(new['rows'][0]['runs'],mask.shape)
+    assert got.sum()==7 and not got[5,10]
+    # Even a browser with stale pre-clean pixels cannot feed white noise to the refiner.
+    crop,filtered=crop_request(args.output_dir,new,row)
+    assert np.array_equal(got,filtered) and crop[5,10]==255
+    assert (old/'pack.json').read_text()==source
+    with pytest.raises(FileExistsError):refresh(args)
+    Image.new('L',(31,20),255).save(clean/'p.png')
+    args.output_dir=tmp_path/'bad'
+    with pytest.raises(RuntimeError,match='dimensions'):refresh(args)
+    assert not args.output_dir.exists()

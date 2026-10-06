@@ -19,6 +19,12 @@ from ...data.pixel_masks import encode, decode
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 HERE=Path(__file__).parent
+ASSETS = ('pixel_editor.html', 'pixel_editor.js', 'pixel_rules.js', 'pixel_overview.js', 'page_rules.js')
+
+
+def write_assets(out):
+    for name in ASSETS:
+        (out/('index.html' if name.endswith('.html') else name)).write_text((HERE/name).read_text())
 
 
 def pack(args):
@@ -57,12 +63,53 @@ def pack(args):
     require(rows,'no struck-line regions in the pilot')
     payload={'id':args.name,'schema':'paper2-pixel-review-pack-v1','pages':pages,'rows':rows}
     write_json(out/'pack.json',payload)
-    for name in ['pixel_editor.html','pixel_editor.js']:
-        (out/('index.html' if name.endswith('.html') else name)).write_text((HERE/name).read_text())
+    write_assets(out)
     write_manifest(out,config=to_jsonable(args),inputs={str(p):digest(p) for p in
-                   [args.prefill/'prefill.json',checkpoint or args.masks/'run_manifest.json',HERE/'pixel_editor.html',HERE/'pixel_editor.js']},
+                   [args.prefill/'prefill.json',checkpoint or args.masks/'run_manifest.json',*(HERE/n for n in ASSETS)]},
                    questions=len(pages),revisions=len(rows),human_labels=False)
     print(json.dumps({'questions':len(pages),'revisions':len(rows),'url':'http://127.0.0.1:8769/'}))
+
+
+def refresh(args):
+    """Keep row IDs and native coordinates while moving an existing pack onto cleaned scans.
+
+    The old pack remains intact. Keeping its ID lets the editor migrate browser
+    corrections (with a recoverable backup) instead of replacing them by predictions.
+    """
+    source = args.pack/'pack.json'
+    payload = json.loads(source.read_text())
+    clean_manifest = args.clean_pages/'run_manifest.json'
+    revision = digest(clean_manifest)[:16]
+    inputs = {str(p): digest(p) for p in [source, clean_manifest, *(HERE/n for n in ASSETS)]}
+    images = []
+    removed = 0
+    for pi, page in enumerate(payload['pages']):
+        path = args.clean_pages/(page['id']+'.png')
+        with Image.open(path) as image:
+            require(list(image.size) == page['size'], 'clean page dimensions changed')
+            grey = np.asarray(image.convert('L')).copy()
+        images.append(grey)
+        inputs[str(path)] = digest(path)
+        for row in payload['rows']:
+            if row['page'] != pi:
+                continue
+            l,t,r,b = row['box']
+            mask = decode(row['runs'], (b-t,r-l))
+            kept = mask & (grey[t:b,l:r] < 245)
+            removed += int((mask & ~kept).sum())
+            row['runs'] = encode(kept)
+        page['image'] = f'pages/{pi}.png'
+    out = make_output_dir(args.output_dir)
+    (out/'pages').mkdir()
+    for pi, grey in enumerate(images):
+        Image.fromarray(grey).convert('RGB').save(out/'pages'/f'{pi}.png')
+    payload['image_revision'] = revision
+    payload['image_source'] = str(args.clean_pages)
+    write_json(out/'pack.json', payload)
+    write_assets(out)
+    write_manifest(out, config=to_jsonable(args), inputs=inputs, questions=len(images),
+                   revisions=len(payload['rows']), removed_prefill_pixels=removed, human_labels=False)
+    print(json.dumps({'questions':len(images), 'revisions':len(payload['rows']), 'removed_prefill_pixels':removed}))
 
 
 def crop_request(root, payload, body):
@@ -73,7 +120,7 @@ def crop_request(root, payload, body):
     require(0<=l<r<=w and 0<=t<b<=h and (r-l)*(b-t)<=2000000,'crop outside page or too large')
     with Image.open(root/info['image']) as source:
         grey=np.asarray(source.convert('L').crop(tuple(box)))
-    return grey,decode(body['runs'],grey.shape)
+    return grey,decode(body['runs'],grey.shape) & (grey < 245)
 
 
 def serve(args):
@@ -121,10 +168,13 @@ def main(argv=None):
     source=p.add_mutually_exclusive_group(required=True);source.add_argument('--masks',type=Path);source.add_argument('--checkpoint',type=Path)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--first',type=int,default=5)
     p.add_argument('--name',required=True);p.add_argument('--output-dir',type=Path,required=True)
+    r=sub.add_parser('refresh',help='preserve pack identity and use existing cleaned pages, writing a new directory')
+    r.add_argument('--pack',type=Path,required=True);r.add_argument('--clean-pages',type=Path,required=True)
+    r.add_argument('--output-dir',type=Path,required=True)
     s=sub.add_parser('serve');s.add_argument('--pack',type=Path,required=True);s.add_argument('--checkpoint',type=Path,required=True)
     s.add_argument('--port',type=int,default=8769)
     args=parser.parse_args(argv)
-    return pack(args) if args.command=='pack' else serve(args)
+    return {'pack':pack, 'refresh':refresh, 'serve':serve}[args.command](args)
 
 
 if __name__=='__main__':

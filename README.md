@@ -297,6 +297,10 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 标注页：`python -m revrender.tools.annotate.pixel_review pack --prefill TRAIN_PREFILL --checkpoint BOX_CHECKPOINT --pages SCANS --first 5 --name PACK_ID --output-dir OUT`（也可用 `--masks BOX_PREDICTIONS` 读取已有预测），再用该入口 `serve --pack OUT --checkpoint REFINER_CHECKPOINT --port 8769`；服务仅绑定服务器回环地址，可通过 SSH 本地转发访问。逐处看原图红色掩膜和擦除结果，点击补漏/保护文字，或画笔橡皮精修；可撤销、导入导出、整题补漏框，记录活跃操作间隔和操作数。无预填区域的题也可点题目标题检查。点击模型只能修改点击附近，当前显式点击优先。导出 `paper2-pixel-review-v1`，继续由 `data.page_labels` 读回原分辨率像素；未确认预测不能进入人工金标。首批 `paper2_pixel_train_review` 是 5 道训练题、20 个预填划线区域，起点为旧框内模型 step 8000，纠错用新 refiner step 3000；本机备份在 `work/pixel_review_train/`。界面验收用的 `paper2_pixel_qa` 数据不作为人工训练标签。
 
+2026-10-07 按用户要求改为默认完整答题图，直接点击涂改区域进入局部精修。区域调整复用原 `page_rules.js` 的多边形命中规则：拖顶点改形状、拖边中点加顶点、Alt 点顶点删除，滚轮缩放、空格或右键拖动平移；空白处拖框补漏。“调整区域范围”可扩大裁图，掩膜按整页坐标搬入新裁图、不拉伸；撤销同时恢复范围和像素，导入导出保留修改后的顶点和裁图坐标。多边形表示作废内容范围，裁图四周仍保留 6 像素上下文，具体擦除由像素掩膜决定。
+
+旧 5 题页面误用了原扫描图；全部 5 题都有同尺寸的清洁版本。用 `pixel_review refresh --pack OLD --clean-pages /home/zsh/hme/outputs/paper2_pages_clean_unlabeled3976 --output-dir NEW` 创建新包，保留题目、区域和包 ID，换入清洁 PNG，预填掩膜与清洁图的墨迹（灰度 <245）相交；输入哈希写入 manifest，旧包不覆盖。服务、显示、画笔和点击纠错使用同一套清洁图。浏览器保持原地址及存储键，第一次迁移前在本机 localStorage 另存原标注，可“导出更新前备份”；已有人工像素按原坐标保留，只剔除清洁后变白的像素，受影响区域取消确认、要求复核。导出附带图像来源；后续读回、微调的 `--pages` 也应使用这套清洁图。
+
 收到真实复核后，可在上述 `train_refiner` 命令增加 `--init REFINER_CHECKPOINT --review-export EXPORT.json --selection SELECTION --pages SCANS --review-share .25`，并指定新的微调配方及输出目录。每批混入已完成训练题的真实裁块；误检被确认成“不是涂改”的区域作为全零负例。入口拒绝未确认区域、非训练题、第一篇验证/测试书写者，以及合成验证宿主书写者；默认数据路径不含任何界面验收导出。本轮尚未进行真人复核后的微调。
 
 ## 数据
