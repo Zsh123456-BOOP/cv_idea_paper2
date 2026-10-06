@@ -280,6 +280,10 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 首轮用 `scripts/run_stroke_review.sh OUT prepare` 生成两份材料，检查样图后执行同入口的 `train`。两臂使用相同语料、随机种子、初始化和训练预算，只改变素材渲染；每臂 4,000 步，配置在 `configs/revrender_strokes_review.toml`。验证集读数负责选择版本；OCR 字符保留率仅作辅助，最终省工效果必须由用户复核的操作数和用时衡量，不能由合成准确率推断。
 
+点击纠错单独训练：`python -m revrender.train_refiner --synthetic SET --mapping MAP --same-student PAIRS --recipe configs/stroke_refiner.toml --output-dir OUT`。小型条件分割网络输入原图、上一轮掩膜、补擦点和保护点；用合成目标模拟漏擦、误擦和纠错，只按独立合成验证书写者选择版本。合成上的纠错成绩不代表真实题准确率。
+
+标注页：`python -m revrender.tools.annotate.pixel_review pack --prefill TRAIN_PREFILL --masks BOX_PREDICTIONS --pages SCANS --first 5 --name PACK_ID --output-dir OUT`，再用该入口 `serve --pack OUT --checkpoint REFINER_CHECKPOINT --port 8769`；服务仅绑定服务器回环地址，可通过 SSH 本地转发访问。逐处看原图红色掩膜和擦除结果，点击补漏/保护文字，或画笔橡皮精修；可撤销、导入导出、整题补漏框，记录活跃操作间隔和操作数。点击模型只能修改点击附近，显式保护点优先。导出 `paper2-pixel-review-v1`，继续由 `data.page_labels` 读回原分辨率像素；未确认预测不能进入人工金标。
+
 ## 数据
 
 原始数据（`~/Desktop/cv_idea/未标注数据`、`标注好数据`）只读，用 `configs/paths.toml` 指过去，不复制。第一篇用的数据包在服务器上：

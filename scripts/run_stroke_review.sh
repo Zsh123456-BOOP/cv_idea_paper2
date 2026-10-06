@@ -4,7 +4,7 @@
 #   bash scripts/run_stroke_review.sh /home/zsh/hme/outputs/paper2_stroke_review prepare|train
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
-OUT="$1"; MODE="$2"
+OUT="$1"; MODE="$2"; DATA_PREFIX="${DATA_PREFIX:-$OUT}"
 O=/home/zsh/hme/outputs
 PAGES=(--pages /home/zsh/hme/data/unlabeled_v1/images --pages /home/zsh/hme/data/full1026_v1/images)
 MAP="$O/paper2_splits/index_manifest.json"; PAIRS="$O/paper2_splits/same_student_pairs.json"
@@ -25,13 +25,13 @@ if [ "$MODE" = prepare ]; then
     exit 0
 fi
 test "$MODE" = train
-test -f "${OUT}.prepare.COMPLETE"
+test -f "${DATA_PREFIX}.prepare.COMPLETE"
 arm() {
     local name="$1" card="$2" numa="$3" sha
-    sha=$(sha256sum "${OUT}_set_$name/run_manifest.json" | cut -d' ' -f1)
+    sha=$(sha256sum "${DATA_PREFIX}_set_$name/run_manifest.json" | cut -d' ' -f1)
     SYNTHETIC=1 MAPPING="$MAP" SAME_STUDENT="$PAIRS" INIT="$O/paper2_strokes_boxes/formal/step_8000.pt" \
         RECIPE="$ROOT/configs/revrender_strokes_review.toml" bash "$ROOT/scripts/launch_train_arm.sh" \
-        control "$card" "$numa" "${OUT}_set_$name" "$sha" - - "${OUT}_$name" > "${OUT}_$name.log" 2>&1
+        control "$card" "$numa" "${DATA_PREFIX}_set_$name" "$sha" - - "${OUT}_$name" > "${OUT}_$name.log" 2>&1
 }
 C0=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0
 C2=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0

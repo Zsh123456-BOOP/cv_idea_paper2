@@ -29,6 +29,7 @@ from .. import pages as pages_module
 from ..eval.ink import INK_BELOW
 from ..tighten import non_white
 from ..util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
+from . import pixel_masks
 
 SCHEMA = 'paper2-revision-annotation-v1'
 MIN_WIDTH = 2.             # a struck line is taken at least this wide (pixels)
@@ -57,6 +58,8 @@ def stroke_width(path, ink, depth, size):
 def stroke_pixels(stroke, ink, soft, depth, size):
     """The pixels a stroke removes: a blackout's ink inside it (with the soft edge); a struck line's ink within half its width of the line,
     with the faint edge round that ink (never more of the writing it stopped at)."""
+    if 'pixel_mask' in stroke:
+        return pixel_masks.on_page(stroke['pixel_mask'], size)
     if stroke['kind'] == 'blot':
         return polygon_mask(stroke['path'], size) & soft
     core = line_mask(stroke['path'], size, stroke_width(stroke['path'], ink, depth, size)+1) & ink
@@ -70,8 +73,11 @@ def merge_exports(paths):
     pages = {}
     for path in paths:
         value = json.loads(Path(path).read_text(encoding='utf-8'))
-        require(value.get('schema') == SCHEMA, f'{path}: not an export of the revision annotation page')
-        pages.update(value['pages'])
+        require(value.get('schema') in (SCHEMA, pixel_masks.SCHEMA), f'{path}: not an export of the revision annotation page')
+        incoming=value['pages']
+        if value['schema']==pixel_masks.SCHEMA:
+            incoming={key:pixel_masks.geometry(state) for key,state in incoming.items()}
+        pages.update(incoming)
     return pages
 
 

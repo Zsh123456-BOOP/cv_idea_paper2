@@ -54,9 +54,9 @@ def grey(row):
 
 
 def learning_rows(rows):
-    """The fixed rows of the learning gate: 2 single-revision, 2 multi-revision and 4 clean training lines."""
-    single = [r for r in rows if len(r['instances']) == 1][:2]
-    multi = [r for r in rows if len(r['instances']) >= 2][:2]
+    """2 single-source, 2 multi-source and 4 clean rows; union masks retain their source count."""
+    single = [r for r in rows if r.get('source_instances',len(r['instances'])) == 1][:2]
+    multi = [r for r in rows if r.get('source_instances',len(r['instances'])) >= 2][:2]
     clean = [r for r in rows if len(r['instances']) == 0][:4]
     require(list(map(len, (single, multi, clean))) == [2, 2, 4], 'missing TRAIN learning strata')
     return single+multi+clean
@@ -387,7 +387,7 @@ def run(args):
                 _, found = match_pairs(iou, keep)
                 tp += len(found)
                 fp += len(keep)-len(found)
-                multi_tp += len(found) if len(gold) >= 2 else 0
+                multi_tp += len(found) if selected[row].get('source_instances',len(gold)) >= 2 else 0
                 clean_fired += int(len(keep) > 0) if not len(gold) else 0
             initial_loss, final_loss = float(np.mean(losses[:16])), float(np.mean(losses[-16:]))
             gold_total = sum(map(len, truths))

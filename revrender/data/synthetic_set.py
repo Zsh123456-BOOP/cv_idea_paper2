@@ -205,6 +205,7 @@ def pools(path, expected_sha, excluded):
         pool = ('fit' if record['split'] == 'train' else 'validation')+('_positive' if len(instances) else '_clean')
         data[pool].append({'sample_id': record['id'], 'line_id': record['id'], 'group_uuid': record['group_uuid'], 'split': record['split'],
                            'legacy_split': pool, 'is_positive': bool(len(instances)), 'image': np.asarray(images[i]), 'mask': numbers,
+                           'source_instances': record.get('source_instances',len(instances)),
                            'labelled': True, 'instances': instances, 'line_skeleton': np.zeros(CANVAS, np.uint8)})
     train = {r['group_uuid'] for p in ('fit_positive', 'fit_clean') for r in data[p]}
     held = {r['group_uuid'] for p in ('validation_positive', 'validation_clean') for r in data[p]}

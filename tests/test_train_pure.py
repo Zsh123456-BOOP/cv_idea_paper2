@@ -47,6 +47,15 @@ def test_learning_rows_take_two_single_two_multi_and_four_clean_lines():
         train.learning_rows(rows[:4])
 
 
+def test_union_learning_gate_still_covers_two_distinct_multistroke_crops():
+    rows=[{**row(1),'source_instances':n} for n in (1,1,2,3)]+[row(0) for _ in range(4)]
+    picked=train.learning_rows(rows)
+    assert [r.get('source_instances',0) for r in picked[:4]]==[1,1,2,3]
+    assert sum(len(r['instances']) for r in picked)==4
+    assert train.learning_gate(100,50,4,0,4,2,0)
+    assert not train.learning_gate(100,50,3,0,4,1,0)
+
+
 def make_stage(path, profile, stage='smoke', steps=4, failed=False, exact_replay=True, passed=True):
     path.mkdir(parents=True)
     write_json(path/'run_manifest.json', {'profile': profile, 'frozen_test_touched': False})

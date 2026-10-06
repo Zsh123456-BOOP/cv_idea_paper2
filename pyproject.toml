@@ -41,7 +41,7 @@ rvr-annotate-page = "revrender.tools.annotate.single_file:main"
 include = ["revrender*"]
 
 [tool.setuptools.package-data]
-"revrender.tools.annotate" = ["*.html"]
+"revrender.tools.annotate" = ["*.html", "*.js"]
 "revrender.tools" = ["*.html"]
 
 [tool.pytest.ini_options]
