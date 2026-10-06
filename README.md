@@ -280,7 +280,20 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 首轮用 `scripts/run_stroke_review.sh OUT prepare` 生成两份材料，检查样图后执行同入口的 `train`。两臂使用相同语料、随机种子、初始化和训练预算，只改变素材渲染；每臂 4,000 步，配置在 `configs/revrender_strokes_review.toml`。素材边界会影响裁框：本轮抠图 / 重绘各 24,003 / 24,005 个框，共有 23,955 个样本 ID，其中 17,367 个原始裁框坐标相同；共有样本的宿主行、书写者与划分相同。训练完成后执行同入口的 `test`：先将验证集按字符保留率、框 F1、较早步数排序固定版本，再记录全部版本的测试结果及差距。OCR 字符保留率仅作辅助，最终省工效果必须由用户复核的操作数和用时衡量，不能由合成准确率推断。`read` 还报告规范化后严格转写匹配率 `exact`（不接受多输出字符，含 `?` 的标签不进入该分母）；历史 `whole` 只表示标签字符全部出现。
 
-点击纠错单独训练：`python -m revrender.train_refiner --synthetic SET --mapping MAP --same-student PAIRS --recipe configs/stroke_refiner.toml --output-dir OUT`。小型条件分割网络输入原图、上一轮掩膜、补擦点和保护点；用合成目标模拟漏擦、误擦和纠错。合成训练与验证的宿主书写者分开，划线素材库共用；合成验证只用于工具版本选择，不代表真实题准确率。首轮选择 step 3000。按页面的逐次点击、局部范围推理复核 96 个合成验证框：75 个误差下降、19 个不变、2 个上升，误差像素 95,468 → 69,220（减少 27.5%）；184 次点击在服务器 CPU 上计算中位 35 毫秒。此数不含网络与页面开销，真实题使用效果待用户复核。
+首轮完成（训练 `28930529`、评测 `61cd2b15`）：两臂均从原框内模型 step 8000 起步，按真实验证集 13 题的 41 个可读划线框选择 step 2000，选择文件先于测试生成。测试转写为 22 题中的 81 个可读划线框；像素为已有逐笔金标的 7 题，划线像素共 7,149。下表百分数不是人工省时比例。
+
+| 模型 | 验证字符保留率 | 测试字符保留率 | 测试严格匹配率 | 擦除像素中划线占比 | 划线像素召回 |
+|---|---:|---:|---:|---:|---:|
+| 原扫描图 | 48.1% | 49.5% | 8.6% | — | — |
+| 原框内模型 step 8000，本轮重新转写 | 60.4% | 53.6% | 11.1% | 55.2% | 56.8% |
+| 抠图素材，step 2000 | 53.6% | 47.1% | 6.2% | 45.6% | 58.6% |
+| 重绘素材，step 2000 | 56.5% | 57.4% | 12.3% | 54.1% | 58.5% |
+
+本轮重绘相对同预算抠图的字符保留率差为 +10.3 个百分点，按 18 位书写者成组配对自助抽样（10,000 次，种子 42）所得 95% 百分位区间为 [+3.7, +17.9]；相对原框内模型为 +3.8，区间 [-2.9, +10.0]，未作多重比较校正。单次试验支持重绘优于同预算抠图继续训练，尚不能证明稳定胜过原模型；裁框随素材变化，也是比较的一部分。原模型此次 OCR 重读是 53.6%，历史那次 54.1% 保留不改。两臂与各自测试最好版本的差距分别为 3.14、0 个百分点；所有测试结果仅记录，未据此换版本。标注页继续用原框内模型预填。
+
+合成验证各 1,251 框，`eval.validation_loss` 事后逐版本补记 eval 模式损失，不含训练专用去噪和采样 ROI 辅助项，因此不与训练批次的总损失直接比较。抠图 / 重绘选定版本的验证损失为 8.3194 / 6.9844，最终 step 4000 为 7.8742 / 6.4891；真实验证的选择不变。结果在服务器 `paper2_stroke_review_union_summary.json`、`_selected.json`、`_test_read/comparison_intervals.json` 和 `_loss_{pixels,traced}/summary.json`，本机小文件备份在 `work/stroke_review_results/`。首次验证 OCR 因 vLLM 不接受 UUID 设备编号失败，改用整数编号后从 `read-val` 续跑；旧失败记录保留，成功完成标记为 `paper2_stroke_review_union.test.COMPLETE`。
+
+点击纠错单独训练：`python -m revrender.train_refiner --synthetic SET --mapping MAP --same-student PAIRS --recipe configs/stroke_refiner.toml --output-dir OUT`。小型条件分割网络输入原图、上一轮掩膜、补擦点和保护点；用合成目标模拟漏擦、误擦和纠错。合成训练与验证的宿主书写者分开，划线素材库共用；合成验证只用于工具版本选择，不代表真实题准确率。首轮选择 step 3000；事后 CPU 补算其原合成验证损失为 0.1349（`paper2_click_refiner/validation_loss.json`），未据此重新选版本。按页面的逐次点击、局部范围推理复核 96 个合成验证框：75 个误差下降、19 个不变、2 个上升，误差像素 95,468 → 69,220（减少 27.5%）；184 次点击在服务器 CPU 上计算中位 35 毫秒。此数不含网络与页面开销，真实题使用效果待用户复核。
 
 标注页：`python -m revrender.tools.annotate.pixel_review pack --prefill TRAIN_PREFILL --checkpoint BOX_CHECKPOINT --pages SCANS --first 5 --name PACK_ID --output-dir OUT`（也可用 `--masks BOX_PREDICTIONS` 读取已有预测），再用该入口 `serve --pack OUT --checkpoint REFINER_CHECKPOINT --port 8769`；服务仅绑定服务器回环地址，可通过 SSH 本地转发访问。逐处看原图红色掩膜和擦除结果，点击补漏/保护文字，或画笔橡皮精修；可撤销、导入导出、整题补漏框，记录活跃操作间隔和操作数。无预填区域的题也可点题目标题检查。点击模型只能修改点击附近，当前显式点击优先。导出 `paper2-pixel-review-v1`，继续由 `data.page_labels` 读回原分辨率像素；未确认预测不能进入人工金标。首批 `paper2_pixel_train_review` 是 5 道训练题、20 个预填划线区域，起点为旧框内模型 step 8000，纠错用新 refiner step 3000；本机备份在 `work/pixel_review_train/`。界面验收用的 `paper2_pixel_qa` 数据不作为人工训练标签。
 
