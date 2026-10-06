@@ -76,6 +76,20 @@ def test_a_labelled_line_trains_one_instance_per_revision_however_many_pieces_it
     assert len(blocks[0]) == 2 and blocks[0][0].sum() == 160 and len(blocks[1]) == 3
 
 
+def test_union_preserves_all_erase_pixels_and_clean_crops(tmp_path):
+    scans, corpus, bank = write_inputs(tmp_path)
+    common = ['--corpus', str(corpus), '--bank', str(bank), '--pages', str(scans), '--copies', '2', '--over', '3',
+              '--second', '1', '--workers', '1', '--no-blots', '--crops']
+    T.main(common+['--output-dir', str(tmp_path/'instances')])
+    T.main(common+['--union', '--output-dir', str(tmp_path/'union')])
+    original, images, labels = T.read_set(tmp_path/'instances')
+    merged, same_images, union = T.read_set(tmp_path/'union')
+    assert np.array_equal(images, same_images)
+    assert np.array_equal(labels > 0, union > 0) and union.max() == 1
+    assert any(r['revisions'] > 1 for r in original)
+    assert all(r['revisions'] == int(union[i].any()) for i, r in enumerate(merged))
+
+
 def test_training_takes_a_bundle_or_a_synthetic_set_with_the_mapping():
     base = ['--stage', 'smoke', '--backbone-weights', 'w.pkl', '--output-dir', 'out']
     assert train.parse(base+['--synthetic', 's', '--synthetic-sha', 'x', '--mapping', 'm.json']).synthetic is not None

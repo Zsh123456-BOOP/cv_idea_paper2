@@ -272,6 +272,14 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 6. 在用户的框上读：每个存下的版本整页推理一遍 `bash scripts/sweep_checkpoints.sh GPU NUMA OUT/formal ids.txt SWEEP`（即 `python -m revrender.pages --checkpoint step_<n>.pt --point 0.4 0.5 0.1 …`（`--point` 直接给掩膜阈值、NMS、低的分数线，不必先冻结），再 `python -m revrender.eval.revision_boxes boxes --labels 导出.json --selection selection.json --split val --pages-output 上一步 --pages 扫描目录 … --output-dir OUT`：一处涂改算找到 = 框里墨迹被擦掉至少 5%（且至少 15 像素）；框（外扩 4 像素）外被擦掉的墨迹连成至少 30 像素的一块算一处误擦。每个分数线给找到率、准确率（找到 / (找到 + 误擦)）、F1 和框外墨迹被擦的比例，F1 最好的分数线在验证集上就是选定的、在测试集上只记录。`OUT/pack` 是写了字的每处（不含读不出）的框加 6 像素：原图和擦掉之后；服务器上 `recognize_lines --conditions raw_neutral erased_neutral` 读，`revision_boxes read --pack OUT/pack --readings predictions.jsonl --output read.json` 给读数保住被划掉的字的几成（按 `eval.coverage` 的最少编辑对齐，`?` 不算），划线和涂黑分开。
 7. 选版本（2026-10-05 定，看结果之前）：验证集上 Qwen3-VL-8B 读擦掉之后的框、保住被划掉的字的几成（可读的划线），最高的版本；同分看框的 F1。分数线用这个版本在验证集上 F1 最好的那条。测试集只在选定之后读一次，同时记下测试集上最好的版本和差距。
 
+## 精细标注工具试验（2026-10-06）
+
+目标是减少人工逐像素修订的时间；工具模型与论文最终方法分开。保留书写者划分，训练题的复核可用于后续微调，测试题的精细标注仅作评估。
+
+`strike_bank --render traced` 沿原金标带子的骨架重新渲染，只从扫描图估计笔宽和墨色，不复制交叉文字的像素；`--render pixels` 保留原来按中心线邻域抠图的方法作对照。这是合成图层，不声称从扫描图恢复了交叉处真实的墨迹层。`synthetic_set --crops --union` 将一个框内所有待擦笔画合成一个目标，与每框取一个掩膜的推理方式一致。
+
+首轮用 `scripts/run_stroke_review.sh OUT prepare` 生成两份材料，检查样图后执行同入口的 `train`。两臂使用相同语料、随机种子、初始化和训练预算，只改变素材渲染；每臂 4,000 步，配置在 `configs/revrender_strokes_review.toml`。验证集读数负责选择版本；OCR 字符保留率仅作辅助，最终省工效果必须由用户复核的操作数和用时衡量，不能由合成准确率推断。
+
 ## 数据
 
 原始数据（`~/Desktop/cv_idea/未标注数据`、`标注好数据`）只读，用 `configs/paths.toml` 指过去，不复制。第一篇用的数据包在服务器上：

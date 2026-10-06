@@ -9,6 +9,30 @@ from revrender import pages as pages_module
 from revrender.data import strike_bank as B
 
 
+def test_redrawing_a_trajectory_does_not_copy_a_crossing_letter():
+    centre = np.zeros((32, 100), bool)
+    centre[16, 10:90] = True
+    plain = np.full(centre.shape, 255, np.uint8)
+    plain[15:18, 10:90] = 50
+    crossed = plain.copy()
+    crossed[3:29, 45:49] = 10
+    a, ma = B.traced_pixels(plain, centre, 3.)
+    b, mb = B.traced_pixels(crossed, centre, 3.)
+    assert np.array_equal(a, b) and np.array_equal(ma, mb)
+    assert b[5, 46] == 255 and b[16, 46] == 50
+    assert ma[16, 10:90].all()
+
+
+def test_redrawing_keeps_a_real_cross_trajectory():
+    centre = np.zeros((30, 40), bool)
+    centre[15, 5:35] = True
+    centre[5:25, 20] = True
+    grey = np.where(centre, 60, 255).astype(np.uint8)
+    result, inside = B.traced_pixels(grey, centre, 2.)
+    assert inside[centre].all() and result[15, 20] == 60
+    assert not inside[2, 2]
+
+
 def test_a_mark_is_a_struck_line_when_thin_and_long_else_a_blackout():
     line = np.zeros((40, 200), bool)
     line[18:22, 10:190] = True

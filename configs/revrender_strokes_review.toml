@@ -1,0 +1,22 @@
+# Matched pilot: identical union targets, hosts, seed and initial checkpoint.
+# Only the bank renderer changes (scanned pixels / redrawn gold trajectories).
+[model]
+variant = "control"
+
+[train]
+batch_size = 8
+negative_ratio = 1.0
+optimizer_steps = 4000
+warmup_steps = 200
+validation_interval = 1000
+select_from_step = 1000
+early_validation_multiplier = 1
+learning_rate = 6e-5
+weight_decay = 1e-4
+grad_clip = 5.0
+clip_groups = ["find.mask_iou"]
+early_stop_patience = 0
+
+[stages]
+smoke = 4
+learning = 512

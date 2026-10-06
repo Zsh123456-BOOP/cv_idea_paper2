@@ -239,6 +239,7 @@ def main(argv=None):
     parser.add_argument('--second', type=float, default=.3, help='chance that a paste or stack gets a second revision')
     parser.add_argument('--no-blots', action='store_true', help='struck lines only: no blackouts, real or drawn')
     parser.add_argument('--crops', action='store_true', help='a crop round each revision (a clean line: round a few words) instead of the line')
+    parser.add_argument('--union', action='store_true', help='one binary erase target per crop, including all its strike strokes')
     parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -252,6 +253,10 @@ def main(argv=None):
              for w in sorted(by_writer)]
     with Pool(args.workers, initializer=_start, initargs=(args.bank,)) as pool:
         drawn = [s for chunk in pool.imap(_writer, tasks) for s in chunk]
+    if args.union:
+        require(args.crops, '--union is for a known revision box, not whole-line detection')
+        drawn = [(g, (n > 0).astype(np.uint8), {**r, 'source_instances': r['revisions'], 'revisions': int(n.any())})
+                 for g, n, r in drawn]
     out = make_output_dir(args.output_dir)
     np.save(out/'images.npy', np.stack([g for g, _, _ in drawn]))
     np.save(out/'labels.npy', np.stack([n for _, n, _ in drawn]))

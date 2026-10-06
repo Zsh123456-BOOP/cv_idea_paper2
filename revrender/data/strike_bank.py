@@ -83,7 +83,21 @@ def ends_of(centre):
     return int((centre & (neighbours == 1)).sum())
 
 
-def strike(grey, mask, line_height):
+def traced_pixels(grey, centre, width):
+    """Redraw the annotation's trajectory, without copying intersecting letter pixels.
+
+    Width and darkness are robust global measurements of the scanned stroke. The
+    geometry comes only from the annotation band, never the skeleton of the ink.
+    This deliberately does not claim to recover the true layer at intersections.
+    """
+    distance = ndimage.distance_transform_edt(~centre)
+    values = grey[centre & (grey < INK_BELOW)]
+    level = float(np.median(values)) if len(values) else 40.
+    opacity = np.clip(width/2+.5-distance, 0, 1)
+    return np.rint(255-(255-level)*opacity).astype(np.uint8), opacity > 0
+
+
+def strike(grey, mask, line_height, render='pixels'):
     """(grey piece, its pixels, measures with the piece's left and top in the window) of a struck line cut along the centre line of its
     gold band, or (None, None, measures with the reason it is left out)."""
     from skimage.morphology import skeletonize
@@ -102,10 +116,14 @@ def strike(grey, mask, line_height):
     inside = near & soft
     if reason or not inside.any():
         return None, None, {**measures, 'reason': reason or 'no ink'}
+    if render == 'traced':
+        rendered, inside = traced_pixels(grey, centre, width)
+    else:
+        rendered = np.where(inside, grey, 255).astype(np.uint8)
     ys, xs = np.nonzero(inside)
     y0, y1, x0, x1 = ys.min(), ys.max()+1, xs.min(), xs.max()+1
     inside = inside[y0:y1, x0:x1]
-    return np.where(inside, grey[y0:y1, x0:x1], 255).astype(np.uint8), inside, {**measures, 'at': (int(x0), int(y0))}
+    return rendered[y0:y1, x0:x1], inside, {**measures, 'at': (int(x0), int(y0))}
 
 
 def ink_level(piece, inside):
@@ -134,6 +152,8 @@ def main(argv=None):
     parser.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
     parser.add_argument('--mapping', type=Path, required=True, help="paper 1's split mapping (index_manifest.json)")
     parser.add_argument('--same-student', type=Path, required=True, help='json of students with two writer ids')
+    parser.add_argument('--render', choices=('pixels', 'traced'), default='pixels',
+                        help='copy scanned pixels, or redraw the gold trajectory without letter fragments')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
     allowed = training_writers(args.mapping, args.same_student)
@@ -154,7 +174,7 @@ def main(argv=None):
                 continue
             line = record['lines'][instance['line']]['box']
             (x0, y0) = made[2]
-            piece, inside, measures = strike(made[0], made[1], line[3]-line[1])
+            piece, inside, measures = strike(made[0], made[1], line[3]-line[1], args.render)
             if piece is None:
                 left_out.append({'image_id': image_id, 'instance': k, 'window': [x0, y0, x0+made[0].shape[1], y0+made[0].shape[0]], **measures})
                 left_windows.append(np.where(made[1], made[0], np.minimum(made[0], 235)).astype(np.uint8))
