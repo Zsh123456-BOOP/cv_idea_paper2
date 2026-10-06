@@ -96,6 +96,17 @@ def test_the_training_loss_has_every_term_and_backpropagates_to_every_part(model
     model.zero_grad()
 
 
+def test_evaluation_loss_does_not_require_training_only_roi_points(model):
+    image,targets=lines()
+    model.eval()
+    with torch.no_grad():
+        prediction,_,_=model(image,targets)
+        assert 'roi_points' not in model.cache
+        loss,pieces=losses.compute_loss(model,prediction,targets,point_supervision=False)
+    assert torch.isfinite(loss) and float(loss)>0
+    assert float(pieces['roi_point'])==0 and 'denoising' not in pieces
+
+
 def test_nodense_zeroes_the_per_pixel_term_and_nothing_else():
     torch.manual_seed(0)
     full, silent = build_model('control'), build_model('nodense')

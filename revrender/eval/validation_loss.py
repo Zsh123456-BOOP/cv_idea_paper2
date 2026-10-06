@@ -1,6 +1,6 @@
 """Evaluate saved remover checkpoints on their unaugmented synthetic validation set.
 
-This is eval-mode loss: training-only denoising is absent. The mean is weighted by
+This is eval-mode loss: training-only denoising and sampled ROI loss are absent. The mean is weighted by
 batch size, at a fixed batch size and seed for all checkpoints. It does not select
 the real-data checkpoint; revision_boxes supplies that reading separately.
 """
@@ -46,7 +46,7 @@ def main(argv=None):
                 targets=[[torch.from_numpy((labels[i]==k).astype(np.float32)).cuda()
                           for k in sorted(set(np.unique(labels[i]))-{0})] for i in ids]
                 rendered,_,_=model(x,targets)
-                loss,pieces=compute_loss(model,rendered,targets)
+                loss,pieces=compute_loss(model,rendered,targets,point_supervision=False)
                 require(bool(torch.isfinite(loss)),'nonfinite validation loss')
                 total+=float(loss)*len(ids)
                 for name,value in materialize(pieces).items():
@@ -54,7 +54,7 @@ def main(argv=None):
         readings[checkpoint.stem]={'loss':total/len(indices),'terms':{k:v/len(indices) for k,v in terms.items()}}
         print(json.dumps({'checkpoint':checkpoint.stem,'samples':len(indices),'loss':readings[checkpoint.stem]['loss']}),flush=True)
         del model
-    write_json(out/'summary.json',{'scope':'synthetic validation, eval mode without training-only denoising',
+    write_json(out/'summary.json',{'scope':'synthetic validation, eval mode without training-only denoising or sampled ROI loss',
                                   'samples':len(indices),'batch_size':args.batch_size,'seed':SEED,'checkpoints':readings})
     write_manifest(out,config=to_jsonable(args),inputs={str(p):digest(p) for p in [args.synthetic/'run_manifest.json',*checkpoints]})
     return 0

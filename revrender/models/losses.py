@@ -113,9 +113,10 @@ def stage_term(stage, targets, pairs):
     return mask_term + box_term + classification
 
 
-def compute_loss(model, rendered, targets):
+def compute_loss(model, rendered, targets, point_supervision=True):
     """(total, {term: detached tensor}) of one step.  ``rendered`` is the model's first output, ``targets`` the gold
-    components of every line as lists of float masks on the device."""
+    components of every line as lists of float masks on the device. Eval-mode
+    readouts omit the training-only sampled ROI term with point_supervision=False."""
     if any(len(t) > QUERIES for t in targets):
         raise ValueError('targets exceed query budget')
     cache, stored = {}, model.cache
@@ -139,14 +140,17 @@ def compute_loss(model, rendered, targets):
     dense = dice_bce(stored['dense'], union) if model.dense_supervision else stored['dense'].sum()*0
     total = total + dense
     pieces['dense'] = dense.detach()
-    coords, logits = stored['roi_points']
-    terms = []
-    for row, (q, g) in enumerate(pairs):
-        if len(g):
-            truth = torch.stack([targets[row][int(i)] for i in g])[:, None]
-            gold = ops.sample_points(truth, coords[row, q])[:, 0]
-            terms.append(F.binary_cross_entropy_with_logits(logits[row, q], gold, reduction='none').mean(1))
-    point = torch.cat(terms).mean() if terms else logits.sum()*0
+    if point_supervision:
+        coords, logits = stored['roi_points']
+        terms = []
+        for row, (q, g) in enumerate(pairs):
+            if len(g):
+                truth = torch.stack([targets[row][int(i)] for i in g])[:, None]
+                gold = ops.sample_points(truth, coords[row, q])[:, 0]
+                terms.append(F.binary_cross_entropy_with_logits(logits[row, q], gold, reduction='none').mean(1))
+        point = torch.cat(terms).mean() if terms else logits.sum()*0
+    else:
+        point = masks.sum()*0
     total = total + point
     pieces['roi_point'] = point.detach()
     truth = overlap_targets(stored['mask_iou_delivered'], targets)
