@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Matched material pilot. prepare writes banks/sets; train runs both arms and validation.
 # Review the prepared sheets before starting training. No test question is used here.
-#   bash scripts/run_stroke_review.sh /home/zsh/hme/outputs/paper2_stroke_review prepare|train|test
+#   bash scripts/run_stroke_review.sh /home/zsh/hme/outputs/paper2_stroke_review prepare|train|read-val|test
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 OUT="$1"; MODE="$2"; DATA_PREFIX="${DATA_PREFIX:-$OUT}"
+VAL_QWEN="${VAL_QWEN:-${OUT}_val_qwen}"
 O=/home/zsh/hme/outputs
 PAGES=(--pages /home/zsh/hme/data/unlabeled_v1/images --pages /home/zsh/hme/data/full1026_v1/images)
 MAP="$O/paper2_splits/index_manifest.json"; PAIRS="$O/paper2_splits/same_student_pairs.json"
@@ -13,8 +14,28 @@ export PYTHONPATH="$ROOT" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1
 trap 'echo "stroke review failed at line $LINENO"; touch "${OUT}.${MODE}.FAILED"' ERR
 C0=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0
 C2=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0
+read_pack() {
+    local pack="$1" output="$2" device
+    # This installed vLLM expects physical integer device IDs; keep locking by UUID.
+    device=$(nvidia-smi -i "$C2" --query-gpu=index --format=csv,noheader,nounits)
+    bash "$ROOT/scripts/launch_gpu_job.sh" "$C2" 1 "$output" -- env CUDA_VISIBLE_DEVICES="$device" \
+        "$PY" -m revrender.recognize_lines --pack "$pack" --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct \
+        --conditions erased_neutral --output-dir "$output"
+}
+read_validation() {
+    read_pack "${OUT}_val_read/pack" "$VAL_QWEN"
+    "$PY" -m revrender.eval.revision_boxes read --pack "${OUT}_val_read/pack" \
+        --readings "$VAL_QWEN/predictions.jsonl" --output "${OUT}_val_read/read_qwen8b.json"
+    touch "${OUT}.read-val.COMPLETE"
+}
+if [ "$MODE" = read-val ]; then
+    test -f "${OUT}_pixels/formal/complete.json" && test -f "${OUT}_traced/formal/complete.json"
+    test -f "${OUT}_val_read/run_manifest.json"
+    read_validation
+    exit 0
+fi
 if [ "$MODE" = test ]; then
-    test -f "${OUT}.train.COMPLETE"
+    test -f "${OUT}.train.COMPLETE" || test -f "${OUT}.read-val.COMPLETE"
     validation_losses() {
         for name in pixels traced; do
             bash "$ROOT/scripts/launch_gpu_job.sh" "$C0" 0 "${OUT}_loss_$name" -- "$PY" -m revrender.eval.validation_loss \
@@ -25,7 +46,7 @@ if [ "$MODE" = test ]; then
     # Freeze the validation choice before reading any test result. The legacy character
     # retention chooses the step; ties use box F1, then the earlier step. Exact is reported.
     "$PY" -m revrender.eval.revision_boxes read --pack "${OUT}_val_read/pack" \
-        --readings "${OUT}_val_qwen/predictions.jsonl" --output "${OUT}_val_read/read_strict.json"
+        --readings "$VAL_QWEN/predictions.jsonl" --output "${OUT}_val_read/read_strict.json"
     "$PY" - "$OUT" <<'PY'
 import json, sys
 from pathlib import Path
@@ -52,9 +73,7 @@ PY
     done
     "$PY" -m revrender.eval.revision_boxes boxes --labels "$LABELS" --selection "$O/paper2_annotation_labels/selection.json" \
         --split test "${MODELS[@]}" "${PAGES[@]}" --cuts 0.0 --cut-from "${OUT}_val_read/summary.json" --output-dir "${OUT}_test_read"
-    bash "$ROOT/scripts/launch_gpu_job.sh" "$C2" 1 "${OUT}_test_qwen" -- "$PY" -m revrender.recognize_lines \
-        --pack "${OUT}_test_read/pack" --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct --conditions erased_neutral \
-        --output-dir "${OUT}_test_qwen"
+    read_pack "${OUT}_test_read/pack" "${OUT}_test_qwen"
     "$PY" -m revrender.eval.revision_boxes read --pack "${OUT}_test_read/pack" \
         --readings "${OUT}_test_qwen/predictions.jsonl" --output "${OUT}_test_read/read_strict.json"
     "$PY" -m revrender.eval.revision_boxes pixels --geometry "$O/paper2_geometry_labels_test7" "${MODELS[@]}" "${PAGES[@]}" \
@@ -117,9 +136,5 @@ for arm in pixels traced; do
 done
 "$PY" -m revrender.eval.revision_boxes boxes --labels "$VAL" --selection "$O/paper2_annotation_labels/selection.json" \
     --split val "${MODELS[@]}" "${PAGES[@]}" --cuts 0.0 --output-dir "${OUT}_val_read"
-bash "$ROOT/scripts/launch_gpu_job.sh" "$C2" 1 "${OUT}_val_qwen" -- "$PY" -m revrender.recognize_lines \
-    --pack "${OUT}_val_read/pack" --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct --conditions erased_neutral \
-    --output-dir "${OUT}_val_qwen"
-"$PY" -m revrender.eval.revision_boxes read --pack "${OUT}_val_read/pack" \
-    --readings "${OUT}_val_qwen/predictions.jsonl" --output "${OUT}_val_read/read_qwen8b.json"
+read_validation
 touch "${OUT}.train.COMPLETE"
