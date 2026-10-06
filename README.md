@@ -301,6 +301,8 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 旧 5 题页面误用了原扫描图；全部 5 题都有同尺寸的清洁版本。用 `pixel_review refresh --pack OLD --clean-pages /home/zsh/hme/outputs/paper2_pages_clean_unlabeled3976 --output-dir NEW` 创建新包，保留题目、区域和包 ID，换入清洁 PNG，预填掩膜与清洁图的墨迹（灰度 <245）相交；输入哈希写入 manifest，旧包不覆盖。服务、显示、画笔和点击纠错使用同一套清洁图。浏览器保持原地址及存储键，第一次迁移前在本机 localStorage 另存原标注，可“导出更新前备份”；已有人工像素按原坐标保留，只剔除清洁后变白的像素，受影响区域取消确认、要求复核。导出附带图像来源；后续读回、微调的 `--pages` 也应使用这套清洁图。
 
+当前服务包为服务器 `paper2_pixel_train_review_clean20261007`（本机 `work/pixel_review_train_clean20261007/`），页面 / 服务源码 `4dbc123a`，仍用 8769 端口和原包 ID。5 张页面与既有清洁 PNG 逐像素一致；20 个原预填区域的掩膜无需删像素。20 项针对性回归检查通过，覆盖控制点增删、区域扩展保持原坐标、旧导出兼容、人工像素保留、清洁图换入与训练划分守卫；实际 CPU 服务已验证扩框后的纠错坐标、点击范围外不变及白像素禁止标记。
+
 收到真实复核后，可在上述 `train_refiner` 命令增加 `--init REFINER_CHECKPOINT --review-export EXPORT.json --selection SELECTION --pages SCANS --review-share .25`，并指定新的微调配方及输出目录。每批混入已完成训练题的真实裁块；误检被确认成“不是涂改”的区域作为全零负例。入口拒绝未确认区域、非训练题、第一篇验证/测试书写者，以及合成验证宿主书写者；默认数据路径不含任何界面验收导出。本轮尚未进行真人复核后的微调。
 
 ## 数据
