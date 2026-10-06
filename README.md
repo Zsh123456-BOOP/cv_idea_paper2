@@ -278,11 +278,13 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 `strike_bank --render traced` 沿原金标带子的骨架重新渲染，只从扫描图估计笔宽和墨色，不复制交叉文字的像素；`--render pixels` 保留原来按中心线邻域抠图的方法作对照。这是合成图层，不声称从扫描图恢复了交叉处真实的墨迹层。`synthetic_set --crops --union` 将一个框内所有待擦笔画合成一个目标，与每框取一个掩膜的推理方式一致。
 
-首轮用 `scripts/run_stroke_review.sh OUT prepare` 生成两份材料，检查样图后执行同入口的 `train`。两臂使用相同语料、随机种子、初始化和训练预算，只改变素材渲染；每臂 4,000 步，配置在 `configs/revrender_strokes_review.toml`。验证集读数负责选择版本；OCR 字符保留率仅作辅助，最终省工效果必须由用户复核的操作数和用时衡量，不能由合成准确率推断。
+首轮用 `scripts/run_stroke_review.sh OUT prepare` 生成两份材料，检查样图后执行同入口的 `train`。两臂使用相同语料、随机种子、初始化和训练预算，只改变素材渲染；每臂 4,000 步，配置在 `configs/revrender_strokes_review.toml`。素材边界会影响裁框：本轮抠图 / 重绘各 24,003 / 24,005 个框，共有 23,955 个样本 ID，其中 17,367 个原始裁框坐标相同；共有样本的宿主行、书写者与划分相同。训练完成后执行同入口的 `test`：先将验证集按字符保留率、框 F1、较早步数排序固定版本，再记录全部版本的测试结果及差距。OCR 字符保留率仅作辅助，最终省工效果必须由用户复核的操作数和用时衡量，不能由合成准确率推断。`read` 还报告规范化后严格转写匹配率 `exact`（不接受多输出字符，含 `?` 的标签不进入该分母）；历史 `whole` 只表示标签字符全部出现。
 
-点击纠错单独训练：`python -m revrender.train_refiner --synthetic SET --mapping MAP --same-student PAIRS --recipe configs/stroke_refiner.toml --output-dir OUT`。小型条件分割网络输入原图、上一轮掩膜、补擦点和保护点；用合成目标模拟漏擦、误擦和纠错，只按独立合成验证书写者选择版本。合成上的纠错成绩不代表真实题准确率。
+点击纠错单独训练：`python -m revrender.train_refiner --synthetic SET --mapping MAP --same-student PAIRS --recipe configs/stroke_refiner.toml --output-dir OUT`。小型条件分割网络输入原图、上一轮掩膜、补擦点和保护点；用合成目标模拟漏擦、误擦和纠错。合成训练与验证的宿主书写者分开，划线素材库共用；合成验证只用于工具版本选择，不代表真实题准确率。首轮选择 step 3000，真实题使用效果待用户复核。
 
-标注页：`python -m revrender.tools.annotate.pixel_review pack --prefill TRAIN_PREFILL --masks BOX_PREDICTIONS --pages SCANS --first 5 --name PACK_ID --output-dir OUT`，再用该入口 `serve --pack OUT --checkpoint REFINER_CHECKPOINT --port 8769`；服务仅绑定服务器回环地址，可通过 SSH 本地转发访问。逐处看原图红色掩膜和擦除结果，点击补漏/保护文字，或画笔橡皮精修；可撤销、导入导出、整题补漏框，记录活跃操作间隔和操作数。点击模型只能修改点击附近，显式保护点优先。导出 `paper2-pixel-review-v1`，继续由 `data.page_labels` 读回原分辨率像素；未确认预测不能进入人工金标。
+标注页：`python -m revrender.tools.annotate.pixel_review pack --prefill TRAIN_PREFILL --checkpoint BOX_CHECKPOINT --pages SCANS --first 5 --name PACK_ID --output-dir OUT`（也可用 `--masks BOX_PREDICTIONS` 读取已有预测），再用该入口 `serve --pack OUT --checkpoint REFINER_CHECKPOINT --port 8769`；服务仅绑定服务器回环地址，可通过 SSH 本地转发访问。逐处看原图红色掩膜和擦除结果，点击补漏/保护文字，或画笔橡皮精修；可撤销、导入导出、整题补漏框，记录活跃操作间隔和操作数。无预填区域的题也可点题目标题检查。点击模型只能修改点击附近，当前显式点击优先。导出 `paper2-pixel-review-v1`，继续由 `data.page_labels` 读回原分辨率像素；未确认预测不能进入人工金标。首批 `paper2_pixel_train_review` 是 5 道训练题、20 个预填划线区域，起点为旧框内模型 step 8000，纠错用新 refiner step 3000；本机备份在 `work/pixel_review_train/`。界面验收用的 `paper2_pixel_qa` 数据不作为人工训练标签。
+
+收到真实复核后，可在上述 `train_refiner` 命令增加 `--init REFINER_CHECKPOINT --review-export EXPORT.json --selection SELECTION --pages SCANS --review-share .25`，并指定新的微调配方及输出目录。每批混入已完成训练题的真实裁块；误检被确认成“不是涂改”的区域作为全零负例。入口拒绝未确认区域、非训练题、第一篇验证/测试书写者，以及合成验证宿主书写者；默认数据路径不含任何界面验收导出。本轮尚未进行真人复核后的微调。
 
 ## 数据
 
