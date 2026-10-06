@@ -15,6 +15,13 @@ C0=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0
 C2=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0
 if [ "$MODE" = test ]; then
     test -f "${OUT}.train.COMPLETE"
+    validation_losses() {
+        for name in pixels traced; do
+            bash "$ROOT/scripts/launch_gpu_job.sh" "$C0" 0 "${OUT}_loss_$name" -- "$PY" -m revrender.eval.validation_loss \
+                --synthetic "${DATA_PREFIX}_set_$name" --checkpoints "${OUT}_$name/formal" --output-dir "${OUT}_loss_$name"
+        done
+    }
+    validation_losses > "${OUT}_loss.log" 2>&1 & LOSS_JOB=$!
     # Freeze the validation choice before reading any test result. The legacy character
     # retention chooses the step; ties use box F1, then the earlier step. Exact is reported.
     "$PY" -m revrender.eval.revision_boxes read --pack "${OUT}_val_read/pack" \
@@ -70,6 +77,7 @@ with open(f'{out}_summary.json', 'x') as f:
     json.dump(summary, f, indent=2)
 print(json.dumps(summary, indent=2))
 PY
+    wait "$LOSS_JOB"
     touch "${OUT}.test.COMPLETE"
     exit 0
 fi
