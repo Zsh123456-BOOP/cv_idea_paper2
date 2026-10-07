@@ -330,6 +330,8 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 模型预填：`pixel_review prefill-regions --pack PACK --regions-export FRAMES_JSON --checkpoint CHOSEN_CHECKPOINT --output-dir PREFILLED`，然后 `standalone`。按用户多边形裁切，独立预测每处，保持区域 ID 与坐标；新包 ID 不覆盖框选草稿，所有预测待人工确认。拒绝覆盖已有像素标注。
 - 验证：`python -m revrender.eval.review_removal --dataset REVIEW_SET --baseline ORIGINAL_CHECKPOINT --checkpoints RUN/formal --output-dir EVAL`，比较独立原生验证区域的划线召回、擦除精确率、有效墨迹误擦率。固定原预填阈值和 top 1，报告自动残留清理前结果；F1 提高且精确率下降不超过 2 个百分点才替换原模型。测试集本轮不用于选择或调参。
 
+当前标注辅助模型（2026-10-07）：`/home/zsh/hme/outputs/paper2_pixel_finetune20261007/formal/step_800.pt`，由 `paper2_pixel_finetune_eval20261007/summary.json` 的原生验证结果选定。66 处确认中 50 处训练、16 处按书写者留作验证，具体数字见 RESULTS。后续框选入口为桌面 `划线区域框选.html`，源包 `work/pixel_region_selection20261007` / 服务器 `paper2_pixel_region_selection20261007`，30 道新题、初始空框；离线包 `work/pixel_region_selection_offline20261007`。用户导出约 80 个框后用此模型运行 `prefill-regions`，再生成精修单文件。验证对比页在 `work/pixel_finetune_eval20261007/验证对比.html`，两处真实多边形已完成预填集成检查。不同推理批量在阈值边缘出现 1 像素差异，已记入 `work/pixel_region_prefill_smoke20261007/verification.json`。
+
 ## 数据
 
 原始数据（`~/Desktop/cv_idea/未标注数据`、`标注好数据`）只读，用 `configs/paths.toml` 指过去，不复制。第一篇用的数据包在服务器上：
