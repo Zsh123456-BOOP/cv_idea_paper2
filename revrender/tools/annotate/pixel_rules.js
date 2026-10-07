@@ -53,14 +53,15 @@
     return {runs:encode(mask), removed};
   }
   function restoreRow(base, saved) {
-    return {runs:base.runs,box:base.box,region:base.region,confirmed:false,not_revision:false,ops:0,seconds:0,note:'',...saved};
+    return {runs:base.runs,box:base.box,region:base.region,confirmed:false,not_revision:false,deleted:false,ops:0,seconds:0,note:'',...saved};
   }
   function importData(pack, current, value) {
     if(value.schema!=='paper2-pixel-review-v1'||value.pack!==pack.id)throw Error('文件不属于这批题');
     const next=JSON.parse(JSON.stringify(current));const extra=new Map(next.extra.map(r=>[r.id,r]));const seen=new Set();
     for(const [id,page] of Object.entries(value.pages)) {
       const pi=pack.pages.findIndex(q=>q.id===id);if(pi<0)throw Error('题目不匹配');
-      for(const r of page.revisions) {
+      const records=[...(page.revisions||[]).map(r=>({...r,deleted:false})),...(page.deleted_revisions||[]).map(r=>({...r,deleted:true}))];
+      for(const r of records) {
         if(seen.has(r.id))throw Error('重复的区域编号');seen.add(r.id);
         const base=pack.rows.find(b=>b.id===r.id)||extra.get(r.id);
         if(base&&base.page!==pi)throw Error('区域与题目不匹配');
@@ -72,8 +73,16 @@
       next.done[pi]=!!page.done;next.pageSeconds[pi]=page.overview_seconds||0;
     }
     next.extra=[...extra.values()];
-    for(let pi=0;pi<pack.pages.length;pi++)if([...pack.rows,...next.extra].some(r=>r.page===pi&&!next.rows[r.id]?.confirmed))next.done[pi]=false;
+    for(let pi=0;pi<pack.pages.length;pi++)if([...pack.rows,...next.extra].some(r=>r.page===pi&&!next.rows[r.id]?.deleted&&!next.rows[r.id]?.confirmed))next.done[pi]=false;
     return next;
   }
-  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData};
+  function exportPages(pack, source) {
+    const pages={};pack.pages.forEach((p,pi)=>{
+      const selected=[...pack.rows,...source.extra].filter(r=>r.page===pi).map(r=>({...r,...restoreRow(r,source.rows[r.id]),page:pi}));
+      pages[p.id]={done:!!source.done[pi],overview_seconds:source.pageSeconds?.[pi]||0,
+        seconds:(source.pageSeconds?.[pi]||0)+selected.reduce((s,r)=>s+r.seconds,0),
+        revisions:selected.filter(r=>!r.deleted),deleted_revisions:selected.filter(r=>r.deleted)};
+    });return pages;
+  }
+  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages};
 });

@@ -301,7 +301,14 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 旧 5 题页面误用了原扫描图；全部 5 题都有同尺寸的清洁版本。用 `pixel_review refresh --pack OLD --clean-pages /home/zsh/hme/outputs/paper2_pages_clean_unlabeled3976 --output-dir NEW` 创建新包，保留题目、区域和包 ID，换入清洁 PNG，预填掩膜与清洁图的墨迹（灰度 <245）相交；输入哈希写入 manifest，旧包不覆盖。服务、显示、画笔和点击纠错使用同一套清洁图。浏览器保持原地址及存储键，第一次迁移前在本机 localStorage 另存原标注，可“导出更新前备份”；已有人工像素按原坐标保留，只剔除清洁后变白的像素，受影响区域取消确认、要求复核。导出附带图像来源；后续读回、微调的 `--pages` 也应使用这套清洁图。
 
-当前服务包为服务器 `paper2_pixel_train_review_clean20261007`（本机 `work/pixel_review_train_clean20261007/`），页面 / 服务源码 `4dbc123a`，仍用 8769 端口和原包 ID。5 张页面与既有清洁 PNG 逐像素一致；20 个原预填区域的掩膜无需删像素。20 项针对性回归检查通过，覆盖控制点增删、区域扩展保持原坐标、旧导出兼容、人工像素保留、清洁图换入与训练划分守卫；实际 CPU 服务已验证扩框后的纠错坐标、点击范围外不变及白像素禁止标记。
+之前的在线服务包为服务器 `paper2_pixel_train_review_clean20261007`（本机 `work/pixel_review_train_clean20261007/`），页面 / 服务源码 `4dbc123a`，仍用 8769 端口和原包 ID。5 张页面与既有清洁 PNG 逐像素一致；20 个原预填区域的掩膜无需删像素。20 项针对性回归检查通过，覆盖控制点增删、区域扩展保持原坐标、旧导出兼容、人工像素保留、清洁图换入与训练划分守卫；实际 CPU 服务已验证扩框后的纠错坐标、点击范围外不变及白像素禁止标记。
+
+离线复核使用同一套编辑器：`python -m revrender.tools.annotate.pixel_review standalone --pack CLEAN_PACK --review-export HUMAN_JSON --output-dir NEW`。输出 `标注.html` 包含全部 PNG、模型预填和导入的人工进度，双击直接打开，无需服务器；离线时使用画笔 / 橡皮，不运行点击纠错模型。上下两张大图同步拖拽、滚动和缩放，支持适合宽度、最高 64 倍放大；空格 / 右键拖动，Enter 确认。错误框可以删除、撤销，或从左侧“已删除”恢复。导出的删除记录在 `deleted_revisions`，不混入训练用的 `revisions`。
+
+每次修改自动存浏览器 localStorage（画笔中途也保存），状态栏提示成败。静态页不能无授权改写自身：“保存可续标副本”会下载含当前进度的完整 HTML；支持文件系统访问的浏览器还可手动绑定 JSON 备份文件，当前会话内逐次自动写入。换浏览器、换位置或清理浏览器数据前应保留续标副本或 JSON；重新打开时选择浏览器草稿与 HTML 内嵌草稿中较新的进度。
+
+离线包额外调用 `review_clean`，复用 `tighten.non_white` 的深色墨迹（<200）及相连两像素软边（<240），其余浅灰像素置白；不改变原生尺寸和深色像素，也不改变历史实验的清洁默认值。`images/<UUID>.png` 是后续微调所用的同源图像。原人工 JSON 原样备份在 `source_annotations.json`，清洁后标注在 `imported_annotations.json`；受影响的确认状态撤回并提示复核，人工形状、有效像素、备注和用时保留。2026-10-07 提供的部分标注含 22 区域、10 已确认、0 整题完成；清洁从标注中剔除 187 个变白像素，9 个已确认区域需复核。尚不启动微调。
+
 
 收到真实复核后，可在上述 `train_refiner` 命令增加 `--init REFINER_CHECKPOINT --review-export EXPORT.json --selection SELECTION --pages SCANS --review-share .25`，并指定新的微调配方及输出目录。每批混入已完成训练题的真实裁块；误检被确认成“不是涂改”的区域作为全零负例。入口拒绝未确认区域、非训练题、第一篇验证/测试书写者，以及合成验证宿主书写者；默认数据路径不含任何界面验收导出。本轮尚未进行真人复核后的微调。
 

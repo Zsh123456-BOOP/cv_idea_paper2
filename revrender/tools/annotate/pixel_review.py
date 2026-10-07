@@ -19,7 +19,7 @@ from ...data.pixel_masks import encode, decode
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 HERE=Path(__file__).parent
-ASSETS = ('pixel_editor.html', 'pixel_editor.js', 'pixel_rules.js', 'pixel_overview.js', 'page_rules.js')
+ASSETS = ('pixel_editor.html', 'pixel_editor.js', 'pixel_rules.js', 'pixel_overview.js', 'pixel_viewports.js', 'page_rules.js')
 
 
 def write_assets(out):
@@ -162,6 +162,7 @@ def serve(args):
 
 
 def main(argv=None):
+    from .pixel_offline import standalone
     parser=argparse.ArgumentParser(description=__doc__,allow_abbrev=False)
     sub=parser.add_subparsers(dest='command',required=True)
     p=sub.add_parser('pack');p.add_argument('--prefill',type=Path,required=True)
@@ -171,10 +172,13 @@ def main(argv=None):
     r=sub.add_parser('refresh',help='preserve pack identity and use existing cleaned pages, writing a new directory')
     r.add_argument('--pack',type=Path,required=True);r.add_argument('--clean-pages',type=Path,required=True)
     r.add_argument('--output-dir',type=Path,required=True)
+    o=sub.add_parser('standalone',help='clean scans and embed imported progress in one offline HTML')
+    o.add_argument('--pack',type=Path,required=True);o.add_argument('--review-export',type=Path,required=True)
+    o.add_argument('--output-dir',type=Path,required=True)
     s=sub.add_parser('serve');s.add_argument('--pack',type=Path,required=True);s.add_argument('--checkpoint',type=Path,required=True)
     s.add_argument('--port',type=int,default=8769)
     args=parser.parse_args(argv)
-    return {'pack':pack, 'refresh':refresh, 'serve':serve}[args.command](args)
+    return {'pack':pack, 'refresh':refresh, 'serve':serve, 'standalone':standalone}[args.command](args)
 
 
 if __name__=='__main__':

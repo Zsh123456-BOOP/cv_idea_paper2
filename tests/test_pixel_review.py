@@ -78,3 +78,33 @@ def test_refresh_uses_clean_images_and_preserves_identity_and_native_coordinates
     args.output_dir=tmp_path/'bad'
     with pytest.raises(RuntimeError,match='dimensions'):refresh(args)
     assert not args.output_dir.exists()
+
+
+def test_offline_pack_embeds_human_progress_and_preserves_original(tmp_path):
+    from revrender.tools.annotate.pixel_offline import standalone
+    old=tmp_path/'old';old.mkdir()
+    grey=np.full((20,30),255,np.uint8);grey[7,9:16]=20;grey[8,9:16]=225;grey[2,3]=225
+    Image.fromarray(grey).save(old/'p.png')
+    row={'id':'p#r1','page':0,'box':[0,0,30,20],'region':[[0,0],[30,0],[30,20],[0,20]],'runs':M.encode(grey<245)}
+    payload={'id':'fixture','pages':[{'id':'p','size':[30,20],'image':'p.png','question':'5'}],'rows':[row]}
+    (old/'pack.json').write_text(json.dumps(payload))
+    export={'schema':M.SCHEMA,'pack':'fixture','pages':{'p':{'done':False,'revisions':[
+        {**row,'confirmed':True,'note':'human </script> note','seconds':25},
+        {**row,'id':'p#manual','runs':[[219,3]],'confirmed':True,'note':'manual'}]}}}
+    source=tmp_path/'human.json';source.write_text(json.dumps(export))
+    args=Namespace(pack=old,review_export=source,output_dir=tmp_path/'offline')
+    standalone(args)
+    out=args.output_dir;html=(out/'标注.html').read_text()
+    assert '<script src=' not in html and 'data:image/png;base64,' in html
+    assert 'id="review-draft"' in html and '\\u003c/script>' in html
+    assert (out/'source_annotations.json').read_bytes()==source.read_bytes()
+    initial=json.loads((out/'imported_annotations.json').read_text())
+    r,manual=initial['pages']['p']['revisions']
+    assert not r['confirmed'] and r['cleaned_pixels']==1 and r['note']=='human </script> note'
+    assert manual['confirmed'] and manual['runs']==[[219,3]]
+    clean=np.asarray(Image.open(out/'images/p.png').convert('L'))
+    assert clean[2,3]==255 and (clean[grey<200]==grey[grey<200]).all()
+    assert (clean[8,9:16]==225).all() and clean.shape==grey.shape
+    assert initial['image_source']==str(out/'images') and initial['image_revision']
+    assert not initial['pages']['p']['done']
+    with pytest.raises(FileExistsError):standalone(args)

@@ -85,3 +85,89 @@ def test_whole_question_pointer_navigation_and_polygon_handles():
     assert result['changes'][0][2]==[60,40] and result['countAfterAdd']==5
     assert len(result['region']['region'])==4
     assert result['created']==[[[70,50],[90,50],[90,70],[70,70]]]
+
+
+def test_deleted_rows_roundtrip_separately_from_training_labels():
+    got=js('''
+      const base={id:'p#r',page:0,box:[0,0,10,10],region:[[0,0],[10,0],[10,10]],runs:[[2,3]]};
+      const pack={id:'x',pages:[{id:'p',size:[10,10]}],rows:[base]};
+      const state={rows:{'p#r':R.restoreRow(base,{confirmed:true,deleted:true,note:'keep',seconds:10})},extra:[],done:{0:true},pageSeconds:{}};
+      const pages=R.exportPages(pack,state);
+      const imported=R.importData(pack,{rows:{},extra:[],done:{},pageSeconds:{}},{schema:'paper2-pixel-review-v1',pack:'x',pages});
+      return {pages,imported};
+    ''')
+    assert got['pages']['p']['revisions']==[]
+    deleted=got['pages']['p']['deleted_revisions'][0]
+    assert deleted['runs']==[[2,3]] and deleted['note']=='keep'
+    assert got['imported']['rows']['p#r']['deleted']
+    assert got['imported']['done']['0']
+
+
+def test_synchronized_drag_zoom_and_fit():
+    path=RULES.with_name('pixel_viewports.js')
+    got=js('''
+      const Viewports=require(PATH);
+      function view(){return {scrollLeft:0,scrollTop:0,clientWidth:800,clientHeight:400,addEventListener(){},setPointerCapture(){}};}
+      const a=view(),b=view(),canvases=[{width:200,height:80,style:{}},{width:200,height:80,style:{}}];
+      const controller=new Viewports([a,b],canvases,()=>{});controller.fit();
+      const fit=controller.scale;controller.zoom(8);const same=canvases[0].style.width===canvases[1].style.width;
+      controller.down({clientX:500,clientY:200,pointerId:1,preventDefault(){}},b);
+      controller.move({clientX:450,clientY:180});controller.up();
+      const synchronized=a.scrollLeft===b.scrollLeft&&a.scrollTop===b.scrollTop;
+      const x=(a.scrollLeft+100)/controller.scale;controller.zoom(16,[100,100]);
+      return {fit,same,synchronized,anchored:x===(a.scrollLeft+100)/controller.scale};
+    '''.replace('PATH',json.dumps(str(path))))
+    assert got=={'fit':3.99,'same':True,'synchronized':True,'anchored':True}
+
+
+def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draft():
+    # Run the actual editor with deterministic DOM/storage adapters, without accessing a browser.
+    editor=RULES.with_name('pixel_editor.js')
+    viewport=RULES.with_name('pixel_viewports.js')
+    script=r'''
+      const fs=require('fs'),vm=require('vm'),Viewports=require(VIEWPORT);
+      const base={id:'p#r',page:0,box:[0,0,10,10],region:[[0,0],[10,0],[10,10]],runs:[[2,3]]};
+      const pack={id:'fixture',standalone:true,image_revision:'clean',pages:[{id:'p',question:1,size:[10,10],image:'data:image/png;base64,x'}],rows:[base]};
+      pack.initial_export={schema:'paper2-pixel-review-v1',pack:'fixture',pages:{p:{done:false,revisions:[{...base,confirmed:true,note:'my annotation'}]}}};
+      const disk=new Map(),nodes=new Map();
+      function node(id=''){
+        if(nodes.has(id))return nodes.get(id);
+        const n={id,style:{},dataset:{},value:2,children:[],clientWidth:800,clientHeight:400,scrollTop:0,scrollLeft:0,
+          classList:{toggle(){},add(){},remove(){}},append(x){this.children.push(x);},replaceChildren(){this.children=[];},addEventListener(){},setPointerCapture(){},
+          click(){this.onclick?.();},getBoundingClientRect:()=>({left:0,top:0,width:10,height:10}),
+          getContext:()=>({drawImage(){},putImageData(){},getImageData:(x,y,w,h)=>({width:w,height:h,data:new Uint8ClampedArray(w*h*4).fill(20)})})};
+        if(id)nodes.set(id,n);return n;
+      }
+      const buttons=['add','keep','paint','erase','pan'].map(mode=>{const n=node(mode);n.dataset.mode=mode;return n;});
+      node('review-pack').textContent=JSON.stringify(pack);node('review-draft').textContent='null';
+      const doc={visibilityState:'visible',getElementById:node,createElement:()=>node(),addEventListener(){},
+        querySelectorAll:q=>q==='[data-mode]'?buttons:buttons.slice(0,2),querySelector:()=>buttons[2]};
+      const ctx={document:doc,PixelReview:R,PixelViewports:Viewports,console,Uint8Array,Uint8ClampedArray,Map,Date,Math,JSON,Promise,setTimeout,clearTimeout,
+        localStorage:{getItem:k=>disk.get(k)||null,setItem:(k,v)=>disk.set(k,v)},
+        Image:class{async decode(){}},ImageData:class{constructor(data,width,height){Object.assign(this,{data,width,height});}},
+        PixelOverview:class{constructor(c,handlers){this.handlers=handlers;}setImage(im,id,editing){this.selected=id;this.editing=editing;}draw(){}current(){return null;}fit(){}select(id){this.selected=id;}},
+        fetch(){throw Error('Offline editor must not fetch');}};
+      ctx.window={addEventListener(){}};vm.createContext(ctx);
+      const code=fs.readFileSync(EDITOR,'utf8').replace(/start().catch[sS]*$/,'');vm.runInContext(code,ctx);
+      async function run(){
+        await vm.runInContext('start()',ctx);
+        const loaded=vm.runInContext('({count:rows.length,note:state().note,confirmed:state().confirmed,mode})',ctx);
+        await vm.runInContext('show(0)',ctx);
+        vm.runInContext("$('note').value='saved human note';$('note').oninput();",ctx);
+        const saved=[...disk.values()].map(JSON.parse).find(s=>s.rows?.['p#r']?.note==='saved human note');
+        vm.runInContext("deleteRegion('p#r')",ctx);await new Promise(r=>setTimeout(r,0));
+        const deleted=vm.runInContext('exported().pages.p',ctx);
+        await vm.runInContext('restore(history,future)',ctx);
+        const restored=vm.runInContext('({count:rows.length,note:state().note,runs:state().runs})',ctx);
+        node('review-draft').textContent=JSON.stringify(saved);disk.clear();await vm.runInContext('start()',ctx);
+        const reopened=vm.runInContext('state().note',ctx);
+        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened}));
+      }run().catch(e=>{console.error(e);process.exit(1);});
+    '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
+    command=f'const R=require({json.dumps(str(RULES))});'+script
+    got=json.loads(subprocess.check_output([NODE,'-e',command],text=True))
+    assert got['loaded']=={'count':1,'note':'my annotation','confirmed':True,'mode':'paint'}
+    assert got['saved'] and got['deleted']['revisions']==[]
+    assert got['deleted']['deleted_revisions'][0]['note']=='saved human note'
+    assert got['restored']=={'count':1,'note':'saved human note','runs':[[2,3]]}
+    assert got['reopened']=='saved human note'

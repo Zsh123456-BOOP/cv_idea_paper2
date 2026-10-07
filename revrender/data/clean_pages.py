@@ -157,6 +157,19 @@ def read_grey(path):
         return np.asarray(opened.convert('L'))
 
 
+def review_clean(grey):
+    """Whiten disconnected pale JPEG pixels using the existing connected-ink rule.
+
+    Apply to already frame-cleaned pages. Dark pixels stay byte-identical; only
+    pale pixels outside the stroke's connected soft edge change. This is opt-in,
+    so historical page-cleaning experiments keep their original preprocessing.
+    """
+    from ..tighten import non_white
+    page=np.array(grey,np.uint8)
+    page[~non_white(page)]=255
+    return page
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument('--pages', type=Path, action='append', required=True, help='a folder of <image_id>.jpg (repeatable)')
