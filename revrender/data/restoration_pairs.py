@@ -18,6 +18,7 @@ from .. import pages
 from ..tighten import non_white
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 from .clean_pages import review_clean
+from .handwriting import group_key
 from .lines import crop_box
 from .paste_strikes import Bank, gold_piece
 from .prior_annotations import twins, writer_splits
@@ -127,6 +128,7 @@ def build(args):
     other=twins(args.same_student);splits=writer_splits(args.mapping,args.same_student)
     recipes=[json.loads(s) for s in args.corpus.read_text().splitlines() if s.strip()]
     recipes=[r for r in recipes if r['kind']=='clean']
+    templates=dict(np.load(args.templates)); removed_print=0
     excluded={canonical(r['group_uuid'],other) for r in json.loads(args.human_validation.read_text())}
     hosts=[]
     for r in recipes:
@@ -151,6 +153,11 @@ def build(args):
             with Image.open(path) as im: opened[r['image_id']]=review_clean(np.asarray(im.convert('L')))
             host_inputs[str(path)]=digest(path)
         page=opened[r['image_id']];box=crop_box(r['box_1000'],page.shape[1],page.shape[0]);grey=page[box[1]:box[3],box[0]:box[2]]
+        template=templates.get(group_key(r['image_id'],(page.shape[1],page.shape[0])))
+        require(template is not None,'missing printed template for host')
+        printed=template[box[1]:box[3],box[0]:box[2]]
+        if ((grey<200)&printed).sum()/max(1,(grey<200).sum()) > .02:
+            removed_print+=1;continue
         for copy in range(args.copies):
             seed=int(hashlib.sha256(f'{SEED}:{r["line_id"]}:{copy}'.encode()).hexdigest()[:8],16)
             rng=random.Random(seed);result=host_canvas(grey,rng)
@@ -174,11 +181,11 @@ def build(args):
     samples=random.Random(SEED).sample([i for i,r in enumerate(records) if not r['clean'] and r['split']=='train'],min(12,len(records)))
     montage=np.concatenate([np.concatenate([targets[i],*[data[a][i] for a in ARMS]],axis=1) for i in samples],axis=0)
     Image.fromarray(montage).save(out/'comparison.png')
-    summary={'samples':len(records),'counts':dict(Counter(r['split'] for r in records)),'bank':bank_info,'training_writers':sorted(train),
+    summary={'samples':len(records),'printed_hosts_rejected':removed_print,'counts':dict(Counter(r['split'] for r in records)),'bank':bank_info,'training_writers':sorted(train),
              'validation_writers':sorted(val),'human_validation_excluded':sorted(excluded),'arms':list(ARMS),'target':'untouched clean host',
              'validation':'identical procedural strikes across arms; real human validation measured separately'}
     write_json(out/'summary.json',summary)
-    inputs={str(p):digest(p) for p in [args.corpus,args.mapping,args.same_student,args.human_validation,args.gold_bank/'run_manifest.json']}
+    inputs={str(p):digest(p) for p in [args.corpus,args.mapping,args.same_student,args.human_validation,args.templates,args.gold_bank/'run_manifest.json']}
     files_out={p.name:digest(p) for p in out.glob('*.npy')};files_out['records.json']=digest(out/'records.json')
     write_manifest(out,config=to_jsonable(args),inputs={**inputs,**host_inputs},files=files_out,**summary)
     print(json.dumps(summary),flush=True)
@@ -186,7 +193,7 @@ def build(args):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    for name in ('corpus','mapping','same-student','human-validation','gold-bank','detections','output-dir'):p.add_argument('--'+name,type=Path,required=True)
+    for name in ('corpus','mapping','same-student','human-validation','gold-bank','detections','templates','output-dir'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--copies',type=int,default=4);p.add_argument('--min-score',type=float,default=.8)
     build(p.parse_args(argv))
 

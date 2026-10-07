@@ -589,3 +589,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 ### 恢复 baseline 与预测素材配对（2026-10-07，进行中）
 
 用户授权 DocDiff、DE-GAN、NAFNet 在 4090 的 0、3 号卡上复现并适配本任务；允许 `ALLOW_GPU3=1`。先做相同预算的任务适配对照，不把它称为复现原论文所有数据集的指标。`data.restoration_pairs` 从原始干净宿主构造干净/受损对，不把预测擦除后的图当干净真值。三组为人工金标素材、预测掩膜与墨迹相交后筛选的素材、同批预测路径重绘素材；相同宿主、裁框、位置、随机种子。验证宿主书写者和已有人工微调验证书写者均不进入素材库，第一篇 dev/test 书写者不进入训练宿主或素材。合成验证采用各组相同的独立程序划线，仅作受控比较；真实场景需另用人工验证/测试读数。
+
+入口 `python -m revrender.baselines.restoration`，队列 `scripts/run_restoration_pilot.sh`。首轮每组 4,000 步 / batch 4 / 256×256；每 1,000 步在独立人工 16 区域上按固定亮度增量 >0.2 的擦除 F1 选版本，同时记录有效墨迹误擦、新增深色像素和固定 64 张合成验证图的 PSNR、改动区域 MAE、保留字迹 MAE。人工擦除标签并不提供被覆盖笔画的真值，这些读数不能证明隐藏文字恢复正确；还需选定模型后的转写评测。
+
+直接加载固定提交的官方源码，逐文件校验，源码清单在运行产物中。NAFNet：`megvii-research/NAFNet@2b4af71ebe098a92a75910c233a3965a3e93ede4`，官方 width32、encoder [1,1,1,28]、PSNR loss、AdamW 和梯度裁剪；DocDiff：`Royalvice/DocDiff@f422a3af10657eeabeca90f2e862d88c72725845`，32 通道双网络、100 步扩散、PRE_ORI、高低频损失，短预算用原始权重不做 EMA；DE-GAN：`dali92002/DE-GAN@7281836455608337c940fa0de67cceffbc5c026d`，官方 Keras 1024 瓶颈生成器和判别器，按发布代码 MSE 对抗项 +100 BCE 重建，两次 D 更新后一次 G 更新。DE-GAN 用独立 TensorFlow 2.16 环境和旧 Keras 兼容层，不改共享环境。数据构造用已有印刷模板排除印刷墨迹占比 >2% 的宿主行。
