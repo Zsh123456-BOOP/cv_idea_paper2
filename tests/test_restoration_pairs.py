@@ -21,3 +21,10 @@ def test_host_crop_and_placement_keep_native_aspect_and_intersect_ink():
     l,t,w,h=placement(canvas,random.Random(42))
     assert (canvas[t:t+h,l:l+w]<200).any()
     assert 0<=l<l+w<=SIZE and 0<=t<t+h<=SIZE
+
+
+def test_lighter_overlay_never_bleaches_existing_darker_writing():
+    clean=np.array([[0,40,255],[100,200,255]],np.uint8)
+    x,y=draw_pair(clean,np.full(clean.shape,.8,np.float32),80)
+    assert np.all(x<=clean) and np.array_equal(y,clean)
+    assert x[0,0]==0 and x[0,1]==40 and x[0,2]<255

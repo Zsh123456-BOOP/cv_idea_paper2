@@ -7,6 +7,8 @@ import argparse
 import hashlib
 import json
 import random
+import shutil
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -34,7 +36,7 @@ def canonical(writer, other):
 
 def draw_pair(clean, alpha, level):
     """Alpha compositing with the untouched clean host as ground truth, including crossings."""
-    x = np.rint(clean.astype(np.float32)*(1-alpha)+float(level)*alpha).clip(0,255).astype(np.uint8)
+    x = np.minimum(clean,np.rint(clean.astype(np.float32)*(1-alpha)+float(level)*alpha).clip(0,255).astype(np.uint8))
     return x, clean.copy()
 
 
@@ -195,7 +197,37 @@ def build(args):
     print(json.dumps(summary),flush=True)
 
 
+def darken_pairs(source,destination):
+    """Exactly repair the compositor without changing hosts, material or RNG draws."""
+    out=make_output_dir(destination);target=np.load(source/'targets.npy',mmap_mode='r')
+    inputs={str(source/p):digest(source/p) for p in ['run_manifest.json','records.json','targets.npy',*[a+'.npy' for a in ARMS]]}
+    source_manifest=json.loads((source/'run_manifest.json').read_text())
+    for name,value in source_manifest['files'].items():require(digest(source/name)==value,'source paired data changed')
+    shutil.copyfile(source/'targets.npy',out/'targets.npy');shutil.copyfile(source/'records.json',out/'records.json')
+    counts={}
+    for arm in ARMS:
+        before=np.load(source/(arm+'.npy'),mmap_mode='r')
+        after=np.lib.format.open_memmap(out/(arm+'.npy'),mode='w+',dtype=np.uint8,shape=before.shape)
+        repaired=0
+        for start in range(0,len(before),64):
+            x=before[start:start+64];y=target[start:start+64];repaired+=int((x>y).sum());after[start:start+64]=np.minimum(x,y)
+        after.flush();counts[arm]=repaired
+    records=json.loads((out/'records.json').read_text());ids=random.Random(SEED).sample([i for i,r in enumerate(records) if not r['clean'] and r['split']=='train'],12)
+    arrays=[np.load(out/(arm+'.npy'),mmap_mode='r') for arm in ARMS]
+    Image.fromarray(np.concatenate([np.concatenate([target[i],*[x[i] for x in arrays]],axis=1) for i in ids])).save(out/'comparison.png')
+    summary={**json.loads((source/'summary.json').read_text()),'compositing':'darken-only; original clean target preserved',
+             'source_pairs':str(source),'lightening_pixels_corrected':counts}
+    write_json(out/'summary.json',summary)
+    write_manifest(out,config={'source':str(source),'operation':'elementwise minimum(input, untouched target)'},inputs=inputs,
+                   files={p.name:digest(p) for p in out.glob('*.npy')},**summary)
+    print(json.dumps({'counts':summary['counts'],'corrected_pixels':counts}),flush=True)
+
+
 def main(argv=None):
+    argv=sys.argv[1:] if argv is None else argv
+    if argv[:1]==['darken']:
+        p=argparse.ArgumentParser();p.add_argument('--source',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True)
+        a=p.parse_args(argv[1:]);darken_pairs(a.source,a.output_dir);return
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('corpus','mapping','same-student','human-validation','gold-bank','detections','templates','output-dir'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--copies',type=int,default=4);p.add_argument('--min-score',type=float,default=.8)
