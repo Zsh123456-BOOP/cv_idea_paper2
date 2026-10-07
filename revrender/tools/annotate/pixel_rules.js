@@ -65,6 +65,18 @@
     }
     return {...state,region,box,runs:encode(active),outsideMask:{box:all,runs:encode(combined)}};
   }
+  function keepPixels(state){
+    const size=(state.box[2]-state.box[0])*(state.box[3]-state.box[1]);
+    return state.manualKeep?decode(remap(state.manualKeep.runs,state.manualKeep.box,state.box),size):new Uint8Array(size);
+  }
+  function saveKeep(state,active){
+    // Keep native coordinates outside a temporarily shrunken crop as well.
+    const old=state.manualKeep,box=old?[Math.min(old.box[0],state.box[0]),Math.min(old.box[1],state.box[1]),Math.max(old.box[2],state.box[2]),Math.max(old.box[3],state.box[3])]:state.box.slice();
+    const width=box[2]-box[0],size=width*(box[3]-box[1]),all=old?decode(remap(old.runs,old.box,box),size):new Uint8Array(size);
+    const [l,t,r,b]=state.box;
+    for(let y=t;y<b;y++)for(let x=l;x<r;x++)all[(y-box[1])*width+x-box[0]]=active[(y-t)*(r-l)+x-l];
+    state.manualKeep={box,runs:encode(all)};
+  }
   function whiteOutside(rgba,allowed){
     for(let i=0;i<allowed.length;i++)if(!allowed[i])for(let c=0;c<3;c++)rgba[i*4+c]=255;
     return rgba;
@@ -116,11 +128,12 @@
     const width=state.box[2]-state.box[0],mask=decode(state.runs,grey.length);
     const allowed=state.region?regionPixels(state.region,state.box):new Uint8Array(grey.length).fill(1),cleanGrey=grey.slice();
     for(let i=0;i<mask.length;i++)if(!allowed[i]){mask[i]=0;cleanGrey[i]=255;}
-    const candidate=residueCandidates(cleanGrey,mask,width,AUTO_CLEANUP);
-    for(let i=0;i<mask.length;i++)if(candidate.added[i]&&allowed[i])mask[i]=1;
+    const keep=keepPixels(state);for(let i=0;i<mask.length;i++)if(keep[i])mask[i]=0;
+    const candidate=residueCandidates(cleanGrey,mask,width,AUTO_CLEANUP);let added=0;
+    for(let i=0;i<mask.length;i++)if(candidate.added[i]&&allowed[i]&&!keep[i]){mask[i]=1;added++;}
     state.runs=encode(mask);state.autoCleanup=cleanupStamp(state);
-    state.autoCleanedPixels=(state.autoCleanedPixels||0)+candidate.total;
-    return candidate.total;
+    state.autoCleanedPixels=(state.autoCleanedPixels||0)+added;
+    return added;
   }
   function residueCandidates(grey, mask, width, options={}) {
     // Suggestions only: never mutate the human mask or the scan.
@@ -167,5 +180,5 @@
     }
     return {added,gray:countGray,dots:countDots,groups,total:countGray+countDots};
   }
-  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside};
+  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside,keepPixels,saveKeep};
 });

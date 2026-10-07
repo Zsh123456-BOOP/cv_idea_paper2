@@ -172,6 +172,12 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         vm.runInContext('remember();changed()',ctx);
         const applied=vm.runInContext('({runs:state().runs,confirmed:state().confirmed})',ctx);
         const automaticSaved=[...disk.values()].map(JSON.parse).some(s=>JSON.stringify(s.rows?.['p#r']?.runs)==='[[44,2]]');
+        vm.runInContext("remember();$('radius').value=0;drawing=true;dab(5,4,false);finishPaint();",ctx);
+        const erased=vm.runInContext('mask[45]===0&&R.keepPixels(state())[45]===1',ctx);
+        vm.runInContext('state().runs=[[44,2]];cleanActive();',ctx);
+        const protectedAgain=vm.runInContext('mask[45]===0',ctx);
+        await vm.runInContext('restore(history,future)',ctx);
+
         await vm.runInContext('restore(history,future)',ctx);
         const undone=vm.runInContext('JSON.stringify(state().runs)',ctx);
         const stamp=vm.runInContext('JSON.stringify(state().autoCleanup)===JSON.stringify(R.cleanupStamp(state()))',ctx);
@@ -181,11 +187,12 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         vm.runInContext('dab(8,8,true);changed()',ctx);
         const brushOutside=vm.runInContext('mask[88]',ctx);
 
-        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey}));
+        console.log(JSON.stringify({erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
     got=json.loads(subprocess.check_output([NODE,'-e',command],text=True))
+    assert got['erased'] and got['protectedAgain']
     assert got['loaded']=={'count':1,'note':'my annotation','confirmed':True,'mode':'paint'}
     assert got['saved'] and got['deleted']['revisions']==[]
     assert got['deleted']['deleted_revisions'][0]['note']=='saved human note'
@@ -273,3 +280,24 @@ def test_fit_whole_crop_respects_height_and_does_not_stretch():
       const v=new V(views,canvases,()=>{});v.fit();return {scale:v.scale,width:parseFloat(canvases[0].style.width),height:parseFloat(canvases[0].style.height)};
     '''.replace('PATH',json.dumps(str(path))))
     assert got['height']==298 and got['width']==pytest.approx(298/3)
+
+
+def test_manual_eraser_protection_survives_reload_crop_and_export():
+    got=js('''
+      const region=[[0,0],[20,0],[20,20],[0,20]],grey=new Uint8Array(400).fill(255);
+      grey[105]=20;grey[106]=150;grey[107]=180;
+      let s={box:[0,0,20,20],region,runs:[[105,1]]};R.autoClean(s,grey);
+      const keep=R.keepPixels(s);keep[106]=1;R.saveKeep(s,keep);
+      s.runs=[[105,1]];R.autoClean(s,grey);
+      const first=R.decode(s.runs,400)[106];
+      s=R.reshape(s,[[0,0],[5,0],[5,20],[0,20]],[20,20]);
+      s=R.reshape(JSON.parse(JSON.stringify(s)),region,[20,20]);
+      const pack={id:'p',rows:[{...s,id:'r',page:0}],pages:[{id:'page',size:[20,20]}]};
+      const pages=R.exportPages(pack,{rows:{r:s},extra:[],done:{},pageSeconds:{}});
+      const store=R.importData(pack,{rows:{},extra:[],done:{},pageSeconds:{}},{schema:'paper2-pixel-review-v1',pack:'p',pages});
+      s=store.rows.r;s.runs=[[105,3]];R.autoClean(s,grey);
+      const persisted=R.decode(s.runs,400)[106],neighbor=R.decode(s.runs,400)[107];
+      const paint=R.keepPixels(s);paint[106]=0;R.saveKeep(s,paint);s.runs=[[105,3]];R.autoClean(s,grey);
+      return {first,persisted,neighbor,repaint:R.decode(s.runs,400)[106]};
+    ''')
+    assert got=={'first':0,'persisted':0,'neighbor':1,'repaint':1}

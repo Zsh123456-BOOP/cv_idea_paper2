@@ -1,7 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id), R=PixelReview, clone=x=>JSON.parse(JSON.stringify(x));
 let pack,rows,key,backupKey,store,at=0,wholePage=0,inDetail=false,mode='add',zoom=3,hidden=false;
-let mask,original,grey,allowed,history=[],future=[],drawing=false,lastPoint=null,serial=0,busy=false,lastTime=0;
+let mask,original,grey,allowed,manualKeep,history=[],future=[],drawing=false,lastPoint=null,serial=0,busy=false,lastTime=0;
 const images=new Map();
 let lastAutoCleaned=0;
 let backupHandle=null,backupPending=null,backupWriting=false,brushSaveTimer=null,space=false;
@@ -22,12 +22,12 @@ async function flushBackup(){
   catch(e){$('saveState').textContent='文件备份失败：'+e.message+'；请导出备份';$('saveState').classList.add('error');backupHandle=null;}
   finally{backupWriting=false;}
 }
-function scheduleBrushSave(){if(!brushSaveTimer)brushSaveTimer=setTimeout(()=>{brushSaveTimer=null;if(drawing){state().runs=R.encode(mask);save();}},200);}
+function scheduleBrushSave(){if(!brushSaveTimer)brushSaveTimer=setTimeout(()=>{brushSaveTimer=null;if(drawing){state().runs=R.encode(mask);R.saveKeep(state(),manualKeep);save();}},200);}
 
 function touch(){const now=Date.now();if(lastTime&&document.visibilityState==='visible'){const seconds=Math.min((now-lastTime)/1000,60);if(inDetail&&row())state().seconds+=seconds;else store.pageSeconds[wholePage]=(store.pageSeconds[wholePage]||0)+seconds;}lastTime=now;}
 function status(text,error=false){$('status').textContent=text;$('status').className='status'+(error?' error':'');}
 function invalidate(r){const s=ensure(r);s.confirmed=false;s.ops++;store.done[r.page]=false;}
-function cleanActive(){for(let i=0;i<mask.length;i++)if(!allowed[i])mask[i]=0;state().runs=R.encode(mask);const added=R.autoClean(state(),grey);mask=R.decode(state().runs,grey.length);return added;}
+function cleanActive(){R.saveKeep(state(),manualKeep);for(let i=0;i<mask.length;i++)if(!allowed[i])mask[i]=0;state().runs=R.encode(mask);const added=R.autoClean(state(),grey);mask=R.decode(state().runs,grey.length);return added;}
 function changed(){cleanActive();invalidate(row());save();nav();}
 function remember(){history.push({store:clone(store),at,wholePage,inDetail,chosen:whole.selected,editing:whole.editing});if(history.length>50)history.shift();future=[];}
 function cancelPending(){finishPaint();serial++;busy=false;drawing=false;$('edit').style.opacity=1;}
@@ -69,7 +69,7 @@ async function show(index){
   Object.assign(s,R.clipRegion(s,s.region,R.cropBox(s.region,pack.pages[row().page].size)));allowed=R.regionPixels(s.region,s.box);
   original=cropData(row().page,s.box);R.whiteOutside(original.data,allowed);grey=new Uint8Array(original.width*original.height);
   for(let i=0;i<grey.length;i++)grey[i]=Math.round((original.data[4*i]+original.data[4*i+1]+original.data[4*i+2])/3);
-  R.autoClean(s,grey);mask=R.decode(s.runs,grey.length);for(const id of ['edit','result']){$(id).width=original.width;$(id).height=original.height;}
+  manualKeep=R.keepPixels(s);R.autoClean(s,grey);mask=R.decode(s.runs,grey.length);for(const id of ['edit','result']){$(id).width=original.width;$(id).height=original.height;}
   const n=rows.filter((r,i)=>r.page===row().page&&i<=at).length;
   $('title').textContent=`第 ${wholePage+1} 题 · 划线 ${n} · 多边形裁切 ${original.width} × ${original.height}`;$('notRevision').checked=s.not_revision;$('note').value=s.note;
   $('previous').disabled=at===0;$('next').disabled=at===rows.length-1;
@@ -87,7 +87,7 @@ function paint(){
 
 }
 function point(e){const c=$('edit'),b=c.getBoundingClientRect();return [Math.max(0,Math.min(c.width-1,Math.round((e.clientX-b.left)*c.width/b.width))),Math.max(0,Math.min(c.height-1,Math.round((e.clientY-b.top)*c.height/b.height)))];}
-function dab(x,y,add){const radius=Number($('radius').value),w=original.width,h=original.height;for(let yy=Math.max(0,y-radius);yy<=Math.min(h-1,y+radius);yy++)for(let xx=Math.max(0,x-radius);xx<=Math.min(w-1,x+radius);xx++)if(allowed[yy*w+xx]&&(xx-x)**2+(yy-y)**2<=radius**2)mask[yy*w+xx]=add&&grey[yy*w+xx]<245?1:0;}
+function dab(x,y,add){const radius=Number($('radius').value),w=original.width,h=original.height;for(let yy=Math.max(0,y-radius);yy<=Math.min(h-1,y+radius);yy++)for(let xx=Math.max(0,x-radius);xx<=Math.min(w-1,x+radius);xx++)if(allowed[yy*w+xx]&&(xx-x)**2+(yy-y)**2<=radius**2){const i=yy*w+xx;mask[i]=add&&grey[i]<245?1:0;manualKeep[i]=add?0:1;}}
 async function suggest(x,y,add){
   if(busy)return;touch();remember();const ticket=++serial;busy=true;$('edit').style.opacity=.65;status('正在按你的提示修正附近笔画…');
   try{
