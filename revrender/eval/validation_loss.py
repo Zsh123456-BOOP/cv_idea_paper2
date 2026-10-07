@@ -1,4 +1,4 @@
-"""Evaluate saved remover checkpoints on their unaugmented synthetic validation set.
+"""Evaluate saved remover checkpoints on their unaugmented validation set.
 
 This is eval-mode loss: training-only denoising and sampled ROI loss are absent. The mean is weighted by
 batch size, at a fixed batch size and seed for all checkpoints. It does not select
@@ -27,7 +27,7 @@ def main(argv=None):
     require(args.batch_size>0,'positive batch size required')
     records,images,labels=read_set(args.synthetic)
     indices=[i for i,r in enumerate(records) if r['split']=='val']
-    require(indices,'no synthetic validation rows')
+    require(indices,'no validation rows')
     checkpoints=sorted(args.checkpoints.glob('step_*.pt'),key=lambda p:int(p.stem.split('_')[-1]))
     require(checkpoints,'no saved steps')
     out=make_output_dir(args.output_dir)
@@ -54,7 +54,8 @@ def main(argv=None):
         readings[checkpoint.stem]={'loss':total/len(indices),'terms':{k:v/len(indices) for k,v in terms.items()}}
         print(json.dumps({'checkpoint':checkpoint.stem,'samples':len(indices),'loss':readings[checkpoint.stem]['loss']}),flush=True)
         del model
-    write_json(out/'summary.json',{'scope':'synthetic validation, eval mode without training-only denoising or sampled ROI loss',
+    write_json(out/'summary.json',{'scope':'held-out validation, eval mode without training-only denoising or sampled ROI loss',
+                                  'sources':sorted({records[i].get('source','synthetic') for i in indices}),
                                   'samples':len(indices),'batch_size':args.batch_size,'seed':SEED,'checkpoints':readings})
     write_manifest(out,config=to_jsonable(args),inputs={str(p):digest(p) for p in [args.synthetic/'run_manifest.json',*checkpoints]})
     return 0
