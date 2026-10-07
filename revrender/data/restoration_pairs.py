@@ -77,6 +77,10 @@ def prediction_material(args, excluded, other, splits, out):
             support=(px<255)|(redraw<255);ys,xs=np.nonzero(support)
             if not len(xs): continue
             l,t,r,b=int(xs.min()),int(ys.min()),int(xs.max()+1),int(ys.max()+1)
+            # This horizontal-strike bank must not stretch vertical fragments into
+            # fake cancellation strokes (observed in the material contact sheet).
+            if r-l < 2.5*(b-t):
+                rejected['not_horizontal_elongated']+=1;continue
             px=px[t:b,l:r];redraw=redraw[t:b,l:r]
             name=f'piece_{len(accepted)}';arrays['pixels'][name]=px;arrays['traced'][name]=redraw
             accepted.append({'id':name,'image_id':path.stem,'instance':k,'writer':canonical(path.stem.split('_')[0],other),

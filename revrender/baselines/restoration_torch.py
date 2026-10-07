@@ -87,6 +87,7 @@ def train(e):
         require(all(torch.equal(v.detach().cpu(),restored[k]) for k,v in network.state_dict().items()),'checkpoint round-trip mismatch')
 
     for step in range(1,a.steps+1):
+        if step==1:before=next(network.parameters()).detach().clone()
         x,y=e.batch();network.train();opt.zero_grad(set_to_none=True);xx,yy=tensor(x),tensor(y)
         if is_doc:loss=docdiff_loss(network,diffusion,lap,xx,yy)
         else:loss=10/np.log(10)*torch.log(((network(xx)-yy)**2).mean((1,2,3))+1e-8).mean()
@@ -95,6 +96,7 @@ def train(e):
         # NAFNet's official trainer clips norm to .01; DocDiff does not.
         if not is_doc:torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
         opt.step()
+        if step==1:require(not torch.equal(before,next(network.parameters()).detach()),'model did not update')
         if scheduler:scheduler.step()
         if step==1 or step%100==0:e.log({'step':step,'loss':float(loss.detach()),'lr':opt.param_groups[0]['lr']})
         if step%a.eval_every==0 or step==a.steps:e.evaluate(predict,step,save)

@@ -1,5 +1,6 @@
 """DE-GAN's official Keras models; released MSE GAN + 100 BCE training rule."""
 import os
+import random
 os.environ.setdefault('TF_USE_LEGACY_KERAS','1')
 os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL','2')
 
@@ -12,6 +13,12 @@ from .restoration import module_file
 
 def train(e):
     tf.keras.utils.set_random_seed(SEED)
+    # tf-keras 2.16 passes float 1e9 to Random.randint; Python 3.12 rejects
+    # integral floats. Preserve the seeded RNG sequence with integer bounds.
+    from tf_keras.src import backend
+    class IntegerBoundsRandom(random.Random):
+        def randint(self,a,b):return super().randint(int(a),int(b))
+    backend._SEED_GENERATOR.generator=IntegerBoundsRandom(SEED)
     devices=tf.config.list_physical_devices('GPU');require(len(devices)==1,'exactly one assigned GPU required')
     for device in devices:tf.config.experimental.set_memory_growth(device,True)
     tf.config.threading.set_intra_op_parallelism_threads(4);tf.config.threading.set_inter_op_parallelism_threads(2)
@@ -24,7 +31,7 @@ def train(e):
         'architecture':'unchanged official generator biggest_layer1024 and discriminator',
         'loss':'released code MSE adversarial + 100 binary cross entropy reconstruction',
         'update':'D(real), D(detached fake from eval G), G through eval D; two D optimizer steps',
-        'adaptation':'modern TensorFlow/Keras optimizer alias; same paired 256 inputs and shortened budget as other models'}
+        'adaptation':'modern optimizer alias and Python3.12 integer RNG bounds; same paired 256 inputs and shortened budget'}
     write_json(e.out/'model_config.json',config);e.log(config)
 
     @tf.function(reduce_retracing=True)
@@ -52,8 +59,12 @@ def train(e):
         g.load_weights(str(path/'generator.h5'));require(np.array_equal(before,predict(probe)),'DE-GAN reload mismatch')
 
     for step in range(1,e.args.steps+1):
+        if step==1:before_g=g.trainable_variables[0].numpy().copy();before_d=d.trainable_variables[0].numpy().copy()
         x,y=e.batch();gl,dl=update(x[...,None],y[...,None]);gl=float(gl);dl=float(dl)
         require(np.isfinite(gl) and np.isfinite(dl),'nonfinite DE-GAN loss')
+        if step==1:
+            require(not np.array_equal(before_g,g.trainable_variables[0].numpy()),'generator did not update')
+            require(not np.array_equal(before_d,d.trainable_variables[0].numpy()),'discriminator did not update')
         if step==1 or step%100==0:e.log({'step':step,'generator_loss':gl,'discriminator_loss':dl})
         if step%e.args.eval_every==0 or step==e.args.steps:e.evaluate(predict,step,save)
     e.finish()
