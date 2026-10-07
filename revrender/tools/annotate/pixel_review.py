@@ -162,7 +162,7 @@ def serve(args):
 
 
 def main(argv=None):
-    from .pixel_offline import standalone
+    from .pixel_offline import standalone, update_html
     parser=argparse.ArgumentParser(description=__doc__,allow_abbrev=False)
     sub=parser.add_subparsers(dest='command',required=True)
     p=sub.add_parser('pack');p.add_argument('--prefill',type=Path,required=True)
@@ -175,10 +175,12 @@ def main(argv=None):
     o=sub.add_parser('standalone',help='clean scans and embed imported progress in one offline HTML')
     o.add_argument('--pack',type=Path,required=True);o.add_argument('--review-export',type=Path,required=True)
     o.add_argument('--output-dir',type=Path,required=True)
+    u=sub.add_parser('update-html',help='update an offline editor without changing images or draft identity')
+    u.add_argument('--source',type=Path,required=True);u.add_argument('--output-dir',type=Path,required=True)
     s=sub.add_parser('serve');s.add_argument('--pack',type=Path,required=True);s.add_argument('--checkpoint',type=Path,required=True)
     s.add_argument('--port',type=int,default=8769)
     args=parser.parse_args(argv)
-    return {'pack':pack, 'refresh':refresh, 'serve':serve, 'standalone':standalone}[args.command](args)
+    return {'pack':pack, 'refresh':refresh, 'serve':serve, 'standalone':standalone, 'update-html':update_html}[args.command](args)
 
 
 if __name__=='__main__':

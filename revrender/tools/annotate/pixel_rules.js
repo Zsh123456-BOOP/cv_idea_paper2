@@ -84,5 +84,50 @@
         revisions:selected.filter(r=>!r.deleted),deleted_revisions:selected.filter(r=>r.deleted)};
     });return pages;
   }
-  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages};
+  function residueCandidates(grey, mask, width, options={}) {
+    // Suggestions only: never mutate the human mask or the scan.
+    const {threshold=180,radius=2,maxArea=3,gray=true,dots=true}=options;
+    const size=grey.length,height=size/width,added=new Uint8Array(size);
+    if(mask.length!==size||!Number.isInteger(height))throw Error('图像尺寸不匹配');
+    if(threshold<0||threshold>245||radius<1||radius>4||maxArea<1||maxArea>12)throw Error('清理参数超出范围');
+    function dilate(source,distance){
+      const out=new Uint8Array(size);
+      for(let i=0;i<size;i++)if(source[i]){
+        const x=i%width,y=Math.floor(i/width);
+        for(let yy=Math.max(0,y-distance);yy<=Math.min(height-1,y+distance);yy++)
+          for(let xx=Math.max(0,x-distance);xx<=Math.min(width-1,x+distance);xx++)out[yy*width+xx]=1;
+      }return out;
+    }
+    const near=dilate(mask,radius),touch=dilate(mask,1),dark=new Uint8Array(size),labels=new Int32Array(size),queue=new Int32Array(size);
+    for(let i=0;i<size;i++)dark[i]=!mask[i]&&grey[i]<threshold?1:0;
+    const protectedInk=dilate(dark,2);let countGray=0,countDots=0,groups=0,label=0;
+    for(let start=0;start<size;start++){
+      if(labels[start]||mask[start]||grey[start]>=245)continue;
+      label++;let head=0,tail=1,border=false,allNear=true,wasConnected=false;
+      queue[0]=start;labels[start]=label;
+      while(head<tail){
+        const i=queue[head++],x=i%width,y=Math.floor(i/width);
+        border ||= x===0||y===0||x===width-1||y===height-1;
+        allNear &&= !!near[i];wasConnected ||= !!touch[i];
+        for(let yy=Math.max(0,y-1);yy<=Math.min(height-1,y+1);yy++)for(let xx=Math.max(0,x-1);xx<=Math.min(width-1,x+1);xx++){
+          const k=yy*width+xx;if(!labels[k]&&!mask[k]&&grey[k]<245){labels[k]=label;queue[tail++]=k;}
+        }
+      }
+      // Crop boundaries may truncate real characters. Never suggest cleaning those components.
+      if(border)continue;
+      let isolated=dots&&tail<=maxArea&&allNear&&wasConnected;
+      if(isolated)for(let j=0;j<tail;j++){
+        const i=queue[j],x=i%width,y=Math.floor(i/width);
+        for(let yy=Math.max(0,y-3);yy<=Math.min(height-1,y+3);yy++)for(let xx=Math.max(0,x-3);xx<=Math.min(width-1,x+3);xx++){
+          const k=yy*width+xx;if(!mask[k]&&grey[k]<245&&labels[k]!==label)isolated=false;
+        }
+      }
+      if(isolated){groups++;for(let j=0;j<tail;j++){added[queue[j]]=1;countDots++;}}
+      else if(gray)for(let j=0;j<tail;j++){
+        const i=queue[j];if(near[i]&&grey[i]>=threshold&&!protectedInk[i]){added[i]=1;countGray++;}
+      }
+    }
+    return {added,gray:countGray,dots:countDots,groups,total:countGray+countDots};
+  }
+  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates};
 });

@@ -1,6 +1,7 @@
 """Bundle native scans, human progress and the shared editor in one offline HTML."""
 import base64
 import copy
+from html.parser import HTMLParser
 import hashlib
 import json
 import shutil
@@ -87,16 +88,52 @@ def standalone(args):
     inline['standalone'] = True
     for page in inline['pages']:
         page['image'] = 'data:image/png;base64,'+base64.b64encode((out/page['image']).read_bytes()).decode()
+    (out/'标注.html').write_text(render_html(inline))
+    write_manifest(out, config=to_jsonable(args), inputs=inputs, cleaning='connected-ink-soft-edge',
+                   pages=stats, revisions=sum(len(p.get('revisions', [])) for p in initial['pages'].values()),
+                   completed_questions=sum(bool(p.get('done')) for p in initial['pages'].values()))
+    print(json.dumps({'output':str(out/'标注.html'), 'pages':stats}, ensure_ascii=False))
+
+
+def render_html(payload, draft=None):
+    from .pixel_review import HERE, ASSETS
     html = (HERE/'pixel_editor.html').read_text()
-    data = '<script id="review-pack" type="application/json">'+script_json(inline)+'</script>'
-    data += '<script id="review-draft" type="application/json">null</script>'
+    data = '<script id="review-pack" type="application/json">'+script_json(payload)+'</script>'
+    data += '<script id="review-draft" type="application/json">'+script_json(draft)+'</script>'
     html = html.replace('<script src="page_rules.js">', data+'<script src="page_rules.js">')
     for name in ASSETS:
         if name.endswith('.js'):
             code = (HERE/name).read_text().replace('</script', '<\\/script')
             html = html.replace(f'<script src="{name}"></script>', '<script>'+code+'</script>')
-    (out/'标注.html').write_text(html)
-    write_manifest(out, config=to_jsonable(args), inputs=inputs, cleaning='connected-ink-soft-edge',
-                   pages=stats, revisions=sum(len(p.get('revisions', [])) for p in initial['pages'].values()),
-                   completed_questions=sum(bool(p.get('done')) for p in initial['pages'].values()))
-    print(json.dumps({'output':str(out/'标注.html'), 'pages':stats}, ensure_ascii=False))
+    return html
+
+
+class EmbeddedReview(HTMLParser):
+    def __init__(self, html):
+        super().__init__(); self.values = {}; self.active = None; self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        info = dict(attrs)
+        if tag == 'script' and info.get('id') in ('review-pack', 'review-draft'):
+            self.active = info['id']; self.values[self.active] = ''
+
+    def handle_data(self, data):
+        if self.active: self.values[self.active] += data
+
+    def handle_endtag(self, tag):
+        if tag == 'script': self.active = None
+
+
+def update_html(args):
+    """Replace editor assets only; preserve images, pack identity and embedded drafts."""
+    from .pixel_review import HERE, ASSETS
+    data = EmbeddedReview(args.source.read_text()).values
+    require('review-pack' in data, 'not a standalone review HTML')
+    payload = json.loads(data['review-pack']); draft = json.loads(data.get('review-draft', 'null'))
+    require(payload.get('standalone'), 'not an offline pack')
+    out = make_output_dir(args.output_dir)
+    (out/'标注.html').write_text(render_html(payload, draft))
+    write_manifest(out, config=to_jsonable(args), inputs={str(p):digest(p) for p in
+                   [args.source, HERE/'pixel_offline.py', *(HERE/n for n in ASSETS)]},
+                   pack=payload['id'], image_revision=payload['image_revision'], embedded_progress_preserved=True)
+    print(str(out/'标注.html'))

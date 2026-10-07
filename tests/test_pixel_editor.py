@@ -148,7 +148,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         PixelOverview:class{constructor(c,handlers){this.handlers=handlers;}setImage(im,id,editing){this.selected=id;this.editing=editing;}draw(){}current(){return null;}fit(){}select(id){this.selected=id;}},
         fetch(){throw Error('Offline editor must not fetch');}};
       ctx.window={addEventListener(){}};vm.createContext(ctx);
-      const code=fs.readFileSync(EDITOR,'utf8').replace(/start().catch[sS]*$/,'');vm.runInContext(code,ctx);
+      const code=fs.readFileSync(EDITOR,'utf8');vm.runInContext(code.slice(0,code.lastIndexOf('start().catch')),ctx);
       async function run(){
         await vm.runInContext('start()',ctx);
         const loaded=vm.runInContext('({count:rows.length,note:state().note,confirmed:state().confirmed,mode})',ctx);
@@ -161,7 +161,19 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         const restored=vm.runInContext('({count:rows.length,note:state().note,runs:state().runs})',ctx);
         node('review-draft').textContent=JSON.stringify(saved);disk.clear();await vm.runInContext('start()',ctx);
         const reopened=vm.runInContext('state().note',ctx);
-        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened}));
+        await vm.runInContext('show(0)',ctx);
+        vm.runInContext("grey.fill(255);mask.fill(0);mask[44]=1;grey[44]=20;grey[45]=200;state().runs=R.encode(mask);$('cleanupThreshold').value=180;$('cleanupRadius').value=2;$('cleanupArea').value=3;$('cleanupGray').checked=true;$('cleanupDots').checked=false;",ctx);
+        const before=vm.runInContext('JSON.stringify(state().runs)',ctx);
+        vm.runInContext('previewCleanup()',ctx);
+        const preview=vm.runInContext('({total:cleanupPreview.total,runs:JSON.stringify(state().runs)})',ctx);
+        vm.runInContext("$('cleanupCancel').click()",ctx);
+        const cancelled=vm.runInContext('JSON.stringify(state().runs)',ctx);
+        vm.runInContext("previewCleanup();$('cleanupApply').click()",ctx);
+        const applied=vm.runInContext('({runs:state().runs,confirmed:state().confirmed,preview:cleanupPreview})',ctx);
+        await vm.runInContext('restore(history,future)',ctx);
+        const undone=vm.runInContext('JSON.stringify(state().runs)',ctx);
+
+        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened,before,preview,cancelled,applied,undone}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
@@ -171,3 +183,26 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
     assert got['deleted']['deleted_revisions'][0]['note']=='saved human note'
     assert got['restored']=={'count':1,'note':'saved human note','runs':[[2,3]]}
     assert got['reopened']=='saved human note'
+
+    assert got['preview']=={'total':1,'runs':got['before']}
+    assert got['cancelled']==got['before']==got['undone']
+    assert got['applied']=={'runs':[[44,2]],'confirmed':False,'preview':None}
+
+
+def test_residue_proposals_are_local_protect_dark_ink_and_do_not_mutate_masks():
+    got=js('''
+      const w=40,h=24,g=new Uint8Array(w*h).fill(255),m=new Uint8Array(w*h);
+      function ink(x,y,value,erased=false){g[y*w+x]=value;if(erased)m[y*w+x]=1;}
+      ink(5,5,30,true);ink(6,5,190); // pale leftover next to erase
+      ink(5,15,30,true);ink(6,15,150); // dark fragment: dot mode only
+      ink(16,5,30,true);ink(17,5,210);ink(18,5,30);ink(19,5,30);ink(20,5,30); // preserved character
+      ink(30,15,30,true);ink(32,15,100); // originally separate punctuation
+      ink(25,8,200); // far from any erase
+      ink(1,0,30,true);ink(2,0,220); // crop boundary, ambiguous
+      const before=Array.from(m),a=R.residueCandidates(g,m,w,{dots:false});
+      const b=R.residueCandidates(g,m,w,{gray:false});
+      const strict=R.residueCandidates(g,m,w,{threshold:200,dots:false});
+      const empty=R.residueCandidates(g,new Uint8Array(w*h),w);
+      return {gray:Array.from(a.added).flatMap((x,i)=>x?[i]:[]),dots:Array.from(b.added).flatMap((x,i)=>x?[i]:[]),strict:strict.total,empty:empty.total,unchanged:JSON.stringify(before)===JSON.stringify(Array.from(m))};
+    ''')
+    assert got=={'gray':[206],'dots':[206,606],'strict':0,'empty':0,'unchanged':True}

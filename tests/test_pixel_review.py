@@ -108,3 +108,17 @@ def test_offline_pack_embeds_human_progress_and_preserves_original(tmp_path):
     assert initial['image_source']==str(out/'images') and initial['image_revision']
     assert not initial['pages']['p']['done']
     with pytest.raises(FileExistsError):standalone(args)
+
+
+def test_html_asset_update_keeps_images_storage_identity_and_embedded_progress(tmp_path):
+    from revrender.tools.annotate.pixel_offline import render_html, update_html, EmbeddedReview
+    payload={'id':'existing','standalone':True,'image_revision':'keep-key','pages':[{'image':'data:image/png;base64,abc'}]}
+    draft={'savedAt':1234,'rows':{'r':{'note':'human </script> data','runs':[[2,4]],'deleted':True}}}
+    source=tmp_path/'existing.html';source.write_text(render_html(payload,draft))
+    old=source.read_bytes();out=tmp_path/'update'
+    update_html(Namespace(source=source,output_dir=out))
+    values=EmbeddedReview((out/'标注.html').read_text()).values
+    assert json.loads(values['review-pack'])==payload
+    assert json.loads(values['review-draft'])==draft
+    assert source.read_bytes()==old
+    assert 'id="cleanupThreshold"' in (out/'标注.html').read_text()
