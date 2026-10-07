@@ -593,3 +593,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 入口 `python -m revrender.baselines.restoration`，队列 `scripts/run_restoration_pilot.sh`。首轮每组 4,000 步 / batch 4 / 256×256；每 1,000 步在独立人工 16 区域上按固定亮度增量 >0.2 的擦除 F1 选版本，同时记录有效墨迹误擦、新增深色像素和固定 64 张合成验证图的 PSNR、改动区域 MAE、保留字迹 MAE。人工擦除标签并不提供被覆盖笔画的真值，这些读数不能证明隐藏文字恢复正确；还需选定模型后的转写评测。
 
 直接加载固定提交的官方源码，逐文件校验，源码清单在运行产物中。NAFNet：`megvii-research/NAFNet@2b4af71ebe098a92a75910c233a3965a3e93ede4`，官方 width32、encoder [1,1,1,28]、PSNR loss、AdamW 和梯度裁剪；DocDiff：`Royalvice/DocDiff@f422a3af10657eeabeca90f2e862d88c72725845`，32 通道双网络、100 步扩散、PRE_ORI、高低频损失，短预算用原始权重不做 EMA；DE-GAN：`dali92002/DE-GAN@7281836455608337c940fa0de67cceffbc5c026d`，官方 Keras 1024 瓶颈生成器和判别器，按发布代码 MSE 对抗项 +100 BCE 重建，两次 D 更新后一次 G 更新。DE-GAN 用独立 TensorFlow 2.16 环境和旧 Keras 兼容层，不改共享环境。数据构造用已有印刷模板排除印刷墨迹占比 >2% 的宿主行。
+
+最终试跑数据 `paper2_restoration_pairs20261007_v3`：10,788 训练配对 +596 合成验证配对，排除 84 行印刷宿主；预测库留下 202 份候选（并非人工确认的纯划线），像素版和重绘版一一对应，额外排除 46 份非横向细长碎片，避免把竖向碎片强行拉宽。宿主底稿保持不变，交叉处也有合成真值。金标素材与预测素材的数量、覆盖形态不同，因此两者对照同时包含素材质量与多样性的影响。
+
+测试入口 `scripts/eval_restoration_pilot.sh`：要求两卡的 9 个训练作业全部完成后，只加载人工验证选定版本。`baselines.restoration_export` 在人工标出的真实涂改区域中恢复，导出同一批原图/恢复图给固定 Qwen3-VL-8B、中性转写指令，统计已有 `revision_boxes.read` 的字符保留与严格完全正确率；另读 7 题逐笔测试金标，固定增亮阈值统计误擦漏擦。此处使用人工区域，是去划线模块的条件评测，不是整页检测到恢复的端到端成绩；读取测试结果后不能回头选 checkpoint。

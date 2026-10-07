@@ -24,3 +24,20 @@ def test_added_ink_is_reported_separately_from_removal():
     image=np.ones((8,8),np.float32);pred=image.copy();pred[0,0]=0
     result=removal_metrics(removal_counts(image,pred,np.zeros((8,8),bool)))
     assert result['new_dark_pixels']==1 and result['tp']==0
+
+
+def test_export_merge_deduplicates_only_identical_scans(tmp_path):
+    import json
+    from argparse import Namespace
+    from PIL import Image
+    from revrender.baselines.restoration_export import merge
+    dirs=[]
+    for name in ['NAFNet','DocDiff']:
+        directory=tmp_path/name;(directory/'pack').mkdir(parents=True);dirs.append(directory)
+        Image.fromarray(np.zeros((8,8),np.uint8)).save(directory/'pack/image.png')
+        rows=[{'id':f'{model}|sample','model':model,'images':{'erased':'image.png'}} for model in ['scan',name]]
+        (directory/'pack/pack.json').write_text(json.dumps({'rows':rows}))
+        (directory/'run_manifest.json').write_text('{}')
+    merge(Namespace(inputs=dirs,output_dir=tmp_path/'merged'))
+    rows=json.loads((tmp_path/'merged/pack.json').read_text())['rows']
+    assert len(rows)==3 and all(__import__('pathlib').Path(r['images']['erased']).is_file() for r in rows)
