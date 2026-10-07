@@ -22,7 +22,7 @@ def standalone(args):
     from .pixel_review import HERE, ASSETS, write_assets
     payload = json.loads((args.pack/'pack.json').read_text())
     original = json.loads(args.review_export.read_text()) if args.review_export else {
-        'schema':'paper2-pixel-review-v1','pack':payload['id'],'pages':{}}
+        'schema':'paper2-pixel-review-v1','pack':payload['id'],'task':payload.get('task','strike_only'),'pages':{}}
     require(original.get('schema') == 'paper2-pixel-review-v1' and original.get('pack') == payload['id'],
             'annotation file does not belong to this pack')
     known = {p['id'] for p in payload['pages']}

@@ -322,6 +322,14 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 收到真实复核后，可在上述 `train_refiner` 命令增加 `--init REFINER_CHECKPOINT --review-export EXPORT.json --selection SELECTION --pages SCANS --review-share .25`，并指定新的微调配方及输出目录。每批混入已完成训练题的真实裁块；读回使用与界面相同的像素中心多边形，框外置白并裁去掩膜，忽略恢复编辑用的 `outsideMask`；误检被确认成“不是涂改”的区域作为全零负例。入口拒绝未确认区域、非训练题、第一篇验证/测试书写者，以及合成验证宿主书写者；默认数据路径不含任何界面验收导出。本轮尚未进行真人复核后的微调。
 
+## 人工框选与真实修正微调
+
+用户 2026-10-07 改为：先用已有逐处确认的像素修正微调框内模型，再由用户在整题上框选新区域，模型预填后逐处精修。`data.review_set` 接受像素导出中 `confirmed=true` 的现存区域；不伪造整题完成，不把删除或未确认记录当标签。按书写者留出独立微调验证集，原生多边形外涂白，训练图像和标注页同源；加入小批原合成正负样本。沿用 `train` 的 smoke、精确重放、训练集学习门槛和正式训练。配方 `configs/revrender_strokes_human.toml`，从原框内模型 step 8000 开始。
+
+- 空白框选包：`pixel_review select-regions --selection TRAIN_SELECTION --pages CLEAN_PAGES --mapping MAPPING --same-student PAIRS --exclude-export PREVIOUS_JSON --count 30 --name PACK_ID --output-dir PACK`；再用 `standalone --pack PACK --output-dir SITE` 得到单文件 HTML。按完整题显示，只拖框、编辑多点范围、标记本题框选完成；约 80 处后导出。框选完成和像素确认分开记录，空框不作为负样本。
+- 模型预填：`pixel_review prefill-regions --pack PACK --regions-export FRAMES_JSON --checkpoint CHOSEN_CHECKPOINT --output-dir PREFILLED`，然后 `standalone`。按用户多边形裁切，独立预测每处，保持区域 ID 与坐标；新包 ID 不覆盖框选草稿，所有预测待人工确认。拒绝覆盖已有像素标注。
+- 验证：`python -m revrender.eval.review_removal --dataset REVIEW_SET --baseline ORIGINAL_CHECKPOINT --checkpoints RUN/formal --output-dir EVAL`，比较独立原生验证区域的划线召回、擦除精确率、有效墨迹误擦率。固定原预填阈值和 top 1，报告自动残留清理前结果；F1 提高且精确率下降不超过 2 个百分点才替换原模型。测试集本轮不用于选择或调参。
+
 ## 数据
 
 原始数据（`~/Desktop/cv_idea/未标注数据`、`标注好数据`）只读，用 `configs/paths.toml` 指过去，不复制。第一篇用的数据包在服务器上：

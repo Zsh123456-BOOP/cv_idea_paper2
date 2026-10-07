@@ -6,6 +6,7 @@ const images=new Map();
 let lastAutoCleaned=0;
 let backupHandle=null,backupPending=null,backupWriting=false,brushSaveTimer=null,space=false;
 const row=()=>rows[at], state=()=>ensure(row());
+const selectingRegions=()=>pack?.task==='region_selection';
 function ensure(r){return store.rows[r.id]||(store.rows[r.id]=R.restoreRow(r));}
 function syncRows(){const all=[...pack.rows,...store.extra];all.forEach(r=>store.rows[r.id]=R.restoreRow(r,store.rows[r.id]));rows=all.filter(r=>!store.rows[r.id].deleted);at=Math.min(at,Math.max(0,rows.length-1));}
 function merged(r){return {...r,...ensure(r),page:r.page};}
@@ -47,7 +48,7 @@ async function cleanStore(candidate){
   candidate.imageRevision=pack.image_revision||'original';return removed;
 }
 function nav(){
-  $('progress').textContent=`${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} 处`;
+  $('progress').textContent=selectingRegions()?`已框选 ${rows.length} 处 · ${Object.values(store.done).filter(Boolean).length} 题完成`:`${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} 处`;
   const nav=$('nav');nav.replaceChildren();
   pack.pages.forEach((p,i)=>{
     const h=document.createElement('button');h.className='question'+(!inDetail&&i===wholePage?' active':'');
@@ -59,11 +60,11 @@ function nav(){
   if(deleted.length){const group=document.createElement('details'),summary=document.createElement('summary');summary.textContent=`已删除 ${deleted.length} 处（可恢复）`;group.append(summary);
     deleted.forEach(r=>{const b=document.createElement('button');b.textContent=`恢复第 ${r.page+1} 题 · ${r.id.split('#').pop()}`;b.onclick=()=>restoreDeleted(r);group.append(b);});nav.append(group);}
   const pi=inDetail?row()?.page:wholePage;
-  $('pageDone').textContent=store.done[pi]?'整题已检查 ✓':'确认整题检查完成';
+  $('pageDone').textContent=selectingRegions()?(store.done[pi]?'本题框选完成 ✓':'本题框选完成'):(store.done[pi]?'整题已检查 ✓':'确认整题检查完成');
   $('prevPage').disabled=wholePage===0;$('nextPage').disabled=wholePage===pack.pages.length-1;
 }
 async function show(index){
-  if(!rows[index])return;touch();save();cancelPending();at=index;wholePage=row().page;inDetail=true;
+  if(!rows[index])return;if(selectingRegions())return overview(rows[index].page,{selected:rows[index].id,editing:true,focus:true});touch();save();cancelPending();at=index;wholePage=row().page;inDetail=true;
   $('overviewPanel').hidden=true;$('detailPanel').hidden=false;$('overviewBtn').hidden=false;
   const ticket=++serial,s=state();original=null;await imageOf(row().page);if(ticket!==serial)return;
   Object.assign(s,R.clipRegion(s,s.region,R.cropBox(s.region,pack.pages[row().page].size)));allowed=R.regionPixels(s.region,s.box);
@@ -132,12 +133,13 @@ const whole=new PixelOverview($('whole'),{
   create:region=>{
     remember();const box=R.cropBox(region,pack.pages[wholePage].size);
     const r={id:pack.pages[wholePage].id+'#manual-'+Date.now(),page:wholePage,box,region,runs:[],text:''};
-    store.extra.push(r);syncRows();invalidate(r);save();show(rows.length-1);
+    store.extra.push(r);syncRows();invalidate(r);save();
+    if(selectingRegions()){whole.editing=true;whole.select(r.id);nav();status('已添加框，拖顶点或边中点调整形状；继续拖动可添加下一个框。');}else show(rows.length-1);
   }
 });
 function updateGeometryMode(){
   $('geometryBtn').classList.toggle('active',whole.editing);$('geometryBtn').textContent=whole.editing?'完成范围调整':'调整区域';
-  $('wholeHint').textContent=whole.editing?'点选一个区域；拖白色顶点改范围，拖边中间的小点增加顶点，Alt / ⌥ 点顶点删除。改完点“放大精修”。':'点击涂改区域放大；漏了就在图上拖一个新框。滚轮缩放，空格或右键拖动平移。';
+  $('wholeHint').textContent=selectingRegions()?'拖框选中需要去划线的行；点击已有框后拖顶点调整，拖边中点加点，⌥ 点顶点删点。滚轮放大，空格 / 右键平移。框好约 80 处后导出框选。':whole.editing?'点选一个区域；拖白色顶点改范围，拖边中间的小点增加顶点，Alt / ⌥ 点顶点删除。改完点“放大精修”。':'点击涂改区域放大；漏了就在图上拖一个新框。滚轮缩放，空格或右键拖动平移。';
   whole.draw();
 }
 async function overview(pi=wholePage,options={}){
@@ -145,9 +147,9 @@ async function overview(pi=wholePage,options={}){
   $('detailPanel').hidden=true;$('overviewPanel').hidden=false;$('overviewBtn').hidden=true;
   $('title').textContent=`第 ${pi+1} 题 · 完整答题图`;const ticket=++serial;
   const im=await imageOf(pi);if(ticket!==serial)return;
-  whole.setImage(im,options.selected||null,!!options.editing);
+  whole.setImage(im,options.selected||null,selectingRegions()||!!options.editing);
   if(options.focus&&whole.current())whole.focus(whole.current().region);
-  updateGeometryMode();nav();lastTime=Date.now();save();status('检查整题上的涂改是否都被框住，点击一处即可放大。');
+  updateGeometryMode();nav();lastTime=Date.now();save();status(selectingRegions()?'本阶段只框选，不需要画像素。导出后交给模型批量预填，再回来精修。':'检查整题上的涂改是否都被框住，点击一处即可放大。');
 }
 async function restore(from,to){
   if(!from.length)return;cancelPending();touch();
@@ -182,12 +184,12 @@ $('previous').onclick=()=>show(at-1);$('next').onclick=()=>show(at+1);
 $('confirm').onclick=()=>{if(busy||!original)return;finishPaint();touch();state().runs=R.encode(mask);state().confirmed=true;state().needs_clean_review=false;save();nav();if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
 $('pageDone').onclick=()=>{
   const pi=inDetail?row().page:wholePage;
-  if(rows.some(r=>r.page===pi&&!ensure(r).confirmed)){status('这题还有未确认的区域，请逐处复核后再确认整题。',true);return;}
+  if(!selectingRegions()&&rows.some(r=>r.page===pi&&!ensure(r).confirmed)){status('这题还有未确认的区域，请逐处复核后再确认整题。',true);return;}
   touch();store.done[pi]=true;save();nav();status(`第 ${pi+1} 题已确认检查完成。可以导出标注。`);
 };
 function exported(source=store){
   const pages=R.exportPages(pack,source);
-  return {schema:'paper2-pixel-review-v1',pack:pack.id,exported_at:new Date().toISOString(),task:'strike_only',image_revision:source.imageRevision||'original',image_source:source.imageRevision===pack.image_revision?pack.image_source:undefined,pages};
+  return {schema:'paper2-pixel-review-v1',pack:pack.id,exported_at:new Date().toISOString(),task:pack.task||'strike_only',image_revision:source.imageRevision||'original',image_source:source.imageRevision===pack.image_revision?pack.image_source:undefined,pages};
 }
 function download(value,name){const blob=new Blob([JSON.stringify(value)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function deleteRegion(id){
@@ -213,7 +215,7 @@ $('bindBackup').onclick=async()=>{
   try{backupHandle=await window.showSaveFilePicker({suggestedName:'划线标注_自动备份.json',types:[{description:'标注 JSON',accept:{'application/json':['.json']}}]});finishPaint();save();}
   catch(e){if(e.name!=='AbortError')status('无法绑定备份文件：'+e.message,true);}
 };
-$('exportBtn').onclick=()=>{finishPaint();touch();save();download(exported(),'划线精细标注_'+pack.id+'_'+new Date().toISOString().slice(0,10));status('已导出。未确认区域保留为草稿，不进入人工金标。');};
+$('exportBtn').onclick=()=>{finishPaint();touch();save();download(exported(),'划线精细标注_'+pack.id+'_'+new Date().toISOString().slice(0,10));status(selectingRegions()?'已导出框选 JSON，交给模型批量预填；这些框不作为像素金标。':'已导出。未确认区域保留为草稿，不进入人工金标。');};
 $('backupBtn').onclick=()=>{const old=JSON.parse(localStorage.getItem(backupKey));if(old)download(exported(old),'更新前标注备份_'+pack.id);};
 $('importBtn').onclick=()=>$('import').click();
 $('import').onchange=async e=>{
@@ -257,6 +259,10 @@ async function start(){
     document.querySelectorAll('[data-mode="add"],[data-mode="keep"]').forEach(b=>b.hidden=true);
     document.querySelector('[data-mode="paint"]').click();
     $('detailHint').textContent+=' 离线版保留模型预填；用画笔补划线、橡皮恢复文字。';
+  }
+  if(selectingRegions()){
+    $('appTitle').textContent='划线区域框选';$('appSubtitle').textContent='先框选需要去划线的区域，模型预填后再精修。';
+    $('exportBtn').textContent='导出框选';$('geometryBtn').hidden=true;$('refineBtn').hidden=true;
   }
   $('bindBackup').hidden=!window.showSaveFilePicker;
   const first=rows.find(r=>!ensure(r).confirmed),pi=cursor?.page??first?.page??0;

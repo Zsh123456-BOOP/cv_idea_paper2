@@ -184,9 +184,20 @@ def main(argv=None):
     o.add_argument('--output-dir',type=Path,required=True)
     u=sub.add_parser('update-html',help='update an offline editor without changing images or draft identity')
     u.add_argument('--source',type=Path,required=True);u.add_argument('--output-dir',type=Path,required=True)
+    f=sub.add_parser('select-regions',help='blank clean questions for human polygon selection')
+    f.add_argument('--selection',type=Path,required=True);f.add_argument('--pages',type=Path,required=True)
+    f.add_argument('--mapping',type=Path,required=True);f.add_argument('--same-student',type=Path,required=True)
+    f.add_argument('--exclude-export',type=Path,action='append',default=[]);f.add_argument('--count',type=int,default=30)
+    f.add_argument('--name',required=True);f.add_argument('--output-dir',type=Path,required=True)
+    f=sub.add_parser('prefill-regions',help='model prefill inside human-selected polygons')
+    f.add_argument('--pack',type=Path,required=True);f.add_argument('--regions-export',type=Path,required=True)
+    f.add_argument('--checkpoint',type=Path,required=True);f.add_argument('--output-dir',type=Path,required=True)
     s=sub.add_parser('serve');s.add_argument('--pack',type=Path,required=True);s.add_argument('--checkpoint',type=Path,required=True)
     s.add_argument('--port',type=int,default=8769)
     args=parser.parse_args(argv)
+    if args.command in ('select-regions','prefill-regions'):
+        from . import pixel_regions
+        return (pixel_regions.select if args.command=='select-regions' else pixel_regions.prefill)(args)
     return {'pack':pack, 'refresh':refresh, 'serve':serve, 'standalone':standalone, 'update-html':update_html}[args.command](args)
 
 

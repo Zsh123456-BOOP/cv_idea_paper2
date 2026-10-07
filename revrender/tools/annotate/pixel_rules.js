@@ -107,7 +107,7 @@
       next.done[pi]=!!page.done;next.pageSeconds[pi]=page.overview_seconds||0;
     }
     next.extra=[...extra.values()];
-    for(let pi=0;pi<pack.pages.length;pi++)if([...pack.rows,...next.extra].some(r=>r.page===pi&&!next.rows[r.id]?.deleted&&!next.rows[r.id]?.confirmed))next.done[pi]=false;
+    for(let pi=0;pi<pack.pages.length;pi++)if(pack.task!=='region_selection'&&[...pack.rows,...next.extra].some(r=>r.page===pi&&!next.rows[r.id]?.deleted&&!next.rows[r.id]?.confirmed))next.done[pi]=false;
     return next;
   }
   function exportPages(pack, source) {

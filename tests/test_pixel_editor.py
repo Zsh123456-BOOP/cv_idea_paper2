@@ -187,11 +187,16 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         vm.runInContext('dab(8,8,true);changed()',ctx);
         const brushOutside=vm.runInContext('mask[88]',ctx);
 
-        console.log(JSON.stringify({erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey}));
+        vm.runInContext("pack.task='region_selection';",ctx);await vm.runInContext('overview(0)',ctx);
+        vm.runInContext('whole.handlers.create([[0,0],[3,0],[3,3],[0,3]]);',ctx);
+        vm.runInContext("$('pageDone').onclick();",ctx);
+        const frameMode=vm.runInContext("({detail:inDetail,task:exported().task,done:store.done[0],confirmed:rows.some(r=>ensure(r).confirmed),empty:rows.at(-1).runs.length===0})",ctx);
+        console.log(JSON.stringify({frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
     got=json.loads(subprocess.check_output([NODE,'-e',command],text=True))
+    assert got['frameMode']=={'detail':False,'task':'region_selection','done':True,'confirmed':False,'empty':True}
     assert got['erased'] and got['protectedAgain']
     assert got['loaded']=={'count':1,'note':'my annotation','confirmed':True,'mode':'paint'}
     assert got['saved'] and got['deleted']['revisions']==[]
