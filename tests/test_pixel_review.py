@@ -132,3 +132,25 @@ def test_click_refiner_receives_white_outside_polygon(tmp_path):
         'runs':[[0,100]],'domain_runs':M.encode(domain)})
     assert (crop[~domain]==255).all() and (crop[domain]==20).all()
     assert np.array_equal(mask,domain)
+
+
+def test_exact_batch_preserves_whole_questions_and_writer_diversity():
+    from revrender.tools.annotate.pixel_batch import exact_questions
+    questions=[{'id':str(i),'revisions':[{}]*n} for i,n in enumerate([6,3,2,2,3])]
+    chosen=exact_questions(questions,10)
+    assert sum(len(q['revisions']) for q in chosen)==10
+    assert len(chosen)==4 and len({q['id'] for q in chosen})==4
+    with pytest.raises(RuntimeError):exact_questions(questions,1)
+
+
+def test_standalone_without_human_export_keeps_model_prefill_unconfirmed(tmp_path):
+    from revrender.tools.annotate.pixel_offline import standalone, EmbeddedReview
+    source=tmp_path/'pack';source.mkdir()
+    grey=np.full((10,20),255,np.uint8);grey[5,3:15]=20
+    Image.fromarray(grey).save(source/'p.png')
+    row={'id':'r','page':0,'box':[0,0,20,10],'region':[[0,0],[20,0],[20,10],[0,10]],'runs':M.encode(grey<200)}
+    (source/'pack.json').write_text(json.dumps({'id':'new-batch','pages':[{'id':'p','size':[20,10],'image':'p.png'}],'rows':[row]}))
+    standalone(Namespace(pack=source,review_export=None,output_dir=tmp_path/'offline'))
+    result=json.loads(EmbeddedReview((tmp_path/'offline/标注.html').read_text()).values['review-pack'])
+    assert result['rows'][0]['runs']==row['runs'] and not result['rows'][0].get('confirmed')
+    assert result['initial_export']['pages']=={}

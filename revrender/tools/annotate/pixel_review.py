@@ -41,8 +41,11 @@ def pack(args):
     pages=[];rows=[]
     for qi,q in enumerate(selected):
         with Image.open(paths[q['id']]) as image:
-            image.convert('RGB').save(out/'pages'/f'{qi}.png')
             grey=np.asarray(image.convert('L'))
+            if getattr(args,'review_clean',False):
+                from ...data.clean_pages import review_clean
+                grey=review_clean(grey)
+            Image.fromarray(grey).convert('RGB').save(out/'pages'/f'{qi}.png')
         if checkpoint:
             boxes=[crop_of(r['region'],(grey.shape[1],grey.shape[0])) for r in q['revisions'] if r['kind']=='line']
             instances=read_boxes(model,{'mask_threshold':.4,'nms':.5,'score_threshold':0},grey,boxes,top=1) if boxes else []
@@ -171,12 +174,13 @@ def main(argv=None):
     p=sub.add_parser('pack');p.add_argument('--prefill',type=Path,required=True)
     source=p.add_mutually_exclusive_group(required=True);source.add_argument('--masks',type=Path);source.add_argument('--checkpoint',type=Path)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--first',type=int,default=5)
+    p.add_argument('--review-clean',action='store_true',help='use connected-ink cleaned pages for both model input and display')
     p.add_argument('--name',required=True);p.add_argument('--output-dir',type=Path,required=True)
     r=sub.add_parser('refresh',help='preserve pack identity and use existing cleaned pages, writing a new directory')
     r.add_argument('--pack',type=Path,required=True);r.add_argument('--clean-pages',type=Path,required=True)
     r.add_argument('--output-dir',type=Path,required=True)
     o=sub.add_parser('standalone',help='clean scans and embed imported progress in one offline HTML')
-    o.add_argument('--pack',type=Path,required=True);o.add_argument('--review-export',type=Path,required=True)
+    o.add_argument('--pack',type=Path,required=True);o.add_argument('--review-export',type=Path)
     o.add_argument('--output-dir',type=Path,required=True)
     u=sub.add_parser('update-html',help='update an offline editor without changing images or draft identity')
     u.add_argument('--source',type=Path,required=True);u.add_argument('--output-dir',type=Path,required=True)

@@ -129,7 +129,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
       const base={id:'p#r',page:0,box:[0,0,10,10],region:[[0,0],[10,0],[10,10]],runs:[[2,3]]};
       const pack={id:'fixture',standalone:true,image_revision:'clean',pages:[{id:'p',question:1,size:[10,10],image:'data:image/png;base64,x'}],rows:[base]};
       pack.initial_export={schema:'paper2-pixel-review-v1',pack:'fixture',pages:{p:{done:false,revisions:[{...base,confirmed:true,note:'my annotation'}]}}};
-      const disk=new Map(),nodes=new Map();
+      const disk=new Map(),nodes=new Map(),handlers={};
       function node(id=''){
         if(nodes.has(id))return nodes.get(id);
         const n={id,style:{},dataset:{},value:2,children:[],clientWidth:800,clientHeight:400,scrollTop:0,scrollLeft:0,
@@ -140,8 +140,8 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
       }
       const buttons=['add','keep','paint','erase','pan'].map(mode=>{const n=node(mode);n.dataset.mode=mode;return n;});
       node('review-pack').textContent=JSON.stringify(pack);node('review-draft').textContent='null';
-      const doc={visibilityState:'visible',getElementById:node,createElement:()=>node(),addEventListener(){},
-        querySelectorAll:q=>q==='[data-mode]'?buttons:buttons.slice(0,2),querySelector:()=>buttons[2]};
+      const doc={visibilityState:'visible',getElementById:node,createElement:()=>node(),addEventListener:(name,fn)=>handlers[name]=fn,
+        querySelectorAll:q=>q==='[data-mode]'?buttons:buttons.slice(0,2),querySelector:q=>buttons.find(b=>q.includes('\"'+b.dataset.mode+'\"'))};
       const ctx={document:doc,PixelReview:R,PixelViewports:Viewports,console,Uint8Array,Uint8ClampedArray,Map,Date,Math,JSON,Promise,setTimeout,clearTimeout,
         localStorage:{getItem:k=>disk.get(k)||null,setItem:(k,v)=>disk.set(k,v)},
         Image:class{async decode(){}},ImageData:class{constructor(data,width,height){Object.assign(this,{data,width,height});}},
@@ -153,6 +153,11 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         await vm.runInContext('start()',ctx);
         const loaded=vm.runInContext('({count:rows.length,note:state().note,confirmed:state().confirmed,mode})',ctx);
         await vm.runInContext('show(0)',ctx);
+        const keyEvent=(key,tagName='BUTTON',extra={})=>({key,target:{tagName},preventDefault(){},...extra});
+        handlers.keydown(keyEvent('e'));const eraseKey=vm.runInContext('mode',ctx);
+        handlers.keydown(keyEvent('b','INPUT'));const textKey=vm.runInContext('mode',ctx);
+        handlers.keydown(keyEvent('b','BUTTON',{isComposing:true}));const imeKey=vm.runInContext('mode',ctx);
+        handlers.keydown(keyEvent('B'));const paintKey=vm.runInContext('mode',ctx);
         vm.runInContext("$('note').value='saved human note';$('note').oninput();",ctx);
         const saved=[...disk.values()].map(JSON.parse).find(s=>s.rows?.['p#r']?.note==='saved human note');
         vm.runInContext("deleteRegion('p#r')",ctx);await new Promise(r=>setTimeout(r,0));
@@ -176,7 +181,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         vm.runInContext('dab(8,8,true);changed()',ctx);
         const brushOutside=vm.runInContext('mask[88]',ctx);
 
-        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside}));
+        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
@@ -190,6 +195,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
     assert got['before']==got['undone'] and got['stamp'] and got['automaticSaved']
     assert got['applied']=={'runs':[[44,2]],'confirmed':False}
     assert got['outsideWhite'] and got['brushOutside']==0
+    assert [got[k] for k in ['eraseKey','textKey','imeKey','paintKey']]==['erase','erase','erase','paint']
 
 
 def test_residue_proposals_are_local_protect_dark_ink_and_do_not_mutate_masks():

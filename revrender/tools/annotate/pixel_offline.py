@@ -21,13 +21,14 @@ def script_json(value):
 def standalone(args):
     from .pixel_review import HERE, ASSETS, write_assets
     payload = json.loads((args.pack/'pack.json').read_text())
-    original = json.loads(args.review_export.read_text())
+    original = json.loads(args.review_export.read_text()) if args.review_export else {
+        'schema':'paper2-pixel-review-v1','pack':payload['id'],'pages':{}}
     require(original.get('schema') == 'paper2-pixel-review-v1' and original.get('pack') == payload['id'],
             'annotation file does not belong to this pack')
     known = {p['id'] for p in payload['pages']}
     require(set(original['pages']) <= known, 'unknown annotation pages')
     initial = copy.deepcopy(original)
-    inputs = {str(p): digest(p) for p in [args.pack/'pack.json', args.review_export, *(HERE/n for n in ASSETS),
+    inputs = {str(p): digest(p) for p in [args.pack/'pack.json', *([args.review_export] if args.review_export else []), *(HERE/n for n in ASSETS),
                                         HERE/'pixel_offline.py', HERE.parent.parent/'data/clean_pages.py',
                                         HERE.parent.parent/'tighten.py']}
     images, stats, seen = [], [], set()
@@ -79,7 +80,8 @@ def standalone(args):
     payload.update(image_revision=revision, image_source=str((out/'images').resolve()))
     initial.update(image_revision=revision, image_source=payload['image_source'])
     # Exact original remains recoverable, even when pale mask pixels need reconfirmation.
-    shutil.copyfile(args.review_export, out/'source_annotations.json')
+    if args.review_export:
+        shutil.copyfile(args.review_export, out/'source_annotations.json')
     write_json(out/'imported_annotations.json', initial)
     payload['initial_export'] = initial
     write_json(out/'pack.json', payload)
@@ -90,7 +92,7 @@ def standalone(args):
         page['image'] = 'data:image/png;base64,'+base64.b64encode((out/page['image']).read_bytes()).decode()
     (out/'标注.html').write_text(render_html(inline))
     write_manifest(out, config=to_jsonable(args), inputs=inputs, cleaning='connected-ink-soft-edge',
-                   pages=stats, revisions=sum(len(p.get('revisions', [])) for p in initial['pages'].values()),
+                   pages=stats, revisions=len(payload['rows']), imported_revisions=sum(len(p.get('revisions', [])) for p in initial['pages'].values()),
                    completed_questions=sum(bool(p.get('done')) for p in initial['pages'].values()))
     print(json.dumps({'output':str(out/'标注.html'), 'pages':stats}, ensure_ascii=False))
 

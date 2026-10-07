@@ -224,6 +224,9 @@ $('import').onchange=async e=>{
   }catch(error){status('导入失败，现有标注未变：'+error.message,true);}e.target.value='';
 };
 document.addEventListener('keydown',e=>{
+  if(e.isComposing)return;
+  const editingText=['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)||e.target.isContentEditable;
+  if(inDetail&&!editingText&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&['b','e'].includes(e.key.toLowerCase())){e.preventDefault();document.querySelector('[data-mode="'+(e.key.toLowerCase()==='b'?'paint':'erase')+'"]').click();return;}
   if(['INPUT','TEXTAREA','BUTTON','SELECT'].includes(e.target.tagName))return;const k=e.key.toLowerCase();
   if((e.ctrlKey||e.metaKey)&&k==='z'){e.preventDefault();restore(e.shiftKey?future:history,e.shiftKey?history:future);}
   else if(k==='0'||k==='escape'){e.preventDefault();if(inDetail)overview();else whole.fit();}
