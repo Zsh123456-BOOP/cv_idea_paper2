@@ -162,18 +162,15 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         node('review-draft').textContent=JSON.stringify(saved);disk.clear();await vm.runInContext('start()',ctx);
         const reopened=vm.runInContext('state().note',ctx);
         await vm.runInContext('show(0)',ctx);
-        vm.runInContext("grey.fill(255);mask.fill(0);mask[44]=1;grey[44]=20;grey[45]=200;state().runs=R.encode(mask);$('cleanupThreshold').value=180;$('cleanupRadius').value=2;$('cleanupArea').value=3;$('cleanupGray').checked=true;$('cleanupDots').checked=false;",ctx);
+        vm.runInContext("grey.fill(255);mask.fill(0);mask[44]=1;grey[44]=20;grey[45]=150;state().runs=R.encode(mask);",ctx);
         const before=vm.runInContext('JSON.stringify(state().runs)',ctx);
-        vm.runInContext('previewCleanup()',ctx);
-        const preview=vm.runInContext('({total:cleanupPreview.total,runs:JSON.stringify(state().runs)})',ctx);
-        vm.runInContext("$('cleanupCancel').click()",ctx);
-        const cancelled=vm.runInContext('JSON.stringify(state().runs)',ctx);
-        vm.runInContext("previewCleanup();$('cleanupApply').click()",ctx);
-        const applied=vm.runInContext('({runs:state().runs,confirmed:state().confirmed,preview:cleanupPreview})',ctx);
+        vm.runInContext('remember();changed()',ctx);
+        const applied=vm.runInContext('({runs:state().runs,confirmed:state().confirmed})',ctx);
+        const automaticSaved=[...disk.values()].map(JSON.parse).some(s=>JSON.stringify(s.rows?.['p#r']?.runs)==='[[44,2]]');
         await vm.runInContext('restore(history,future)',ctx);
         const undone=vm.runInContext('JSON.stringify(state().runs)',ctx);
-
-        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened,before,preview,cancelled,applied,undone}));
+        const stamp=vm.runInContext('JSON.stringify(state().autoCleanup)===JSON.stringify(R.cleanupStamp(state()))',ctx);
+        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
@@ -184,9 +181,8 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
     assert got['restored']=={'count':1,'note':'saved human note','runs':[[2,3]]}
     assert got['reopened']=='saved human note'
 
-    assert got['preview']=={'total':1,'runs':got['before']}
-    assert got['cancelled']==got['before']==got['undone']
-    assert got['applied']=={'runs':[[44,2]],'confirmed':False,'preview':None}
+    assert got['before']==got['undone'] and got['stamp'] and got['automaticSaved']
+    assert got['applied']=={'runs':[[44,2]],'confirmed':False}
 
 
 def test_residue_proposals_are_local_protect_dark_ink_and_do_not_mutate_masks():
@@ -199,10 +195,26 @@ def test_residue_proposals_are_local_protect_dark_ink_and_do_not_mutate_masks():
       ink(30,15,30,true);ink(32,15,100); // originally separate punctuation
       ink(25,8,200); // far from any erase
       ink(1,0,30,true);ink(2,0,220); // crop boundary, ambiguous
-      const before=Array.from(m),a=R.residueCandidates(g,m,w,{dots:false});
-      const b=R.residueCandidates(g,m,w,{gray:false});
+      const before=Array.from(m),a=R.residueCandidates(g,m,w,{threshold:180,radius:2,maxArea:3,dots:false});
+      const b=R.residueCandidates(g,m,w,{threshold:180,radius:2,maxArea:3,gray:false});
       const strict=R.residueCandidates(g,m,w,{threshold:200,dots:false});
       const empty=R.residueCandidates(g,new Uint8Array(w*h),w);
       return {gray:Array.from(a.added).flatMap((x,i)=>x?[i]:[]),dots:Array.from(b.added).flatMap((x,i)=>x?[i]:[]),strict:strict.total,empty:empty.total,unchanged:JSON.stringify(before)===JSON.stringify(Array.from(m))};
     ''')
     assert got=={'gray':[206],'dots':[206,606],'strict':0,'empty':0,'unchanged':True}
+
+
+def test_fixed_auto_cleanup_is_idempotent_and_keeps_approved_confirmation():
+    got=js('''
+      const grey=new Uint8Array(400).fill(255);grey[105]=20;grey[106]=150;grey[108]=170;grey[110]=190;
+      const s={box:[0,0,20,20],runs:[[105,1]],confirmed:true};
+      const first=R.autoClean(s,grey),once=JSON.stringify(s),second=R.autoClean(s,grey);
+      const reload=JSON.parse(JSON.stringify(s)),third=R.autoClean(reload,grey);
+      const negative={box:s.box,runs:[[105,1]],not_revision:true};
+      const deleted={box:s.box,runs:[[105,1]],deleted:true};
+      return {first,second,third,stable:once===JSON.stringify(s),confirmed:s.confirmed,
+        negative:R.autoClean(negative,grey),deleted:R.autoClean(deleted,grey),config:R.AUTO_CLEANUP};
+    ''')
+    assert got['first']>0 and got['second']==got['third']==0 and got['stable'] and got['confirmed']
+    assert got['negative']==got['deleted']==0
+    assert got['config']=={'threshold':100,'radius':4,'maxArea':12,'gray':True,'dots':True}

@@ -121,4 +121,4 @@ def test_html_asset_update_keeps_images_storage_identity_and_embedded_progress(t
     assert json.loads(values['review-pack'])==payload
     assert json.loads(values['review-draft'])==draft
     assert source.read_bytes()==old
-    assert 'id="cleanupThreshold"' in (out/'标注.html').read_text()
+    assert '自动清理：灰度 ≥100' in (out/'标注.html').read_text()

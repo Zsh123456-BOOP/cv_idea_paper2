@@ -84,9 +84,23 @@
         revisions:selected.filter(r=>!r.deleted),deleted_revisions:selected.filter(r=>r.deleted)};
     });return pages;
   }
+  const AUTO_CLEANUP=Object.freeze({threshold:100,radius:4,maxArea:12,gray:true,dots:true});
+  const CLEANUP_POLICY='residue-100-4-12-v1';
+  function cleanupStamp(state){return {policy:CLEANUP_POLICY,box:state.box.slice(),runs:state.runs.map(r=>r.slice())};}
+  function autoClean(state,grey){
+    if(state.deleted||state.not_revision)return 0;
+    const stamp=cleanupStamp(state);
+    if(state.autoCleanup?.policy===stamp.policy&&JSON.stringify(state.autoCleanup.box)===JSON.stringify(stamp.box)&&JSON.stringify(state.autoCleanup.runs)===JSON.stringify(stamp.runs))return 0;
+    const width=state.box[2]-state.box[0],mask=decode(state.runs,grey.length);
+    const candidate=residueCandidates(grey,mask,width,AUTO_CLEANUP);
+    for(let i=0;i<mask.length;i++)if(candidate.added[i])mask[i]=1;
+    state.runs=encode(mask);state.autoCleanup=cleanupStamp(state);
+    state.autoCleanedPixels=(state.autoCleanedPixels||0)+candidate.total;
+    return candidate.total;
+  }
   function residueCandidates(grey, mask, width, options={}) {
     // Suggestions only: never mutate the human mask or the scan.
-    const {threshold=180,radius=2,maxArea=3,gray=true,dots=true}=options;
+    const {threshold,radius,maxArea,gray,dots}={...AUTO_CLEANUP,...options};
     const size=grey.length,height=size/width,added=new Uint8Array(size);
     if(mask.length!==size||!Number.isInteger(height))throw Error('图像尺寸不匹配');
     if(threshold<0||threshold>245||radius<1||radius>4||maxArea<1||maxArea>12)throw Error('清理参数超出范围');
@@ -129,5 +143,5 @@
     }
     return {added,gray:countGray,dots:countDots,groups,total:countGray+countDots};
   }
-  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates};
+  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean};
 });
