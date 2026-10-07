@@ -1,0 +1,19 @@
+# Small real-correction pilot; same initialized box remover, human + synthetic replay.
+[model]
+variant = "control"
+[train]
+batch_size = 8
+negative_ratio = 1.0
+optimizer_steps = 800
+warmup_steps = 50
+validation_interval = 200
+select_from_step = 200
+early_validation_multiplier = 1
+learning_rate = 2e-5
+weight_decay = 1e-4
+grad_clip = 5.0
+clip_groups = ["find.mask_iou"]
+early_stop_patience = 0
+[stages]
+smoke = 4
+learning = 512
