@@ -75,8 +75,8 @@ def export(args):
         for r in labels[image_id]['revisions']:
             if r.get('deleted') or r.get('unreadable') or not prepare(r.get('text','')).replace('?',''):continue
             # Same annotated box + 6px context as the earlier crop OCR experiment.
-            points=np.asarray(r['region']);l,t=np.maximum(0,points.min(0)-6).astype(int)
-            rr,b=np.minimum([grey.shape[1],grey.shape[0]],points.max(0)+6).astype(int)
+            points=np.asarray(r['region']);l,t=(int(v) for v in np.maximum(0,points.min(0)-6))
+            rr,b=(int(v) for v in np.minimum([grey.shape[1],grey.shape[0]],points.max(0)+6))
             raw=grey[t:b,l:rr].astype(np.float32)/255;restored=restore_native(predict,raw)
             for model,pixels in [('scan',raw),(name,restored)]:
                 path=f'crops/{len(rows):05d}.png';Image.fromarray(np.rint(pixels*255).astype(np.uint8)).save(pack/path)
