@@ -170,7 +170,13 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         await vm.runInContext('restore(history,future)',ctx);
         const undone=vm.runInContext('JSON.stringify(state().runs)',ctx);
         const stamp=vm.runInContext('JSON.stringify(state().autoCleanup)===JSON.stringify(R.cleanupStamp(state()))',ctx);
-        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp}));
+        vm.runInContext("state().region=[[0,0],[10,0],[10,3],[3,3],[3,10],[0,10]];state().runs=[];delete state().outsideMask;",ctx);
+        await vm.runInContext('show(0)',ctx);
+        const outsideWhite=vm.runInContext('original.data[(8*10+8)*4]===255',ctx);
+        vm.runInContext('dab(8,8,true);changed()',ctx);
+        const brushOutside=vm.runInContext('mask[88]',ctx);
+
+        console.log(JSON.stringify({loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
@@ -183,6 +189,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
 
     assert got['before']==got['undone'] and got['stamp'] and got['automaticSaved']
     assert got['applied']=={'runs':[[44,2]],'confirmed':False}
+    assert got['outsideWhite'] and got['brushOutside']==0
 
 
 def test_residue_proposals_are_local_protect_dark_ink_and_do_not_mutate_masks():
@@ -218,3 +225,45 @@ def test_fixed_auto_cleanup_is_idempotent_and_keeps_approved_confirmation():
     assert got['first']>0 and got['second']==got['third']==0 and got['stable'] and got['confirmed']
     assert got['negative']==got['deleted']==0
     assert got['config']=={'threshold':100,'radius':4,'maxArea':12,'gray':True,'dots':True}
+
+
+def test_concave_polygon_clips_display_and_preserves_excluded_edits_on_expansion():
+    got=js('''
+      const region=[[10,20],[18,20],[18,23],[13,23],[13,28],[10,28]];
+      const original={box:[10,20,18,28],region:[[10,20],[18,20],[18,28],[10,28]],runs:[[0,64]],note:'human'};
+      const clipped=R.clipRegion(original,region,original.box),domain=R.regionPixels(region,original.box);
+      const rgba=new Uint8ClampedArray(64*4).fill(25);for(let i=0;i<64;i++)rgba[i*4+3]=255;
+      R.whiteOutside(rgba,domain);
+      const notched=5*8+5,inside=5*8+1;
+      const narrow=R.reshape(clipped,[[10,20],[13,20],[13,28],[10,28]],[40,40]);
+      const expanded=R.reshape(JSON.parse(JSON.stringify(narrow)),original.region,[40,40]);
+      const back=R.remap(expanded.runs,expanded.box,original.box);
+      const pack={pages:[{id:'p'}],rows:[{...clipped,id:'r',page:0}]};
+      const exported=R.exportPages(pack,{rows:{r:clipped},extra:[],done:{},pageSeconds:{}}).p.revisions[0];
+      return {active:R.decode(clipped.runs,64).reduce((a,b)=>a+b,0),parked:R.decode(clipped.outsideMask.runs,64).reduce((a,b)=>a+b,0),
+        outside:Array.from(rgba.slice(notched*4,notched*4+4)),inside:Array.from(rgba.slice(inside*4,inside*4+4)),back,exported:exported.runs,note:expanded.note};
+    ''')
+    assert got['active']==39 and got['parked']==25
+    assert got['outside']==[255,255,255,255] and got['inside']==[25,25,25,255]
+    assert got['back']==[[0,64]] and got['note']=='human'
+    assert sum(n for _,n in got['exported'])==39
+
+
+def test_auto_cleanup_cannot_reach_adjacent_line_outside_polygon():
+    got=js('''
+      const g=new Uint8Array(100).fill(255);g[22]=20;g[23]=150;g[33]=150;
+      const s={box:[0,0,10,10],region:[[0,0],[10,0],[10,3],[3,3],[3,10],[0,10]],runs:[[22,1]]};
+      R.autoClean(s,g);const m=R.decode(s.runs,100);
+      return {inside:m[23],outside:m[33],runs:s.runs};
+    ''')
+    assert got['inside']==1 and got['outside']==0
+
+
+def test_fit_whole_crop_respects_height_and_does_not_stretch():
+    path=RULES.with_name('pixel_viewports.js')
+    got=js('''
+      const V=require(PATH),views=[0,1].map(()=>({clientWidth:800,clientHeight:300,scrollLeft:0,scrollTop:0,addEventListener(){}}));
+      const canvases=[0,1].map(()=>({width:400,height:1200,style:{}}));
+      const v=new V(views,canvases,()=>{});v.fit();return {scale:v.scale,width:parseFloat(canvases[0].style.width),height:parseFloat(canvases[0].style.height)};
+    '''.replace('PATH',json.dumps(str(path))))
+    assert got['height']==298 and got['width']==pytest.approx(298/3)

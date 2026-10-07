@@ -9,12 +9,12 @@ class PixelViewports {
   zoom(scale,anchor=null){
     const v=this.views[0],x=anchor?.[0]??v.clientWidth/2,y=anchor?.[1]??v.clientHeight/2;
     const nx=(v.scrollLeft+x)/this.scale,ny=(v.scrollTop+y)/this.scale;
-    this.scale=Math.max(.5,Math.min(64,scale));
+    this.scale=Math.max(.02,Math.min(64,scale));
     for(const c of this.canvases){c.style.width=c.width*this.scale+'px';c.style.height=c.height*this.scale+'px';}
     for(const view of this.views){view.scrollLeft=nx*this.scale-x;view.scrollTop=ny*this.scale-y;}
     this.onzoom(this.scale);
   }
-  fit(){this.zoom((this.views[0].clientWidth-2)/this.canvases[0].width);for(const v of this.views){v.scrollLeft=0;v.scrollTop=0;}}
+  fit(){this.zoom(Math.min(...this.views.map(v=>Math.min((v.clientWidth-2)/this.canvases[0].width,(v.clientHeight-2)/this.canvases[0].height))));for(const v of this.views){v.scrollLeft=0;v.scrollTop=0;}}
   down(e,view){e.preventDefault();view.setPointerCapture(e.pointerId);this.drag={x:e.clientX,y:e.clientY,left:view.scrollLeft,top:view.scrollTop,view};}
   move(e){if(!this.drag)return;const d=this.drag;d.view.scrollLeft=d.left+d.x-e.clientX;d.view.scrollTop=d.top+d.y-e.clientY;this.sync(d.view);}
   up(){this.drag=null;}

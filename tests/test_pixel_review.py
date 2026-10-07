@@ -122,3 +122,13 @@ def test_html_asset_update_keeps_images_storage_identity_and_embedded_progress(t
     assert json.loads(values['review-draft'])==draft
     assert source.read_bytes()==old
     assert '自动清理：灰度 ≥100' in (out/'标注.html').read_text()
+
+
+def test_click_refiner_receives_white_outside_polygon(tmp_path):
+    grey=np.full((10,10),20,np.uint8);Image.fromarray(grey).save(tmp_path/'p.png')
+    domain=np.zeros((10,10),bool);domain[:3,:]=True;domain[:, :3]=True
+    payload={'pages':[{'image':'p.png','size':[10,10]}]}
+    crop,mask=crop_request(tmp_path,payload,{'page':0,'box':[0,0,10,10],
+        'runs':[[0,100]],'domain_runs':M.encode(domain)})
+    assert (crop[~domain]==255).all() and (crop[domain]==20).all()
+    assert np.array_equal(mask,domain)

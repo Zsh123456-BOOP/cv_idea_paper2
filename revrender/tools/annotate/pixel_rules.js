@@ -2,7 +2,7 @@
 'use strict';
 (function(root, factory) {
   if (typeof module !== 'undefined') module.exports = factory(require('./page_rules.js'));
-  else root.PixelReview = factory({bounds, polygonArea});
+  else root.PixelReview = factory({bounds, polygonArea, pointInPolygon});
 })(typeof window !== 'undefined' ? window : this, function(G) {
   function decode(runs, size) {
     const a = new Uint8Array(size); let end = 0;
@@ -33,7 +33,7 @@
   }
   function cropBox(region, size) {
     const [l,t,r,b] = G.bounds(validRegion(region,size));
-    return validBox([Math.max(0,l-6),Math.max(0,t-6),Math.min(size[0],r+6),Math.min(size[1],b+6)],size);
+    return validBox([l,t,r,b],size);
   }
   function remap(runs, from, to) {
     const oldWidth=from[2]-from[0], width=to[2]-to[0], next=new Uint8Array(width*(to[3]-to[1]));
@@ -45,7 +45,29 @@
   }
   function reshape(state, region, size) {
     region=validRegion(region,size); const box=cropBox(region,size);
-    return {...state, region, box, runs:remap(state.runs,state.box,box), confirmed:false};
+    return {...clipRegion(state,region,box), confirmed:false};
+  }
+  function regionPixels(region,box){
+    const [l,t,r,b]=box,width=r-l,out=new Uint8Array(width*(b-t));
+    for(let y=t;y<b;y++)for(let x=l;x<r;x++)out[(y-t)*width+x-l]=G.pointInPolygon([x+.5,y+.5],region)?1:0;
+    return out;
+  }
+  function clipRegion(state,region=state.region,box=state.box){
+    // Park excluded edits at native coordinates so expanding a polygon can recover them.
+    const boxes=[state.box,box,...(state.outsideMask?[state.outsideMask.box]:[])];
+    const all=[Math.min(...boxes.map(b=>b[0])),Math.min(...boxes.map(b=>b[1])),Math.max(...boxes.map(b=>b[2])),Math.max(...boxes.map(b=>b[3]))];
+    const width=all[2]-all[0],size=width*(all[3]-all[1]),combined=decode(remap(state.runs,state.box,all),size);
+    if(state.outsideMask){const parked=decode(remap(state.outsideMask.runs,state.outsideMask.box,all),size);for(let i=0;i<size;i++)combined[i]|=parked[i];}
+    const allowed=regionPixels(region,box),active=new Uint8Array(allowed.length),cropWidth=box[2]-box[0];
+    for(let y=box[1];y<box[3];y++)for(let x=box[0];x<box[2];x++){
+      const i=(y-box[1])*cropWidth+x-box[0],j=(y-all[1])*width+x-all[0];
+      if(allowed[i]){active[i]=combined[j];combined[j]=0;}
+    }
+    return {...state,region,box,runs:encode(active),outsideMask:{box:all,runs:encode(combined)}};
+  }
+  function whiteOutside(rgba,allowed){
+    for(let i=0;i<allowed.length;i++)if(!allowed[i])for(let c=0;c<3;c++)rgba[i*4+c]=255;
+    return rgba;
   }
   function filterInk(runs, rgba) {
     const mask=decode(runs,rgba.length/4); let removed=0;
@@ -86,14 +108,16 @@
   }
   const AUTO_CLEANUP=Object.freeze({threshold:100,radius:4,maxArea:12,gray:true,dots:true});
   const CLEANUP_POLICY='residue-100-4-12-v1';
-  function cleanupStamp(state){return {policy:CLEANUP_POLICY,box:state.box.slice(),runs:state.runs.map(r=>r.slice())};}
+  function cleanupStamp(state){return {policy:CLEANUP_POLICY,box:state.box.slice(),region:state.region?.map(p=>p.slice()),runs:state.runs.map(r=>r.slice())};}
   function autoClean(state,grey){
     if(state.deleted||state.not_revision)return 0;
     const stamp=cleanupStamp(state);
-    if(state.autoCleanup?.policy===stamp.policy&&JSON.stringify(state.autoCleanup.box)===JSON.stringify(stamp.box)&&JSON.stringify(state.autoCleanup.runs)===JSON.stringify(stamp.runs))return 0;
+    if(state.autoCleanup?.policy===stamp.policy&&JSON.stringify(state.autoCleanup.box)===JSON.stringify(stamp.box)&&JSON.stringify(state.autoCleanup.region)===JSON.stringify(stamp.region)&&JSON.stringify(state.autoCleanup.runs)===JSON.stringify(stamp.runs))return 0;
     const width=state.box[2]-state.box[0],mask=decode(state.runs,grey.length);
-    const candidate=residueCandidates(grey,mask,width,AUTO_CLEANUP);
-    for(let i=0;i<mask.length;i++)if(candidate.added[i])mask[i]=1;
+    const allowed=state.region?regionPixels(state.region,state.box):new Uint8Array(grey.length).fill(1),cleanGrey=grey.slice();
+    for(let i=0;i<mask.length;i++)if(!allowed[i]){mask[i]=0;cleanGrey[i]=255;}
+    const candidate=residueCandidates(cleanGrey,mask,width,AUTO_CLEANUP);
+    for(let i=0;i<mask.length;i++)if(candidate.added[i]&&allowed[i])mask[i]=1;
     state.runs=encode(mask);state.autoCleanup=cleanupStamp(state);
     state.autoCleanedPixels=(state.autoCleanedPixels||0)+candidate.total;
     return candidate.total;
@@ -143,5 +167,5 @@
     }
     return {added,gray:countGray,dots:countDots,groups,total:countGray+countDots};
   }
-  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean};
+  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside};
 });

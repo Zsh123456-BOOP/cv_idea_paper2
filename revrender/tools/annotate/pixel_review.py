@@ -120,6 +120,9 @@ def crop_request(root, payload, body):
     require(0<=l<r<=w and 0<=t<b<=h and (r-l)*(b-t)<=2000000,'crop outside page or too large')
     with Image.open(root/info['image']) as source:
         grey=np.asarray(source.convert('L').crop(tuple(box)))
+    if 'domain_runs' in body:
+        domain=decode(body['domain_runs'],grey.shape)
+        grey=grey.copy();grey[~domain]=255
     return grey,decode(body['runs'],grey.shape) & (grey < 245)
 
 
