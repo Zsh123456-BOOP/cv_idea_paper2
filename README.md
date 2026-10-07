@@ -305,6 +305,10 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 离线复核使用同一套编辑器：`python -m revrender.tools.annotate.pixel_review standalone --pack CLEAN_PACK --review-export HUMAN_JSON --output-dir NEW`。输出 `标注.html` 包含全部 PNG、模型预填和导入的人工进度，双击直接打开，无需服务器；离线时使用画笔 / 橡皮，不运行点击纠错模型。上下两张大图同步拖拽、滚动和缩放，支持完整裁切适配、最高 64 倍放大；空格 / 右键拖动，Enter 确认。错误框可以删除、撤销，或从左侧“已删除”恢复。导出的删除记录在 `deleted_revisions`，不混入训练用的 `revisions`。
 
+新批次默认 80 个模型候选划线区域：`python -m revrender.tools.annotate.pixel_batch --selection TRAIN_SELECTION --mapping MAPPING --same-student PAIRS --exclude-export PREVIOUS_JSON --pages CLEAN_SCANS --revrender CLEAN_DETECTIONS --count 80 --output-dir SELECTED`，仅取训练书写者并排除已标注者及其关联编号，按完整题的候选区域凑足数量，不截断题目；随后 `pixel_review pack --prefill SELECTED --checkpoint BOX_CHECKPOINT --pages CLEAN_SCANS --review-clean --first 0 --name UNIQUE_PACK_ID --output-dir PACK`。新批次 `standalone` 可省略 `--review-export`，全部预填保持未确认。精修快捷键 **B 画笔、E 橡皮**，输入文字、输入法组字和组合键时不触发。
+
+2026-10-07 第二批 `paper2-pixel-train-batch80`：80 处候选、30 道题、30 位不同书写者、8 个题号，旧框内去划线模型 `paper2_strokes_boxes/formal/step_8000.pt` 预填，全部区域有非空预测。服务器产物为 `paper2_pixel_batch80_selection20261007` / `paper2_pixel_batch80_prefilled20261007`，本机离线包 `work/pixel_batch80_offline20261007`，桌面入口 `划线精细标注_第二批80处.html`。检测与预填都需人工复核，不是人工金标。上一批最新 JSON 原样归档至 `work/pixel_review_human19_20261007/annotations.json`：19 处已确认、5 题均未标记整题完成，独立保留，本轮仅运行预填推理，未启动微调。
+
 精修范围以用户多边形为准：用多边形的精确外接范围分配画布（不额外扩边），按原生像素中心判断框内，框外显示白色且不能画笔标记、自动清理或送入在线纠错模型；不拉伸或矫正手写图像。凹多边形可绕开相邻行。打开精修时同时适配窗口宽高，完整显示裁切；仍可继续同步缩放和平移。旧数据也按同一规则读取。框外的既有修正保存在 `outsideMask`，缩框再扩框可按原坐标恢复；只有框内 `runs` 导出为有效掩膜，框外留存不作为训练标签。更新 HTML 保持原路径和草稿键，并备份旧文件。
 
 残留清理按用户 2026-10-07 截图固定为灰度 ≥100、掩膜外 4 像素、孤立碎点 ≤12 像素，灰边和碎点两项开启。载入 / 导入整批标注、画笔结束、模型纠错和调整范围后自动清理并保存，不再预览确认或调参数；保留深色文字邻域和切块边缘的保护规则。自动清理作为用户授权的统一处理保留已有确认状态，人工修改仍按原规则取消确认。清理结果写入原生像素掩膜，导出 / 训练读回一致。保存处理策略及结果，重复载入不继续扩张擦除范围；撤销后也记录当前结果，刷新不重做被撤销的清理。初次整批自动处理可撤销，浏览器草稿和内嵌草稿照旧保留。
@@ -316,7 +320,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 离线包额外调用 `review_clean`，复用 `tighten.non_white` 的深色墨迹（<200）及相连两像素软边（<240），其余浅灰像素置白；不改变原生尺寸和深色像素，也不改变历史实验的清洁默认值。`images/<UUID>.png` 是后续微调所用的同源图像。原人工 JSON 原样备份在 `source_annotations.json`，清洁后标注在 `imported_annotations.json`；受影响的确认状态撤回并提示复核，人工形状、有效像素、备注和用时保留。2026-10-07 提供的部分标注含 22 区域、10 已确认、0 整题完成；清洁从标注中剔除 187 个变白像素，9 个已确认区域需复核。尚不启动微调。
 
 
-收到真实复核后，可在上述 `train_refiner` 命令增加 `--init REFINER_CHECKPOINT --review-export EXPORT.json --selection SELECTION --pages SCANS --review-share .25`，并指定新的微调配方及输出目录。每批混入已完成训练题的真实裁块；误检被确认成“不是涂改”的区域作为全零负例。入口拒绝未确认区域、非训练题、第一篇验证/测试书写者，以及合成验证宿主书写者；默认数据路径不含任何界面验收导出。本轮尚未进行真人复核后的微调。
+收到真实复核后，可在上述 `train_refiner` 命令增加 `--init REFINER_CHECKPOINT --review-export EXPORT.json --selection SELECTION --pages SCANS --review-share .25`，并指定新的微调配方及输出目录。每批混入已完成训练题的真实裁块；读回使用与界面相同的像素中心多边形，框外置白并裁去掩膜，忽略恢复编辑用的 `outsideMask`；误检被确认成“不是涂改”的区域作为全零负例。入口拒绝未确认区域、非训练题、第一篇验证/测试书写者，以及合成验证宿主书写者；默认数据路径不含任何界面验收导出。本轮尚未进行真人复核后的微调。
 
 ## 数据
 

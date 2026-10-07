@@ -154,3 +154,14 @@ def test_standalone_without_human_export_keeps_model_prefill_unconfirmed(tmp_pat
     result=json.loads(EmbeddedReview((tmp_path/'offline/标注.html').read_text()).values['review-pack'])
     assert result['rows'][0]['runs']==row['runs'] and not result['rows'][0].get('confirmed')
     assert result['initial_export']['pages']=={}
+
+
+def test_reviewed_training_crop_uses_polygon_and_ignores_archived_pixels():
+    page=Image.fromarray(np.full((20,30),20,np.uint8))
+    row={'box':[10,5,20,15],'region':[[10,5],[20,5],[20,8],[13,8],[13,15],[10,15]],
+         'runs':[[0,100]],'outsideMask':{'box':[10,5,20,15],'runs':[[88,1]]}}
+    image,label=M.reviewed_crop(page,row)
+    assert label.sum()==51 and image[8,8]==255 and label[8,8]==0
+    assert image[1,8]==20 and label[1,8]==1
+    _,negative=M.reviewed_crop(page,{**row,'not_revision':True})
+    assert not negative.any()

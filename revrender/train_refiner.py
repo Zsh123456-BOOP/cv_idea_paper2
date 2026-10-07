@@ -37,7 +37,7 @@ def reviewed(paths, selection, folders, mapping, same_student, excluded=()):
     """
     from PIL import Image
     from . import pages as pages_module
-    from .data.pixel_masks import SCHEMA, decode
+    from .data.pixel_masks import SCHEMA, reviewed_crop
     from .data.synthetic_set import strip
     selected={p['image_id']:p for p in json.loads(selection.read_text())['pages']}
     splits=writer_splits(mapping,same_student)
@@ -63,12 +63,8 @@ def reviewed(paths, selection, folders, mapping, same_student, excluded=()):
         with Image.open(files[key]) as opened:
             page=opened.convert('L')
         for r in q['revisions']:
-            l,t,right,bottom=r['box']
-            require(all(type(v) is int for v in r['box']) and 0<=l<right<=page.width and 0<=t<bottom<=page.height,'review crop outside scan')
-            mask=decode(r['runs'],(bottom-t,right-l)).astype(np.uint8)
-            if r.get('not_revision'):
-                mask[:]=0
-            image,target=strip(page.crop(tuple(r['box'])),mask)
+            crop,mask=reviewed_crop(page,r)
+            image,target=strip(Image.fromarray(crop),mask)
             images.append(image);labels.append(target)
     require(images,'completed questions contain no reviewed regions')
     return np.stack(images),np.stack(labels)
