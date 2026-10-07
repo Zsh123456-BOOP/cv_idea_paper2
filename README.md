@@ -586,7 +586,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 原生基线的反向梯度范数在两次运行之间相对差 ≤ 4e-5（detectron2 的 RoIAlign 等 CUDA 原子加）；前向、损失、存档逐位一致。
 - 本地没有 torch / detectron2 / segmentation_models_pytorch，模型类测试在本地跳过，在服务器上跑全部。
 
-### 恢复 baseline 与预测素材配对（2026-10-07，进行中）
+### 恢复 baseline 与预测素材配对（2026-10-07，首轮完成）
 
 用户授权 DocDiff、DE-GAN、NAFNet 在 4090 的 0、3 号卡上复现并适配本任务；允许 `ALLOW_GPU3=1`。先做相同预算的任务适配对照，不把它称为复现原论文所有数据集的指标。`data.restoration_pairs` 从原始干净宿主构造干净/受损对，不把预测擦除后的图当干净真值。三组为人工金标素材、预测掩膜与墨迹相交后筛选的素材、同批预测路径重绘素材；相同宿主、裁框、位置、随机种子。验证宿主书写者和已有人工微调验证书写者均不进入素材库，第一篇 dev/test 书写者不进入训练宿主或素材。合成验证采用各组相同的独立程序划线，仅作受控比较；真实场景需另用人工验证/测试读数。
 
@@ -599,3 +599,5 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 像素审计发现 v3 的普通 alpha 叠加会把更黑的底层墨迹变浅，约占改动像素 5%；测试评估前已停止旧队列。v4 取 `min(底稿, 叠加图)`，仅纠正变浅像素，其余宿主、素材、位置、划分和随机数全部不变，目标仍是原底稿。`data.restoration_pairs darken --source SOURCE --output-dir OUT` 支持可审计的等价修复；新构造器默认就用只能加深的公式。旧队列有 `SUPERSEDED.txt`，不作为最终实验。
 
 测试入口 `scripts/eval_restoration_pilot.sh`：要求两卡的 9 个训练作业全部完成后，只加载人工验证选定版本。`baselines.restoration_export` 在人工标出的真实涂改区域中恢复，导出同一批原图/恢复图给固定 Qwen3-VL-8B、中性转写指令，统计已有 `revision_boxes.read` 的字符保留与严格完全正确率；另读 7 题逐笔测试金标，固定增亮阈值统计误擦漏擦。此处使用人工区域，是去划线模块的条件评测，不是整页检测到恢复的端到端成绩；读取测试结果后不能回头选 checkpoint。
+
+首轮 9 组训练和冻结后的真实测试均已完成，完整结果见 RESULTS 末节；本机离线对比页 `work/restoration_pilot20261007/index.html`。本轮最高字符读回为 NAFNet 原金标素材 54.54%（同次原图 48.88%）；新素材尚未稳定提升文字读回，路径重绘减少部分误擦。仅为短预算任务适配，现有人工标注预填模型未因此替换。
