@@ -1,0 +1,291 @@
+# 划线下手写内容恢复：Baseline 调研与实验清单
+
+核查日期：2026-10-08。对象：第二篇论文，学生完整作答中的划线分离、文字保护及被划内容识别。
+
+本文区分“论文已正式发表”“发表场所达到要求”“作者公开了代码”“代码可以正确复现”四件事。检索到论文或 GitHub 页面，不代表后两项已经满足。本轮只调研、检查源码和制定清单，没有启动新训练、修改标注或替换现有模型。
+
+## 1. 决策：不能只跑原来的三个通用恢复模型
+
+**建议正式比较包含六个核心恢复系统，另将 VCGAN 列为必须解决复现问题的第七个候选。** 六个系统是：划线专用 CycleGAN、COR-Generator、NAFNet、Restormer、DocDiff、DE-GAN。前三个已做过的模型继续保留，但 4,000 步结果只作先导试验。DocRes 作为补充，不优先扩展训练；缺少完整代码或任务不一致的近期论文列入相关工作和待核查清单。
+
+此前清单遗漏了 ICDAR 2021 的专用划线恢复方法、IJDAR 2024 的 VCGAN，以及 2025/2026 年直接研究作答恢复、划线识别的工作。这一遗漏会使比较对象偏向通用恢复，应当纠正。
+
+| 实验角色 | 确定的系统 | 为什么需要 | 当前条件 |
+| --- | --- | --- | --- |
+| 核心 B1 | Strikethrough-CycleGAN，ICDAR 2021 | 直接研究恢复被划掉的字；检验非配对训练路线 | 官方训练、测试、配置已检查；普通版本先进入同信息量比较，属性引导版本另列条件 |
+| 核心 B2 | COR-Generator，按 IJDAR 2026 采用的恢复系统复现 | 直接相关的配对监督网络，避免只和不擅长划线的通用网络比较 | 原始算法与代码来自 DAS 2022；2026 正式期刊明确采用，必须双重归属，详见第 4 节 |
+| 核心 B3 | NAFNet，ECCV 2022 | 简洁、强的通用卷积恢复对照 | 已完成短预算适配，需统一协议正式重跑 |
+| 核心 B4 | Restormer，CVPR 2022 | 补足通用 Transformer 恢复路线 | 官方训练代码公开，尚未在本任务运行 |
+| 核心 B5 | DocDiff，ACM MM 2023 | 文档专用残差扩散，检验细笔画恢复 | 已完成短预算适配；正式版须重新审查 EMA 和训练预算 |
+| 核心 B6 | DE-GAN，TPAMI 2022 卷期 | 文档条件 GAN；与专用 CycleGAN 区分 | 已完成短预算适配，不能因先导结果差就删除 |
+| 条件 B7 | VCGAN，IJDAR 2024 | 直接针对划线及文字结构的非配对方法 | 官方源码核心 Top-k 损失断开梯度；修复并核对论文后才允许训练和计入正式表 |
+| 补充 B8 | DocRes，CVPR 2024 | 验证文档预训练和任务提示是否有用 | 原生五任务不含去划线；应明确命名任务适配版本，不直接把掩膜塞入并声称原论文复现 |
+
+这里的“核心”是本项目的实验选择，不是论文水平排名。B2 的 CCF 合格依据是 **IJDAR 2026 正式论文中采用的系统**；原始 DAS 2022 论文没有因此变成 CCF C。若主表要求“每个算法首次发表场所本身都入 CCF”，将 B2 独立列为强相关补充对照，不隐去其出处。
+
+## 2. 任务定义与纳入条件
+
+输入为含划线的真实作答图或定位后的区域。目标是分离作废划线，保留原有文字结构，改善被划内容的读取。恢复出的内容仍保留“已作废”属性，不能重新混入最终有效答案。
+
+纳入核心比较需要同时满足：
+
+1. 正式论文可由出版社、会议论文集或作者机构记录确认，不能只有 arXiv 和作者声称录用。
+2. 场所达到 CCF A/B/C；或中科院 1/2/3 区且分区年份与学科口径可核实。会议不套用期刊分区。
+3. 输出可以用于我们的恢复任务；检测、整词删除、整页去阴影分别标明，不能只凭标题相似纳入。
+4. 代码来源、关键损失、输入信息和训练适配可交代；没有作者代码时必须注明自行实现，不能伪装成官方复现。
+
+完全遮黑且无法确认的原文字不设虚构像素真值。真实数据中的“可确认擦除区域”与“完整干净底稿”不同；后者主要由合成配对数据提供。图像看起来干净、划线像素 F1 高、文字读得对，也分别是不同结论。
+
+## 3. 发表等级核验
+
+CCF 已发布第七版目录，公告为 2026-03-31，页面注明 2026-04-09 勘误。本报告交叉查看了官方分类页和 CCF 2026 目录原文的高校镜像；官方分类网页有更新滞后迹象，不能只看网页标题就认为其内容已经同步新版。[CCF 正式公告](https://www.ccf.org.cn/Academic_Evaluation/By_category/2026-03-31/870181.shtml)、[CCF 2026 目录原文，高校图书馆镜像](https://lib.ecnu.edu.cn/_upload/article/files/e2/d9/dd45764345088869915f6b3617a4/28891f1f-eb8a-4000-a279-6e7141d92488.pdf)。
+
+| 场所 | 本轮确认的 CCF 等级 | 对应候选 |
+| --- | --- | --- |
+| IEEE Transactions on Pattern Analysis and Machine Intelligence | A | DE-GAN |
+| CVPR 主会正式长文 | A | Restormer、DocRes、MMDIR、MPRNet |
+| ACM Multimedia 主会正式长文 | A | DocDiff |
+| ECCV 主会正式长文 | B | NAFNet、Partial Convolutions |
+| Pattern Recognition | B | Chaudhuri–Adak 2017 |
+| ICDAR 正式长文 | C | Heil 等 2021 |
+| International Journal on Document Analysis and Recognition，IJDAR | C | VCGAN；Pathirage 等 2026 |
+| Signal Processing: Image Communication | C | Zhong 等 2025 |
+
+相关官方分类入口：[人工智能](https://www.ccf.org.cn/Academic_Evaluation/AI/)、[计算机图形学与多媒体](https://www.ccf.org.cn/Academic_Evaluation/CGAndMT/)。CCF 等级属于发表场所，本表用当前核验口径，不暗示这些场所在论文发表当年等级一定相同。
+
+**DAS、WACV、ICVGIP 不在本轮所查 CCF 2026 目录中。** 不能因为由 Springer/ACM 出版、被 CVF 收录，或与 ICDAR/CVPR 存在联系，就套用其他会议等级。CCF 公告也明确区分正式长文与 workshop 等形式。
+
+中科院口径另外处理：中国科学院文献情报中心 2026-03-27 声明自 2026 年起不再更新、发布期刊分区表，其他机构的表与该中心无关。因此不把网上“2026 新锐分区”写成“2026 中科院分区”，也不用 JCR Q1 代替中科院 1 区。[官方声明](https://www.las.cas.cn/news/tzgg/202603/t20260327_8178738.html)
+
+本报告的核心清单已有 CCF 路径满足要求，没有必要用未核实分区补齐。MathScrub 所在 TLT 的历史分区本轮未取得可核验的官方条目，保留“待核验”，不计入等级已确认清单。
+
+## 4. 核心方法逐项审查
+
+### B1. Strikethrough Removal from Handwritten Words Using CycleGANs
+
+- 作者：Raphaela Heil、Ekta Vats、Anders Hast。
+- 正式发表：ICDAR 2021，LNCS 12824，572–586；2021-09-02 online；CCF C。[出版社与 DOI](https://link.springer.com/chapter/10.1007/978-3-030-86337-1_38)
+- 方法：在有划线词图与干净词图之间学习非配对转换，并研究属性引导与辅助识别损失。任务明确是恢复被划前的词，不是连词一起删掉。
+- 官方资源：[作者代码](https://github.com/RaphaelaHeil/strikethrough-removal-cyclegans)、[代码与权重存档](https://doi.org/10.5281/zenodo.4767168)。仓库包含划线分类、识别有无划线、去划线三个组件，MIT 许可；训练测试配置实际存在。
+- 数据：IAM 合成多书写者词图与真实单书写者 Dracula 配对数据；真实配对通过划线前后扫描及配准获得。它不是中文数学答题卡，迁移效果必须重测。[原论文数据附录](https://link.springer.com/chapter/10.1007/978-3-030-86337-1_38)
+
+**适配决定：** 首先复现 `ORIGINAL` 非配对版本，使用同一训练池的有划线域和干净域，训练时不读取对应底稿作为逐像素监督。`ATTR_GUIDED` 是重要补充，但需满足额外输入条件。
+
+**关键公平性问题：** 官方 `dataset.py` 的 CHANNEL 分支会把样本的真实划线类型编码为七通道 one-hot；辅助模型是七类 DenseNet121。我们的真实区域目前没有这套完整七分类标注，多笔混合区域也未必能一一对应。不能把测试真实类型直接送入模型，再把结果写成完全自动识别。可分别报告普通版本、预测类型版本及人工类型上限，后两者必须说明适配和附加监督；未准备好时不声称已经复现属性引导版。[固定版本数据读取](https://github.com/RaphaelaHeil/strikethrough-removal-cyclegans/blob/91555b22cac6b6a379597aa94c23bdf02c9970a7/strikethrough_removal/src/dataset.py#L126)、[辅助模型加载](https://github.com/RaphaelaHeil/strikethrough-removal-cyclegans/blob/91555b22cac6b6a379597aa94c23bdf02c9970a7/strikethrough_removal/src/utils.py#L172)。
+
+### B2. COR-Generator：原始配对方法与 2026 正式研究
+
+来源必须同时保留：
+
+1. Heil、Vats、Hast，*Paired Image to Image Translation for Strikethrough Removal From Handwritten Words*，DAS 2022，309–322，2022-05-18 online，DOI `10.1007/978-3-031-06555-2_21`。该工作比较 SimpleCNN、Shallow、UNet 和 Generator；原始会议不按 CCF C 计。[正式出版记录](https://link.springer.com/chapter/10.1007/978-3-031-06555-2_21)、[作者论文全文](https://arxiv.org/html/2201.09633v2)、[DAS 官方报告](https://iapr.org/archives/das2022/wp-content/uploads/OS-slides/92.pdf)、[作者代码](https://github.com/RaphaelaHeil/paired_strikethrough_removal)。
+2. Pathirage、Corbillé、Wåhlin、Islam、Barney Smith，*A study of handwritten text recognition with cross-out words*，IJDAR，2026-07-02 正式在线发表，CCF C。其第 3.3 节明确采用上述 Generator 和代码作为 COR 恢复系统。[正式论文全文与 DOI](https://link.springer.com/article/10.1007/s10032-026-00603-8)、[2026 作者项目](https://github.com/LTU-Machine-Learning/HTR_with_cross-out)。
+
+Generator 使用卷积下采样、Dense bottleneck、上采样，由划线图预测干净词图。名字含 Generator，但该配对训练分支使用 BCE 重建，并不因此等于 GAN。原始训练配置为 30 epochs、batch 4、Adam、学习率 0.001，图像配置 128×512；这些是原始配方，不代表复制到本数据后已有同等效果。[原始配置](https://github.com/RaphaelaHeil/paired_strikethrough_removal/blob/19cdba071d82d3da1f69773123f4de86262e9519/config.cfg)、[训练实现](https://github.com/RaphaelaHeil/paired_strikethrough_removal/blob/19cdba071d82d3da1f69773123f4de86262e9519/src/train.py)。
+
+**适配决定：** 先跑 `GENERATOR / DENSE / block_count=1`，不把论文四种小网络全部展开成主实验。保留真实比例、灰度极性和配对关系；需要改尺寸时记录为任务适配。
+
+**2026 论文给我们的直接提醒：** 它比较了“训练识别器适应划线”“先清除划线再识别”及组合路线，结论依赖识别器和数据。我们不能只证明恢复图比原图适合一个未适配的 VLM，就推断恢复是唯一或最佳路线。中文和二维数学公式与其英文词图任务不同，不能直接复制其 CER 数字作我们的基线成绩。
+
+### B3. NAFNet
+
+- 论文：Liangyu Chen、Xiaojie Chu、Xiangyu Zhang、Jian Sun，*Simple Baselines for Image Restoration*。
+- 正式发表：ECCV 2022，17–33；DOI `10.1007/978-3-031-20071-7_2`；CCF B。[出版社](https://link.springer.com/chapter/10.1007/978-3-031-20071-7_2)
+- 方法：简化的编码解码恢复网络，以乘法门控等构件替代常用非线性激活；原始任务主要是自然图像去噪、去模糊，不是划线恢复。
+- 官方代码、训练配置、权重均公开，MIT 许可。[官方仓库](https://github.com/megvii-research/NAFNet)
+
+**适配决定：** 保留现有 width32、encoder `[1,1,1,28]` 版本作为固定配置。论文不同任务和宽度的结果不能混写；不拿 width32 的速度与 width64 的最佳精度拼成一个方法。官方 GoPro width32 配置为 200,000 iterations，而现有实验为 4,000；这证明预算不同，不表示本任务必须机械训练 200,000 步。[固定版本配方](https://github.com/megvii-research/NAFNet/blob/2b4af71ebe098a92a75910c233a3965a3e93ede4/options/train/GoPro/NAFNet-width32.yml)
+
+### B4. Restormer
+
+- 论文：Syed Waqas Zamir 等，*Restormer: Efficient Transformer for High-Resolution Image Restoration*。
+- 正式发表：CVPR 2022，5728–5739；CCF A。[CVF 正式论文](https://openaccess.thecvf.com/content/CVPR2022/html/Zamir_Restormer_Efficient_Transformer_for_High-Resolution_Image_Restoration_CVPR_2022_paper.html)
+- 方法：以适合高分辨率恢复的注意力和前馈模块建模图像信息；原论文覆盖去雨、去模糊、去噪，不能称为专门去划线的方法。
+- 官方完整训练和测试代码公开，MIT 许可。[作者仓库](https://github.com/swz30/Restormer)
+
+**适配决定：** 作为通用 Transformer 的核心比较对象，先固定一种公开单图恢复配置和原有目标函数，接入同一配对数据。不要把不同任务的配置混成一个“Restormer”。原始渐进裁块训练、大分辨率推理与固定 256 裁块适配必须分别记录。它和 NAFNet 覆盖不同架构，优先级高于再堆多个相似卷积网络。
+
+### B5. DocDiff
+
+- 论文：Zongyuan Yang 等，*DocDiff: Document Enhancement via Residual Diffusion Models*。
+- 正式发表：ACM MM 2023，2795–2806；DOI `10.1145/3581783.3611730`；CCF A。正式 ACM 页面本轮抓取超时，发表信息由带 ACM 会议信息与 DOI 的作者论文以及官方仓库交叉确认。[论文](https://arxiv.org/abs/2305.03892)、[ACM DOI](https://doi.org/10.1145/3581783.3611730)、[官方仓库](https://github.com/Royalvice/DocDiff)
+- 方法：粗预测器恢复主要内容，残差扩散模块细化高频；原论文研究文档去模糊、去噪、水印及印章去除。
+- 训练、推理、默认配置、部分预训练权重公开。[官方说明](https://github.com/Royalvice/DocDiff/blob/main/README.EN.md)
+
+**适配决定：** 保留文档残差扩散对照。现有先导训练没有 EMA；官方配置为 EMA 开启、100 扩散步、训练上限 1,000,000 iterations。正式比较应核对 EMA、频率分离损失、粗预测器与扩散模块的联合训练、采样方式和原生尺寸推理。允许制定适合本任务的预算，但必须标明偏离，不能把 4,000 步称为充分复现。[固定版本配置](https://github.com/Royalvice/DocDiff/blob/f422a3af10657eeabeca90f2e862d88c72725845/conf.yml)
+
+### B6. DE-GAN
+
+- 作者：Mohamed Ali Souibgui、Yousri Kessentini。
+- 论文：*DE-GAN: A Conditional Generative Adversarial Network for Document Enhancement*。
+- 正式发表：TPAMI 44(3)，1180–1191，2022-03 卷期；2020-09-07 首次在线；DOI `10.1109/TPAMI.2020.3022406`；CCF A。不能把预印本上传日期当首次发表日期。[IEEE 出版记录](https://ieeexplore.ieee.org/document/9187695)
+- 方法：配对条件 GAN，从退化文档恢复干净图，覆盖清洁、二值化、去模糊及去水印；与 B1/B7 的非配对 CycleGAN 不同。
+- 官方 Keras 实现及测试权重公开。[作者仓库](https://github.com/dali92002/DE-GAN)
+
+**适配决定：** 保留官方生成器和判别器。现有适配沿用发布代码中的 MSE 对抗项与 100×BCE，并记录现代 TensorFlow/Keras 兼容修改。正式运行前核对论文公式与发布实现的差异、生成器/判别器交替更新及数据配对；不能只改成一个普通 U-Net 后继续叫 DE-GAN。[发布实现](https://github.com/dali92002/DE-GAN/tree/7281836455608337c940fa0de67cceffbc5c026d)
+
+### B7. VCGAN：纳入候选，但存在明确的代码门槛
+
+- 论文：Shivangi Nigam、Adarsh Prasad Behera、Shekhar Verma、P. Nagabhushan，*Deformity removal from handwritten text documents using variable cycle GAN*。
+- 正式发表：IJDAR 2024，2024-05-07 online；DOI `10.1007/s10032-024-00466-x`；CCF C。仓库引用仍写 2022 预印本，正式参考文献应更新到 2024 期刊版。[出版社](https://link.springer.com/article/10.1007/s10032-024-00466-x)、[作者机构存档全文](https://dspace.networks.imdea.org/bitstream/handle/20.500.12761/1820/s10032-024-00466-x.pdf?isAllowed=y&sequence=1)
+- 方法：非配对恢复，引入 Top-k Variable 内容损失，希望保护结构；覆盖划线、下划线等变形。我们必须保留正常下划线，因此其“去下划线”目标与本任务不完全相同，需要无涂改负样本检验。
+- 作者代码：[shivii/VCGAN](https://github.com/shivii/VCGAN)，MIT；训练、生成器、判别器、配置均存在，尚未在我们的环境运行。
+
+**本轮静态源码审查发现：** `train.py` 第 24 行对 top-k 差值重新构造 tensor，并调用 `clone().detach()`。这样得到的 Top-k 项没有通向生成器的梯度。当前第 98–99 行又注释了普通 cycle L1 项，配置中 identity 权重为 0，因而不能认为这份默认训练脚本实际施加了论文声称的 Top-k 内容约束。[固定版本问题位置](https://github.com/shivii/VCGAN/blob/56cb974cb9d0833f2846aa96f1f00bd16c58adb1/train.py#L19)、[损失组合](https://github.com/shivii/VCGAN/blob/56cb974cb9d0833f2846aa96f1f00bd16c58adb1/train.py#L95)、[配置](https://github.com/shivii/VCGAN/blob/56cb974cb9d0833f2846aa96f1f00bd16c58adb1/config.py)。
+
+这是对公开版本的静态判断，不是复现跑分，也不代表作者发表时使用的代码一定如此。复现前需要核对论文 Top-k 的定义、聚合维度、k 的含义和 cycle/identity 权重；进行梯度与参数更新检查。若修复，应标记 `VCGAN-reimplementation / gradient fix`，公开最小差异。不能原样跑坏后以此宣称我们击败 VCGAN，也不能偷偷修好却写成官方代码原样复现。
+
+## 5. 直接相关但暂不直接进入训练队列的论文
+
+### Chaudhuri–Adak，Pattern Recognition 2017
+
+完整标题为 *An approach for detecting and cleaning of struck-out handwritten text*，Pattern Recognition 61，282–294，DOI `10.1016/j.patcog.2016.07.032`，CCF B。它检测划线词，以骨架图上的约束路径识别划线，并用图像修补清洁词图，确实涉及保留原文字。[出版社](https://www.sciencedirect.com/science/article/pii/S003132031630190X)
+
+本轮没有找到可确认的作者官方实现。搜索到的 [StrikOR](https://github.com/ankurguria/StrikOR) 采用 ResNet/U-Net 并将该文列为参考，不是该论文的官方骨架图实现。**必读并比较任务差异；获得完整细节后可做传统方法对照，不把第三方同主题项目冒充复现。**
+
+### Zhong 等，Signal Processing: Image Communication 2025
+
+*Struck-out handwritten word detection and restoration for automatic descriptive answer evaluation*，130，117214；2024 年在线、2025-01 卷期；DOI `10.1016/j.image.2024.117214`；CCF C。[作者机构发表记录](https://salford-repository.worktribe.com/output/3227736)、[出版 DOI](https://doi.org/10.1016/j.image.2024.117214)
+
+它已经把划线词恢复与描述性作答评价联系起来：前段用 ResNet50 与对角线分割处理检测，后段用 U-Net 与 Bi-LSTM 预测原文字像素。因此“恢复文字用于答题评价”不能独立作为我们的首次创新主张。
+
+本轮能确认正式发表、任务及方法概述，但未取得完整可检查的作者实现，全文细节也未完整获取。列为 **高优先级条件补充**：后续获取作者实现或充分的论文细节后，再决定忠实重实现。不能只凭摘要搭一个 U-Net+Bi-LSTM，冠以该论文名给出成绩。
+
+### MathScrub，IEEE Transactions on Learning Technologies 2026
+
+Sen Shen 等，*MathScrub: Single-Pipeline Strike-Out Removal and LaTeX Generation for Handwritten Calculus Expressions*，TLT 19，141–154，2026-02-24；DOI `10.1109/TLT.2026.3667787`。作者机构确认其正式发表，完整出版页本轮抓取未成功。[CUHK 发表记录](https://research.cuhk.edu.hk/en/publications/mathscrub-single-pipeline-strike-out-removal-and-latex-generation/)
+
+其流程包括连通域聚合、删除检测、几何感知修补和 VLM LaTeX 生成，场景与我们非常接近。[Math-Strike 数据卡](https://huggingface.co/datasets/Incinciblecolonel/MathStrike) 定义的标签是 retained valid symbol 与 removed strike-out/noise；这提示它偏向有效内容清理，但**仅凭摘要和数据卡，不能断言它已经或没有解决“被划文字的底层内容恢复”**。需要全文确认输出及监督目标。
+
+公开数据卡有真实考试与 20 类合成划线、区域坐标及页面来源，许可 CC-BY-NC 4.0；数据集发布不等于完整模型代码发布。本轮未确认完整训练实现，也未核验 TLT 的官方历史分区条目。因此列为 **必须讨论的新近相关工作，暂不计入等级与实现都已确认的主基线**，不把它包装成已就绪复现项目。
+
+## 6. 通用文档恢复与修补的补充筛选
+
+| 候选 | 正式发表核验 | 任务与实现判断 | 决定 |
+| --- | --- | --- | --- |
+| DocRes | CVPR 2024，CCF A | 五任务是展平、去阴影、外观增强、去模糊、二值化；官方训练、推理、权重可用；没有原生划线去除模式 | 优先级低于直接相关方法，作第八个补充。若加入自定义涂改掩膜提示，单独命名 adapted 版本 |
+| MMDIR | CVPR 2026，8387–8396，CCF A | 正式论文确认；公开仓库当前只有一个 README，提供数据和预测结果链接，没有恢复模型训练/推理源码 | 纳入近期相关工作，等待可核验实现，不承诺马上复现 |
+| MPRNet | CVPR 2021，CCF A | 作者提供去噪/去雨/去模糊训练测试代码，和已有通用恢复基线功能重叠 | 首轮暂不增加；主模型若强调多阶段设计，再考虑补充 |
+| Partial Convolutions | ECCV 2018，CCF B | 掩膜条件修补；官方仓库可确认 partial-convolution 层，完整任务训练配方仍需核对 | 仅在论文明确研究遮挡处补全时增加；不能用文本整块掩膜先抹掉所有可见字再作不公平比较 |
+| LaMa | WACV 2022 正式发表 | 是有影响力的通用修补方法，但 WACV 未在本轮 CCF 目录中，不能标成 CCF B/C | 当前严格等级清单外；可作技术参考，不为凑数量加入 |
+| DocWaveDiff、2025 文档去污工作 | 检索到 WACV 2026/2025 会议原文 | 与文档恢复有关，但同样不满足已核验 CCF 场所路径 | 当前等级筛选下不进入主队列 |
+| DocStormer | 本轮只确认到 arXiv 记录 | 未核验到正式发表场所；内容主要是彩色文档多退化恢复 | 暂不纳入已发表合格清单，不等同于断言它永远没有正式发表 |
+| TexRGAN | 检索线索指向 ICVGIP 2021 | 任务相关，但正式全文、实现和符合要求的场所等级未完整核实 | 留在检索线索，不用作已确认合格基线 |
+
+上述判断的直接出处：[DocRes 正式论文](https://openaccess.thecvf.com/content/CVPR2024/html/Zhang_DocRes_A_Generalist_Model_Toward_Unifying_Document_Image_Restoration_Tasks_CVPR_2024_paper.html)、[DocRes 作者代码](https://github.com/ZZZHANG-jx/DocRes)、[MMDIR 正式论文](https://openaccess.thecvf.com/content/CVPR2026/html/Li_MMDIR_Multimodal_Instruction-Driven_Framework_for_Mixed-Degradation_Document_Image_Restoration_CVPR_2026_paper.html)、[MMDIR 核查版本](https://github.com/xiaomore/MMDIR/tree/b1066ed4184b4c669b7105bd3620c42311e10602)、[MPRNet 作者代码](https://github.com/swz30/MPRNet)、[Partial Convolutions 正式论文](https://openaccess.thecvf.com/content_ECCV_2018/html/Guilin_Liu_Image_Inpainting_for_ECCV_2018_paper.html)、[NVIDIA 实现说明](https://github.com/NVIDIA/partialconv/)、[LaMa 正式论文](https://openaccess.thecvf.com/content/WACV2022/html/Suvorov_Resolution-Robust_Large_Mask_Inpainting_With_Fourier_Convolutions_WACV_2022_paper.html)、[DocStormer 作者预印本](https://arxiv.org/abs/2310.17910)、[DocWaveDiff 会议原文](https://openaccess.thecvf.com/content/WACV2026/papers/Marulli_DocWaveDiff_A_Predict-and-Refine_approach_for_Document_Image_Enhancement_with_Wavelet_WACV_2026_paper.pdf)、[2025 文档去污会议原文](https://openaccess.thecvf.com/content/WACV2025/papers/Li_High-Fidelity_Document_Stain_Removal_via_A_Large-Scale_Real-World_Dataset_and_WACV_2025_paper.pdf)。
+
+## 7. 这些论文对数据制作的实际启示
+
+“给干净手写图叠加划线，保留原图作监督”已经是直接相关工作的常见做法，不能作为本论文独有创新。2022 配对工作还比较了目标书写风格上的合成数据；2026 IJDAR 工作系统比较划线样本训练与恢复预处理。我们自己的真实划线素材、轨迹重绘和人工纠错，必须通过控制变量证明具体收益。
+
+| 外部数据 | 能提供什么 | 使用限制与本项目决定 |
+| --- | --- | --- |
+| IAM Strikethrough | 七种合成划线、对应底稿，多书写者 | 可用于原方法管线自检或跨域测试；英文词图不替代中文数学数据；须遵守 IAM 与衍生数据许可和原始划分 |
+| Dracula real | 同一书写者真实划线前后扫描及配准 | 有真正的前后图像，但书写者和规模有限；不把单书写者泛化结论扩展成学生总体 |
+| Dracula synth | 在目标域干净词图上生成划线 | 与我们素材迁移实验相关，防止同一原词及其不同合成版本跨训练/验证 |
+| Real-Strike-off | VCGAN 发布的真实评估数据 | 需逐项核查是否有配对底稿、转写和书写者信息；当前不假定具备 |
+| 2026 LTU handwritten cross-outs | 多书写者、书写工具、划线类型、转写 | 论文有 12 位书写者，扫描样本大多不是同底稿多划线的配对；划分需检查是否书写者独立，不能照搬随机比例划分作泛化证明 |
+| Math-Strike | 学生数学考试、真实及合成涂改、区域到整页映射 | 先确认“保留/删除”的标签语义，不能直接转换成保留底层文字的擦除真值 |
+
+资源：[IAM 合成集](https://doi.org/10.5281/zenodo.4767094)、[Dracula real](https://doi.org/10.5281/zenodo.4765062)、[Dracula synth](https://doi.org/10.5281/zenodo.6406538)、[Real-Strike-off](https://github.com/shivii/Real-Strike-off-dataset)、[LTU 数据卡](https://huggingface.co/datasets/LTU-ML/handwritten_cross-outs)、[LTU 论文数据与划分说明](https://link.springer.com/article/10.1007/s10032-026-00603-8)、[Math-Strike 数据卡](https://huggingface.co/datasets/Incinciblecolonel/MathStrike)。本轮未下载这些图像数据，也没有将外部数据混入训练。
+
+## 8. 正式实验协议：先冻结，再运行
+
+### 8.1 四个必要对照与两条识别路线
+
+这些是实验控制组，不占“已发表外部基线”的名额：
+
+| 对照 | 用途 | 不能混淆的地方 |
+| --- | --- | --- |
+| 原图直接交给固定 VLM | 判断恢复是否真正改善读取 | 提示应读出可辨认的被划内容，不能再要求忽略作废文字 |
+| 第一篇预测掩膜直接遮白 | 暴露粗掩膜删除文字的代价 | 它不是保护底层文字的恢复算法，属于破坏性参照 |
+| 既有框内去划线模型 | 判断第二篇的新方法相对实际起点的增益 | 历史 57.4% 和当前微调模型来自不同训练历史，不能选高分拼接 |
+| 人工擦除后的可确认图像 | 估计当前区域标注能带来的参考效果 | 不是完全遮挡位置真实底稿，也不保证是 OCR 理论上限 |
+
+识别路线至少包括固定读者读原图、固定读者读恢复图。若论文要声称“视觉恢复优于直接适应划线”，还需加入相同文本监督预算下的直接识别适配组；这属于新增对照设计，不能把此前以“忽略作废内容”为目标训练的 LoRA 直接拿来代表恢复文字识别。2026 IJDAR 的三种英文识别器不要求全搬来中文数学任务，但它提出的路线比较应回应。
+
+### 8.2 固定数据和监督信息
+
+1. 保持按书写者划分，同一学生不同编号合并；原始宿主、划线素材、其变体均受划分约束。不能只排除目标底稿却允许测试书写者划线素材进入训练。
+2. 第一个正式主比较使用同一个冻结的合成训练版本、真实纠错训练子集与负样本池。配对模型使用同一配对；非配对模型使用同源两域并遵循其原方法，明确监督差异。
+3. 分开报告“仅合成”和“合成＋同一真实标注预算”。我们的模型若使用 50 处真实微调而对手没有，就不能归因于网络更优。
+4. 素材方法消融先在我们的方法、NAFNet 和 COR-Generator 上做，不默认把所有模型乘以全部素材版本。控制素材数量、来源、宿主、叠加位置和增强；原金标与预测素材库大小不同的比较，不能只归因为清洁程度。
+5. 使用已有清洁 PNG，固定灰度和残留处理。自动清理结果不能直接当作无争议人工真值；图像模型输出如加后处理，应对所有方法同样适用，并单列其贡献。
+6. 掩膜来源与输入权限单独登记：image-only、预测 mask、人工 mask、划线类型属性。若我们用 mask，增加同骨干带 mask 的受控消融；不能把原版 image-only 模型输在少一个先验上，当成全部网络贡献。
+
+### 8.3 局部恢复与整题系统分开评估
+
+- **定位已知的恢复评测：** 所有方法使用相同人工区域，隔离定位误差。现有 81 处可读划线属于这一类。
+- **整题自动评测：** 共享第一篇模型和已有行/区域切分，检测、恢复、回贴全部自动；报告漏掉的区域及错误处理的正常区域，不能只评检测成功的部分。
+- 保持长宽比与原生细笔画；padding、缩放、重叠裁块和回贴规则冻结。必要的模型特定尺寸适配要披露。
+- 整题输入、内部局部高分辨率恢复是合法系统设计，但局部人工框结果不能标为整题自动结果。
+
+### 8.4 指标和选模型规则
+
+主要读取指标沿用项目已经明确的区域口径：被划字符读回率、严格转写完全匹配、正常文字损伤，以及额外生成/误读字符。不能只看字符召回，让输出一长串候选字的模型占便宜；`whole` 允许额外字符，不等于严格完全正确。
+
+像素指标成对报告划线去除召回与正常墨迹误擦，补充去除 precision/F1。可确认真实像素子集与有底稿的合成子集分开。PSNR/SSIM 仅在确有对齐底稿的数据上使用，并注意大片白背景的稀释；其他论文的 clean-foreground F1 与我们“擦掉的划线像素 F1”未必同一口径，不能直接排列比较。
+
+模型选择建议用固定真实验证转写集上的读回表现，并预先确定文字误擦约束、同分决策、验证频率及停训规则；恢复-only 分析另报像素验证选版。若采用此建议，应在新实验 manifest 中明确改变了旧先导试验“16 区域像素 F1 选版”的规则。不得看测试集选素材、阈值、提示词或 checkpoint。
+
+已有测试结果被多轮阅读，最终论文应考虑增加一份此前未用于开发决策的冻结审计子集，从合规保留书写者中选取；既有测试不改名、不悄悄改成验证。种子按当前项目规则仍为 42；书写者成组 bootstrap 可评估样本不确定性，但不能伪装成多随机种子训练稳定性。
+
+### 8.5 训练预算与复现命名
+
+不再用“所有模型 4,000 步”作为充分训练的依据。正式适配保留各自核心架构、损失、优化方式及 EMA 等关键机制，根据验证曲线设预算和停止条件，记录更新次数、有效见样本数、GPU 小时、参数量、推理耗时与峰值显存。
+
+同时区分三种结果：
+
+- **原配方验证**：在原任务或公开样例上检查实现能否表现出论文描述的行为；不宣称完整复现论文全部分数。
+- **我们的任务适配**：使用冻结的共同数据和监督协议，偏离原配方处逐项记录。
+- **固定计算预算比较**：资源受限下的效率实验，单独呈现，不能替代充分训练的主结论。
+
+GPU0/3 是此前允许的设备范围，本调研没有实际调度 GPU，也没有给出未经测量的完成时间。后续执行仍需遵循现有锁卡、不可覆盖产物和同一 main 分支规则。
+
+## 9. 现有三模型试验的定位与待改项
+
+2026-10-07 运行了 NAFNet / DocDiff / DE-GAN × 三种素材，共九组，每组 4,000 步、batch 4、256×256；独立 16 人工区域按像素指标选 checkpoint，然后用固定 Qwen3-VL-8B 评估 81 处可读划线。它是可追溯的先导试验，已经揭示数据及实现问题，但不是原论文全预算复现。[项目结果记录](RESULTS.md)
+
+| 项目 | 已有事实 | 正式比较前需要处理 |
+| --- | --- | --- |
+| 原图读回 | 48.88% | 原图必须随同一 OCR 版本、提示、裁图再次形成共同参照 |
+| 本轮 NAFNet 最佳臂 | 原金标素材 54.54% | 不据此在测试上选择所有新模型的数据版本 |
+| DocDiff | 末轮被选为最优；先导未使用 EMA | 核对官方机制并观察更充分的验证曲线 |
+| DE-GAN | 本预算下误擦严重 | 保留失败记录，检查优化/损失/收敛，不据此排除 GAN 类方法 |
+| 我们的历史 57.4% | 来自另一次训练和评测历史 | 需要同协议重评，不能直接与 54.54% 构成“已经胜出”的结论 |
+| 真实微调 | 当前实际 50 训练＋16 验证区域 | 给对手相同可用真实监督，或将结果分层报告 |
+| 评测范围 | 人工区域、81 可读划线、7 题像素标注 | 明确样本与书写者规模，不标为整题端到端或全遮挡恢复能力 |
+
+现有源代码适配还应检查 DE-GAN 的现代 Keras 兼容与损失、NAFNetLocal 推理设置、DocDiff 采样与 EMA。已有数据的 darken-only 修复保留，不退回会使原本黑字变浅的合成版本。详见 [现有训练适配](revrender/baselines/restoration_torch.py)、[DE-GAN 适配](revrender/baselines/restoration_tf.py)、[数据制作](revrender/data/restoration_pairs.py)。
+
+## 10. 后续执行顺序与完成条件
+
+| 阶段 | 要完成的工作 | 通过条件 |
+| --- | --- | --- |
+| 0：冻结协议 | 确定真实标签可用范围、共同训练池、验证选版规则、输入权限和 OCR 提示 | 能列出每个方法看到了哪些图像、标签、掩膜与外部预训练数据 |
+| 1：直接相关实现 | 接入普通 Strikethrough-CycleGAN 和 COR-Generator，检查 VCGAN 梯度问题 | 训练/推理入口闭合，损失可反传，保存重载一致，小批学习行为正常 |
+| 2：统一正式比较 | 六个核心恢复系统＋我们的模型＋必要控制组；VCGAN 通过审查后加入 | 各方法验证选版和预算可追溯，不按测试优劣删除对手 |
+| 3：数据与信息消融 | 配对素材复制/预测素材/轨迹重绘、真实微调、mask 先验 | 每个实验只改变预先声明的因素；同监督预算 |
+| 4：整题与跨读者验证 | 共享自动定位流程回贴；换一个固定读者验证结论是否依赖单一 VLM | 含漏检和负样本损伤，有整题结果；不只展示挑选出的成功案例 |
+| 5：必要补充 | 按证据决定 DocRes、2017 传统法、2025 U-Net+Bi-LSTM 是否补入 | 完整代码/方法与公平比较条件就绪，再增加工作量 |
+
+目前不建议同时扩展所有候选，也不需要重新开发一个教育评分或动机分析模型。首先完成直接相关方法的公平比较，才能判断我们真正的技术空间。
+
+## 11. 本次核查的可追溯记录与限制
+
+本轮通过 Exa 执行 24 次检索，请求并返回 140 条结果（含重复），按原始 URL 去重为 112 个候选来源；URL 大小写/镜像差异未合并，这不代表 112 篇论文。进一步阅读正式论文页、可访问全文、作者仓库与关键配置。检索方向包括直接划线恢复、文档增强、通用恢复/修补、近期研究、等级、复现资源。没有声称已穷尽所有文献或把每篇付费全文读完。
+
+关键源码版本如下。新仓库通过公开文件树及少量源码静态核查，未安装依赖或执行其训练；现有三模型版本来自此前保存的 source manifest。
+
+| 仓库 | 核查版本 | 核查层次 |
+| --- | --- | --- |
+| RaphaelaHeil/strikethrough-removal-cyclegans | `91555b22cac6b6a379597aa94c23bdf02c9970a7` | 文件树、配置、训练、数据读取、辅助模型加载 |
+| RaphaelaHeil/paired_strikethrough_removal | `19cdba071d82d3da1f69773123f4de86262e9519` | 文件树、配置、训练损失 |
+| shivii/VCGAN | `56cb974cb9d0833f2846aa96f1f00bd16c58adb1` | 文件树、配置、训练损失与梯度断开问题 |
+| swz30/Restormer | `68dc6ac472db26f16361150cb7a96a1bc87da93f` | 作者说明与训练/测试/架构文件树；未运行 |
+| ZZZHANG-jx/DocRes | `d3e3a18c7c7ad10e4615ca2eb6a10f83128d8560` | 作者说明与训练/测试/架构文件树；未运行 |
+| xiaomore/MMDIR | `b1066ed4184b4c669b7105bd3620c42311e10602` | 文件树仅一个 README；无训练源码 |
+| Royalvice/DocDiff | `f422a3af10657eeabeca90f2e862d88c72725845` | 已有适配及本轮官方配置复查 |
+| megvii-research/NAFNet | `2b4af71ebe098a92a75910c233a3965a3e93ede4` | 已有适配及本轮官方配置复查 |
+| dali92002/DE-GAN | `7281836455608337c940fa0de67cceffbc5c026d` | 已有适配及本轮发表、源码复查 |
+
+检索及代码摘录保存在本机忽略目录 `work/baseline_research20261008/evidence/`，不把第三方代码、模型或数据提交进本仓库。代码、分区或论文可用性随时间变化，本报告反映 2026-10-08 的核查状态。“未找到作者实现”是本次检索边界，不是断言不存在。
