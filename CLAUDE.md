@@ -93,3 +93,5 @@ python -m revrender.infer / .train / .eval.report / .eval.freeze ...            
 2026-10-08 用户授权六个核心恢复 baseline 使用 GPU0/2/3，沿 main。统一合成-only、darken-only v4 gold_pixels；新增 COR、普通 Strikethrough-CycleGAN、Restormer，原三模型延长训练并补 DocDiff 官方 EMA 候选。完整预算/验证停止条件在 configs/restoration.toml 和 README；VCGAN 不在当前队列，50 个真实训练标注微调留作独立实验。不得把较长任务适配称为原论文全部指标复现，不按测试读数改配置。
 
 2026-10-08 六基线正式运行已启动：快照 `/home/zsh/hme/code_paper2_9f6ed161`，总目录 `/home/zsh/hme/outputs/paper2_restoration_suite20261008`；lane0 COR→Restormer、lane2 NAFNet→DE-GAN、lane3 CycleGAN→DocDiff。六组 100 步冒烟及推理重载均通过，21 项针对性测试通过。`finish_restoration_suite.sh` 已后台等待所有 lane 成功后自动测试并生成 `report/index.html`；检查 lane 的 COMPLETED/FAILED、根目录 EVALUATION_FAILED/COMPLETED 和 *.launch.log，不重复启动、不覆写产物。正式结果尚待产生，当前标注模型不更换。
+
+六基线续跑：原 lane0/lane3 在完成 COR/CycleGAN 后因其他任务占卡退出（0 卡仅余约5.6 GB，3卡不足20 GB），不是六组全部完成；NAFNet/DE-GAN 已完成。新增 resume 模式仅跳过 selection+inference_verified 齐全的模型，拒绝覆写未完成目录；不足显存改为等待，显式退出也留失败标记。剩余 Restormer→DocDiff 使用授权 GPU2 顺序续跑，输出仍归原 lane0/lane3；完成脚本第三参数 `2` 可恢复缺失模型并在同卡评测，旧失败标记带时间归档。GPU2 OCR 使用 .85 显存占比，转写模型/提示/解码参数不变。

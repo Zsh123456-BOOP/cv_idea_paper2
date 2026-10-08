@@ -45,3 +45,19 @@ require_free_memory() {   # $1 = GPU uuid, $2 = MiB
     free="$(nvidia-smi -i "$1" --query-gpu=memory.free --format=csv,noheader,nounits)"
     test "$free" -ge "$2" || { echo "insufficient free GPU memory ($free < $2)"; exit 3; }
 }
+
+wait_for_gpu_memory() {  # $1 = UUID, $2 = MiB, $3 = require idle (0/1)
+    local free waited=0 busy
+    while true; do
+        free="$(nvidia-smi -i "$1" --query-gpu=memory.free --format=csv,noheader,nounits)" || return 3
+        busy=""
+        if [ "${3:-0}" = 1 ]; then
+            busy="$(nvidia-smi -i "$1" --query-compute-apps=pid --format=csv,noheader)" || return 3
+        fi
+        if [ "$free" -ge "$2" ] && [ -z "$busy" ]; then return 0; fi
+        if [ "$waited" = 0 ]; then echo "waiting for GPU $1: free=$free MiB, need=$2 MiB, idle=${3:-0}"; fi
+        if [ "$waited" -ge 172800 ]; then echo 'GPU wait exceeded 48 hours'; return 3; fi
+        sleep 60
+        waited=$((waited+60))
+    done
+}

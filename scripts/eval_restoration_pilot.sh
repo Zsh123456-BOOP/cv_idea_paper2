@@ -10,9 +10,14 @@ if [ "$1" = --suite ]; then
   RUNS=("$SUITE/lane0/COR-Generator_gold_pixels" "$SUITE/lane0/Restormer_gold_pixels"
         "$SUITE/lane2/NAFNet_gold_pixels" "$SUITE/lane2/DE-GAN_gold_pixels"
         "$SUITE/lane3/Strikethrough-CycleGAN_gold_pixels" "$SUITE/lane3/DocDiff_gold_pixels")
-  GPU=GPU-314fdf43-7a94-4e29-20d0-fbd496632b1b; CARD=3; NUMA=1
+  CARD="${5:-3}"
+  case "$CARD" in
+    0) GPU=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0; NUMA=0 ;;
+    2) GPU=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0; NUMA=1 ;;
+    3) GPU=GPU-314fdf43-7a94-4e29-20d0-fbd496632b1b; NUMA=1 ;;
+    *) exit 2 ;;
+  esac
   export ALLOW_GPU3=1
-  test -z "$(nvidia-smi -i "$GPU" --query-compute-apps=pid --format=csv,noheader)" || { echo 'GPU3 occupied'; exit 3; }
 else
   LANE0="$1"; LANE3="$2"; UPSTREAM="$3"; OUT="$4"
   test -f "$LANE0/COMPLETED" && test -f "$LANE3/COMPLETED"
@@ -23,7 +28,8 @@ fi
 test ! -e "$OUT" || { echo 'create-only output exists'; exit 2; }
 require_clean_source
 mkdir "$OUT"
-trap 'touch "$OUT/FAILED"' ERR
+trap 'code=$?; if [ "$code" -ne 0 ]; then touch "$OUT/FAILED"; fi' EXIT
+IDLE=0; [ "$CARD" != 3 ] || IDLE=1
 O=/home/zsh/hme/outputs
 LABELS=("$O"/paper2_annotation_labels/*revision-boxes-test_*.json)
 test "${#LABELS[@]}" = 1
@@ -44,7 +50,7 @@ for run in "${RUNS[@]}"; do
       unset LD_LIBRARY_PATH
     fi
     dest="$OUT/$name"
-    require_free_memory "$GPU" 18000
+    wait_for_gpu_memory "$GPU" 18000 "$IDLE"
     bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU" "$NUMA" "$dest" -- \
       "$RUNTIME" -m revrender.baselines.restoration_export export --run "$run" --upstream "$UPSTREAM" \
       --labels "${LABELS[0]}" --selection "$O/paper2_annotation_labels/selection.json" \
@@ -55,11 +61,13 @@ for run in "${RUNS[@]}"; do
 done
 unset LD_LIBRARY_PATH
 PYTHONPATH="$ROOT" "$PY" -m revrender.baselines.restoration_export merge --inputs "${EXPORTS[@]}" --output-dir "$OUT/pack"
-require_free_memory "$GPU" 22500
+OCR_MEMORY=.9; OCR_FREE=22500
+if [ "$CARD" = 2 ]; then OCR_MEMORY=.85; OCR_FREE=21000; fi
+wait_for_gpu_memory "$GPU" "$OCR_FREE" "$IDLE"
 # vLLM resolves logical CUDA ordinals; hold the UUID lock, then expose the corresponding physical ordinal.
 bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU" "$NUMA" "$OUT/qwen8b" -- env CUDA_VISIBLE_DEVICES="$CARD" \
   "$PY" -m revrender.recognize_lines --pack "$OUT/pack" --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct \
-  --conditions erased_neutral --gpu-memory .9 --output-dir "$OUT/qwen8b" > "$OUT/qwen8b.log" 2>&1
+  --conditions erased_neutral --gpu-memory "$OCR_MEMORY" --output-dir "$OUT/qwen8b" > "$OUT/qwen8b.log" 2>&1
 PYTHONPATH="$ROOT" "$PY" -m revrender.eval.revision_boxes read --pack "$OUT/pack" \
   --readings "$OUT/qwen8b/predictions.jsonl" --output "$OUT/read_qwen8b.json"
 touch "$OUT/COMPLETED"
