@@ -32,17 +32,19 @@ def build(args):
         pixels=json.loads(path.read_text());name=pixels['model']
         manifest=json.loads((path.parent/'run_manifest.json').read_text());run=Path(manifest['config']['run'])
         selected=json.loads((run/'selection.json').read_text())
-        validation=json.loads((run/f'evaluation_{selected["step"]}.json').read_text())
-        inputs.extend([path,path.parent/'run_manifest.json',run/'selection.json',run/f'evaluation_{selected["step"]}.json'])
+        evaluation=run/selected.get('evaluation',f'evaluation_{selected["step"]}.json')
+        validation=json.loads(evaluation.read_text())
+        inputs.extend([path,path.parent/'run_manifest.json',run/'selection.json',evaluation])
         differences=[held(r['text'],reads[r['id']]['text'])-base[r['line_id']] for r in rows if r['model']==name and r['kind']=='line']
-        table.append({'model':name,'step':selected['step'],'validation':validation,'pixels':pixels,'ocr':score(name),
+        training=json.loads((run/'run_manifest.json').read_text())['config']
+        table.append({'model':name,'step':selected['step'],'training':training,'selection':selected,'validation':validation,'pixels':pixels,'ocr':score(name),
                       'paired_held_delta':float(np.mean(differences)),'paired_held_delta_ci95':paired_interval(differences)})
-    require(len(table)==9,'expected nine matched experiments')
+    require(len(table)==args.expected_models,'unexpected number of matched experiments')
     truncated=sum(r['finish_reason']=='length' for r in reads.values())
     summary={'baseline':score('scan'),'models':table,'truncated_readings':truncated,
-             'protocol':'4000-step task adaptation; checkpoint selection on 16 human validation regions; fixed test oracle regions',
+             'protocol':'Task adaptation; checkpoint selection on 16 human validation regions; fixed test oracle regions; per-run budgets in training manifests',
              'limitations':['not original-paper benchmark reproduction','test box bootstrap is exploratory; regions from the same writer are correlated',
-                            'pixel labels cannot establish whether hidden letters were reconstructed correctly','one seed and short training budget']}
+                            'pixel labels cannot establish whether hidden letters were reconstructed correctly','one seed; task-specific budgets, not original-paper full benchmark reproduction']}
     write_json(out/'summary.json',summary)
     samples={}
     for r in rows:
@@ -54,10 +56,10 @@ def build(args):
     write_manifest(out,config={'evaluation':str(root)},inputs={str(p):digest(p) for p in inputs})
 
 
-HTML='''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>划线恢复基线：首轮对照</title>
+HTML='''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>划线恢复基线对照</title>
 <style>body{font:16px/1.65 system-ui;margin:32px auto;padding:0 20px;max-width:1160px;color:#182637;background:#f7f9fc}h1{font-size:27px}small,.note{color:#536477}table{border-collapse:collapse;width:100%;background:white;font-size:14px}th,td{padding:9px;border-bottom:1px solid #dfe6ee;text-align:left}button,select{font:inherit;padding:7px;margin:4px;border:1px solid #acbacc;border-radius:6px;background:white}.card{background:white;border:1px solid #dbe4ef;border-radius:9px;padding:20px;margin:16px 0}.card img{display:block;width:100%;image-rendering:auto;margin:12px 0}.text{white-space:pre-wrap;overflow-wrap:anywhere}.toolbar{position:sticky;top:0;background:#edf2f9;padding:8px;z-index:1}.good{color:#08754a}.bad{color:#a33e2d}</style>
-<h1>划线恢复基线：首轮对照</h1>
-<p>三种模型 × 三种素材，各 4,000 步。按独立人工验证集选版本后，统一测试。图中范围来自人工框选，属于恢复模块评测。</p>
+<h1>划线恢复基线对照</h1>
+<p>按独立人工验证集选版本后统一测试；各模型的预算及监督协议见训练记录。图中范围来自人工框选，属于恢复模块评测。</p>
 <p class="note">金标像素：原有人工掩膜素材；预测像素：预测掩膜与墨迹相交并筛选；预测重绘：同批路径重新绘制。三组底稿、位置和划分相同。指标均为百分比。</p>
 <div id="table"></div><p id="baseline"></p>
 <p class="note">“读回”是被划掉字符的保留率，可能包含多余字符，须与“完全正确”一起看。括号区间是逐区域配对 bootstrap 的探索性区间；同一书写者的区域相关，不能当作严格显著性结论。像素金标只标可分离的划线，不能证明被遮住的笔画已恢复正确。</p>
@@ -79,6 +81,7 @@ $('model').onchange=show;$('sample').onchange=show;$('prev').onclick=()=>{$('sam
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--evaluation',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True)
+    p.add_argument('--expected-models',type=int,default=9)
     build(p.parse_args(argv))
 
 

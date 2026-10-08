@@ -93,3 +93,5 @@
 830 条 VLM 输出全部完成，其中 4 条触及 256-token 上限（全部属于 DE-GAN），按相同协议保留计分。报告含逐区域配对 bootstrap 区间，仅探索性使用：同书写者区域相关，未用于显著性结论。独立验证仅 3 位书写者 /16 区域、训练预算短、仅一个种子；人工像素金标不能证明完全遮挡处的原文字已恢复。金标素材与预测素材的数量和形态覆盖不同，清理质量与多样性影响尚未分离。
 
 产物：`paper2_restoration_darken0_20261007`（NAFNet/DE-GAN；最后 DE-GAN 重绘臂转到已空闲的 GPU3）、`paper2_restoration_darken3_20261007`（DocDiff）、`paper2_restoration_test20261007_v2`、`paper2_restoration_report20261007`。本机离线查看 `work/restoration_pilot20261007/index.html`，完整数值 `summary.json`。18 项针对性测试通过，3 个模型 GPU 冒烟、参数更新和权重重载通过；HTML 的 JavaScript 语法检查通过，浏览器策略阻止 file 协议自动预览，界面未做自动渲染核验。GPU 作业均已结束。
+
+2026-10-08 六核心恢复系统复现启动前验收：COR-Generator / Strikethrough-CycleGAN / NAFNet / Restormer / DocDiff / DE-GAN，原架构来源已校验，统一 synthetic-only gold_pixels v4，GPU0/2/3。`40c60b1` 快照完成每模型 100 步冒烟和保存重载检查，六组均通过；DE-GAN 最大差异 1 灰度级，其余为 0。正式协议见 configs/restoration.toml（8万至10万更新上限、预设验证停止、DocDiff raw/EMA 两候选）。冒烟数字不作方法比较，正式训练/测试结果待产出，原九组先导结果保持不变。

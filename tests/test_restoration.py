@@ -102,3 +102,30 @@ def test_two_weight_candidates_select_validation_best_and_count_one_plateau(tmp_
     e.finish();selection=json.loads((tmp_path/'selection.json').read_text())
     assert selection['checkpoint']=='step_1_raw' and selection['evaluation']=='evaluation_1_raw.json'
     assert selection['actual_steps']==3
+
+
+def test_report_reads_selected_ema_or_raw_evaluation_and_variable_model_count(tmp_path):
+    from revrender.tools.restoration_report import build
+    from types import SimpleNamespace
+    from PIL import Image
+    import json
+    root=tmp_path/'evaluation';root.mkdir();(root/'COMPLETED').touch()
+    run=tmp_path/'training';run.mkdir();pack=root/'pack';pack.mkdir();ocr=root/'qwen8b';ocr.mkdir()
+    exported=root/'NAFNet_gold_pixels';exported.mkdir()
+    def write(path,value):path.write_text(json.dumps(value))
+    image=tmp_path/'sample.png';Image.fromarray(np.zeros((3,3),np.uint8)).save(image)
+    rows=[{'id':m+'|q#r','line_id':'q#r','image_id':'q','model':m,'kind':'line','text':'x',
+           'images':{'erased':str(image)}} for m in ('scan','NAFNet_gold_pixels')]
+    write(pack/'pack.json',{'rows':rows})
+    (ocr/'predictions.jsonl').write_text('\n'.join(json.dumps({'id':r['id'],'text':'x','finish_reason':'stop'}) for r in rows))
+    write(root/'read_qwen8b.json',{'held':{m+'/erased_neutral/line':{'held':1.,'exact':1.,'revisions':1} for m in ('scan','NAFNet_gold_pixels')}})
+    write(exported/'pixels.json',{'model':'NAFNet_gold_pixels'})
+    write(exported/'run_manifest.json',{'config':{'run':str(run)}})
+    write(run/'run_manifest.json',{'config':{'steps':100}})
+    write(run/'selection.json',{'step':42,'evaluation':'evaluation_42_raw.json'})
+    write(run/'evaluation_42_raw.json',{'human_removal':{'f1':.5},'variant':'raw'})
+    out=tmp_path/'report';build(SimpleNamespace(evaluation=root,output_dir=out,expected_models=1))
+    summary=json.loads((out/'summary.json').read_text())
+    assert summary['models'][0]['validation']['variant']=='raw'
+    assert summary['models'][0]['training']['steps']==100
+    assert (out/'index.html').is_file()

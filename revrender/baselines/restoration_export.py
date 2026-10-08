@@ -4,8 +4,6 @@ Oracle region crops isolate restoration from detection. They are not an end-to-e
 page-detection score. Test results never select weights or thresholds.
 """
 import argparse
-import contextlib
-import io
 import json
 import os
 from pathlib import Path

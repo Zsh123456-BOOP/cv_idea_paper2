@@ -2,20 +2,36 @@
 # Evaluate only frozen selections, after both training queues finish.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
-LANE0="$1"; LANE3="$2"; UPSTREAM="$3"; OUT="$4"
-test -f "$LANE0/COMPLETED" && test -f "$LANE3/COMPLETED"
+RUNS=()
+GPU=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0; CARD=0; NUMA=0
+if [ "$1" = --suite ]; then
+  SUITE="$2"; UPSTREAM="$3"; OUT="$4"
+  for lane in 0 2 3; do test -f "$SUITE/lane$lane/COMPLETED"; done
+  RUNS=("$SUITE/lane0/COR-Generator_gold_pixels" "$SUITE/lane0/Restormer_gold_pixels"
+        "$SUITE/lane2/NAFNet_gold_pixels" "$SUITE/lane2/DE-GAN_gold_pixels"
+        "$SUITE/lane3/Strikethrough-CycleGAN_gold_pixels" "$SUITE/lane3/DocDiff_gold_pixels")
+  GPU=GPU-314fdf43-7a94-4e29-20d0-fbd496632b1b; CARD=3; NUMA=1
+  export ALLOW_GPU3=1
+  test -z "$(nvidia-smi -i "$GPU" --query-compute-apps=pid --format=csv,noheader)" || { echo 'GPU3 occupied'; exit 3; }
+else
+  LANE0="$1"; LANE3="$2"; UPSTREAM="$3"; OUT="$4"
+  test -f "$LANE0/COMPLETED" && test -f "$LANE3/COMPLETED"
+  for arm in gold_pixels predicted_pixels predicted_traced; do
+    RUNS+=("$LANE0/NAFNet_$arm" "$LANE0/DE-GAN_$arm" "$LANE3/DocDiff_$arm")
+  done
+fi
 test ! -e "$OUT" || { echo 'create-only output exists'; exit 2; }
 require_clean_source
 mkdir "$OUT"
-GPU=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0
+trap 'touch "$OUT/FAILED"' ERR
 O=/home/zsh/hme/outputs
 LABELS=("$O"/paper2_annotation_labels/*revision-boxes-test_*.json)
 test "${#LABELS[@]}" = 1
 EXPORTS=()
-for arm in gold_pixels predicted_pixels predicted_traced; do
-  for model in NAFNet DE-GAN DocDiff; do
-    run="$LANE0/${model}_${arm}"
-    [ "$model" != DocDiff ] || run="$LANE3/${model}_${arm}"
+for run in "${RUNS[@]}"; do
+    name="$(basename "$run")"
+    model="${name%_gold_pixels}"
+    case "$name" in DE-GAN_*) model=DE-GAN ;; esac
     test -f "$run/selection.json"
     RUNTIME="$PY"
     if [ "$model" = DE-GAN ]; then
@@ -27,22 +43,21 @@ for arm in gold_pixels predicted_pixels predicted_traced; do
     else
       unset LD_LIBRARY_PATH
     fi
-    dest="$OUT/${model}_${arm}"
+    dest="$OUT/$name"
     require_free_memory "$GPU" 18000
-    bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU" 0 "$dest" -- \
+    bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU" "$NUMA" "$dest" -- \
       "$RUNTIME" -m revrender.baselines.restoration_export export --run "$run" --upstream "$UPSTREAM" \
       --labels "${LABELS[0]}" --selection "$O/paper2_annotation_labels/selection.json" \
       --geometry "$O/paper2_geometry_labels_test7" \
       --pages "$O/paper2_pages_clean_unlabeled3976" --pages /home/zsh/hme/data/full1026_v1/images \
       --output-dir "$dest" > "$dest.log" 2>&1
     EXPORTS+=("$dest")
-  done
 done
 unset LD_LIBRARY_PATH
 PYTHONPATH="$ROOT" "$PY" -m revrender.baselines.restoration_export merge --inputs "${EXPORTS[@]}" --output-dir "$OUT/pack"
 require_free_memory "$GPU" 22500
-# vLLM resolves logical CUDA ordinals; hold the UUID lock, then expose physical 0.
-bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU" 0 "$OUT/qwen8b" -- env CUDA_VISIBLE_DEVICES=0 \
+# vLLM resolves logical CUDA ordinals; hold the UUID lock, then expose the corresponding physical ordinal.
+bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU" "$NUMA" "$OUT/qwen8b" -- env CUDA_VISIBLE_DEVICES="$CARD" \
   "$PY" -m revrender.recognize_lines --pack "$OUT/pack" --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct \
   --conditions erased_neutral --gpu-memory .9 --output-dir "$OUT/qwen8b" > "$OUT/qwen8b.log" 2>&1
 PYTHONPATH="$ROOT" "$PY" -m revrender.eval.revision_boxes read --pack "$OUT/pack" \
