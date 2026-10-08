@@ -91,3 +91,5 @@ python -m revrender.infer / .train / .eval.report / .eval.freeze ...            
 - 单个文件超过约 800 行就拆；模块边界保持 models / data / train / infer / eval / baselines / tools。
 
 2026-10-08 用户授权六个核心恢复 baseline 使用 GPU0/2/3，沿 main。统一合成-only、darken-only v4 gold_pixels；新增 COR、普通 Strikethrough-CycleGAN、Restormer，原三模型延长训练并补 DocDiff 官方 EMA 候选。完整预算/验证停止条件在 configs/restoration.toml 和 README；VCGAN 不在当前队列，50 个真实训练标注微调留作独立实验。不得把较长任务适配称为原论文全部指标复现，不按测试读数改配置。
+
+2026-10-08 六基线正式运行已启动：快照 `/home/zsh/hme/code_paper2_9f6ed161`，总目录 `/home/zsh/hme/outputs/paper2_restoration_suite20261008`；lane0 COR→Restormer、lane2 NAFNet→DE-GAN、lane3 CycleGAN→DocDiff。六组 100 步冒烟及推理重载均通过，21 项针对性测试通过。`finish_restoration_suite.sh` 已后台等待所有 lane 成功后自动测试并生成 `report/index.html`；检查 lane 的 COMPLETED/FAILED、根目录 EVALUATION_FAILED/COMPLETED 和 *.launch.log，不重复启动、不覆写产物。正式结果尚待产生，当前标注模型不更换。

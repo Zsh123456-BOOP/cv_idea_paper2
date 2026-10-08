@@ -95,3 +95,5 @@
 产物：`paper2_restoration_darken0_20261007`（NAFNet/DE-GAN；最后 DE-GAN 重绘臂转到已空闲的 GPU3）、`paper2_restoration_darken3_20261007`（DocDiff）、`paper2_restoration_test20261007_v2`、`paper2_restoration_report20261007`。本机离线查看 `work/restoration_pilot20261007/index.html`，完整数值 `summary.json`。18 项针对性测试通过，3 个模型 GPU 冒烟、参数更新和权重重载通过；HTML 的 JavaScript 语法检查通过，浏览器策略阻止 file 协议自动预览，界面未做自动渲染核验。GPU 作业均已结束。
 
 2026-10-08 六核心恢复系统复现启动前验收：COR-Generator / Strikethrough-CycleGAN / NAFNet / Restormer / DocDiff / DE-GAN，原架构来源已校验，统一 synthetic-only gold_pixels v4，GPU0/2/3。`40c60b1` 快照完成每模型 100 步冒烟和保存重载检查，六组均通过；DE-GAN 最大差异 1 灰度级，其余为 0。正式协议见 configs/restoration.toml（8万至10万更新上限、预设验证停止、DocDiff raw/EMA 两候选）。冒烟数字不作方法比较，正式训练/测试结果待产出，原九组先导结果保持不变。
+
+正式队列已从 `9f6ed161` 快照启动，根目录 `/home/zsh/hme/outputs/paper2_restoration_suite20261008`：lane0 = COR→Restormer，lane2 = NAFNet→DE-GAN，lane3 = 普通 CycleGAN→DocDiff。三卡均已确认发生参数更新；每条 lane 的 COMPLETED 之后，独立完成进程自动在 GPU3 运行冻结权重导出、统一 Qwen3-VL-8B 和离线报告。最终入口为 `report/index.html`，当前尚未产生正式比较结果。21 项针对性测试通过。源码 main 已推送；标注预填模型保持原版本。
