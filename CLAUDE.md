@@ -89,3 +89,5 @@ python -m revrender.infer / .train / .eval.report / .eval.freeze ...            
 - 文档只留 `README.md`、`CLAUDE.md`、`RESULTS.md`（每次正式实验一行：日期、配置、提交、输出目录、关键数字、一句结论）。不写流水账。
 - 产物目录按运行名（配置里的 name）区分，不按复制的脚本区分。
 - 单个文件超过约 800 行就拆；模块边界保持 models / data / train / infer / eval / baselines / tools。
+
+2026-10-08 用户授权六个核心恢复 baseline 使用 GPU0/2/3，沿 main。统一合成-only、darken-only v4 gold_pixels；新增 COR、普通 Strikethrough-CycleGAN、Restormer，原三模型延长训练并补 DocDiff 官方 EMA 候选。完整预算/验证停止条件在 configs/restoration.toml 和 README；VCGAN 不在当前队列，50 个真实训练标注微调留作独立实验。不得把较长任务适配称为原论文全部指标复现，不按测试读数改配置。

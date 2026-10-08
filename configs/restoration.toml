@@ -1,0 +1,55 @@
+# Frozen synthetic-only task adaptation. Not original benchmark reproduction.
+# Common: darken-only v4 gold_pixels, 10788 train / 596 val, 256 native tiles.
+# Selection: max real validation removal F1, threshold .2; no test access.
+# No minimum-damage constraint invented after seeing validation outcomes.
+# Different recipe budgets are explicit, no ranking solely by update count.
+# DocDiff raw/official EMA are predeclared candidates, same validation only.
+
+[training.COR-Generator]
+steps = 80910 # 30 * 10788 / 4 expected exposures; sampled batches
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 80910
+patience = 0
+
+[training.Strikethrough-CycleGAN]
+steps = 80910
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 80910
+patience = 0
+
+[training.NAFNet]
+steps = 80000
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 40000
+patience = 6
+
+[training.Restormer]
+steps = 80000
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 40000
+patience = 6
+
+[training.DocDiff]
+steps = 100000
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 50000
+patience = 6
+ema = true
+
+[training.DE-GAN]
+steps = 80000
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 40000
+patience = 6

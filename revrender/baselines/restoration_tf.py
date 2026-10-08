@@ -66,5 +66,7 @@ def train(e):
             require(not np.array_equal(before_g,g.trainable_variables[0].numpy()),'generator did not update')
             require(not np.array_equal(before_d,d.trainable_variables[0].numpy()),'discriminator did not update')
         if step==1 or step%100==0:e.log({'step':step,'generator_loss':gl,'discriminator_loss':dl})
-        if step%e.args.eval_every==0 or step==e.args.steps:e.evaluate(predict,step,save)
+        if step%e.args.eval_every==0 or step==e.args.steps:
+            e.evaluate(predict,step,save)
+            if e.stop:break
     e.finish()

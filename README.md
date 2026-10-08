@@ -601,3 +601,13 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 测试入口 `scripts/eval_restoration_pilot.sh`：要求两卡的 9 个训练作业全部完成后，只加载人工验证选定版本。`baselines.restoration_export` 在人工标出的真实涂改区域中恢复，导出同一批原图/恢复图给固定 Qwen3-VL-8B、中性转写指令，统计已有 `revision_boxes.read` 的字符保留与严格完全正确率；另读 7 题逐笔测试金标，固定增亮阈值统计误擦漏擦。此处使用人工区域，是去划线模块的条件评测，不是整页检测到恢复的端到端成绩；读取测试结果后不能回头选 checkpoint。
 
 首轮 9 组训练和冻结后的真实测试均已完成，完整结果见 RESULTS 末节；本机离线对比页 `work/restoration_pilot20261007/index.html`。本轮最高字符读回为 NAFNet 原金标素材 54.54%（同次原图 48.88%）；新素材尚未稳定提升文字读回，路径重绘减少部分误擦。仅为短预算任务适配，现有人工标注预填模型未因此替换。
+
+### 六个已发表恢复系统的同协议适配（2026-10-08）
+
+用户授权使用 GPU0/2/3。清单与出处见 `BASELINE_RESEARCH.md`；入口复用 `baselines.restoration`，配方 `configs/restoration.toml`，队列 `scripts/run_restoration_suite.sh`。在上一轮冻结的 darken-only v4 / gold_pixels 上从头训练：COR-Generator、普通 Strikethrough-CycleGAN、NAFNet、Restormer、DocDiff、DE-GAN。先只用合成数据；50 处真实训练标注不混入，16 处人工验证照旧用于选版；无测试图、人工掩膜或真实划线类型输入模型。VCGAN 仍是待核对候选，本队列不含它。
+
+COR 和 CycleGAN 最大 80,910 次 batch4 更新，相当于 30 轮的期望见样本量（有放回采样，不宣称逐轮遍历）；NAFNet/Restormer/DE-GAN 最大 80,000 步，40,000 步后连续 6 次验证不提升停止；DocDiff 最大 100,000 步，50,000 步后同规则。每 5,000 步及末步验证，最大真实验证擦除 F1 选版，固定增亮阈值 0.2；同时记录误擦和新增墨迹。64 张固定合成验证图仅作诊断。这里保留旧像素选版口径，尚未采用调研建议的转写验证选版；更长预算仍不等于复现原论文完整 benchmark，也不保证已收敛。
+
+原架构与损失保留。COR 使用反色灰度 BCE；CycleGAN 使用独立抽样的干净/划线两域、双向 L1 cycle×10、LSGAN、20 张历史池，不使用配对监督或属性标签。Restormer 使用完整 dim48/[4,6,6,8] 架构和 L1，batch4 以单图累积实现，保持原生 256 裁块；官方 flat/cosine 调度按当前预算同比例缩短，不使用 GoPro 的 128→384 渐进尺寸或旋转增强。DocDiff 同时保留 raw 和严格按源码更新的 EMA（初始复制、step>2000 每100次、decay .9999），两者是预先声明的验证候选，不看测试挑选。EMA 早期接近随机初始化的问题会如实记录。
+
+所有权重按冻结选择重新加载，与保存的原生验证预测比较，最多允许 1 灰度级浮点差异。训练保存输入/源码哈希、优化器、步数、验证曲线和设备峰值。共同推理采用原生 256 网格重叠裁块，不拉伸手写字；恢复图之后不加方法专属清理。公开源码仅存忽略产物目录，Git 只保存适配代码。

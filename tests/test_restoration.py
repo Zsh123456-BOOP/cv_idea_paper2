@@ -60,3 +60,45 @@ def test_export_serializes_clipped_region_sizes(tmp_path,monkeypatch):
     module.export(Namespace(run=run,upstream=tmp_path,selection=selection,geometry=geometry,pages=[scans],labels=[labels],output_dir=tmp_path/'out'))
     rows=json.loads((tmp_path/'out/pack/pack.json').read_text())['rows']
     assert len(rows)==2 and rows[0]['size']==[40,32]
+
+
+def test_unpaired_domains_have_independent_order_but_reproducible_batches():
+    from revrender.baselines.restoration import Experiment
+    from types import SimpleNamespace
+    def make():
+        e=Experiment.__new__(Experiment);e.args=SimpleNamespace(batch_size=4)
+        e.train=np.arange(100);e.x=np.arange(100,dtype=np.uint8);e.y=e.x.copy()
+        e.rng=np.random.default_rng(42)
+        e.unpaired_rng=np.random.default_rng(np.random.SeedSequence(42).spawn(1)[0])
+        return e
+    e=make();clone=make();paired=make()
+    for _ in range(5):
+        x,y=e.batch(unpaired=True);xx,yy=clone.batch(unpaired=True);px,py=paired.batch()
+        assert np.array_equal(x,xx) and np.array_equal(y,yy)
+        assert np.array_equal(x,px) and np.array_equal(px,py)
+        assert not np.array_equal(x,y)
+
+
+def test_two_weight_candidates_select_validation_best_and_count_one_plateau(tmp_path):
+    from revrender.baselines.restoration import Experiment
+    from types import SimpleNamespace
+    import time,json
+    e=Experiment.__new__(Experiment)
+    e.args=SimpleNamespace(batch_size=1,steps=100,min_steps=1,patience=2)
+    e.out=tmp_path;e.native_rows=[{}]
+    im=np.full((12,12),255,np.uint8);im[4:8,4:8]=0
+    gold=im==0;e.native={'image_0':im,'mask_0':gold}
+    e.x=im[None];e.y=np.full_like(e.x,255);e.val=np.array([0])
+    e.best=(-1,None,'');e.start=time.monotonic();e.stale=0;e.stop=False;e.candidate_improved=False
+    save=lambda path:path.mkdir()
+    # Raw is perfect; bad EMA must neither replace it nor count as a plateau on this evaluation.
+    e.evaluate(lambda x:np.ones_like(x),1,save,variant='raw',final_candidate=False)
+    e.evaluate(lambda x:x,1,save,variant='ema')
+    assert e.best==(1.,1,'_raw') and e.stale==0 and not e.stop
+    for step in (2,3):
+        e.evaluate(lambda x:x,step,save,variant='raw',final_candidate=False)
+        e.evaluate(lambda x:x,step,save,variant='ema')
+    assert e.stale==2 and e.stop
+    e.finish();selection=json.loads((tmp_path/'selection.json').read_text())
+    assert selection['checkpoint']=='step_1_raw' and selection['evaluation']=='evaluation_1_raw.json'
+    assert selection['actual_steps']==3

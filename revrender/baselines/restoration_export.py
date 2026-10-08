@@ -40,20 +40,13 @@ def selected_predictor(run,upstream):
         checkpoint=weights/'generator.h5'
     else:
         import torch
-        from .restoration_torch import build
+        from .restoration_torch import build, predict_image
         torch.manual_seed(SEED);torch.set_num_threads(4)
         network,diffusion,_=build(model,upstream/model);checkpoint=weights/'weights.pt'
         state=torch.load(checkpoint,map_location='cpu',weights_only=False);network.load_state_dict(state['model']);network.eval()
         @torch.no_grad()
         def predict(x):
-            with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
-                torch.manual_seed(SEED)
-                xx=torch.from_numpy(np.ascontiguousarray(x[:,None])).cuda().repeat(1,3,1,1)
-                if diffusion is None:out=network(xx)
-                else:
-                    initial=network.init_predictor(xx,torch.zeros(len(xx),dtype=torch.long,device=xx.device))
-                    with contextlib.redirect_stdout(io.StringIO()):out=initial+diffusion(torch.randn_like(initial),initial,pre_ori='True')
-                return out.mean(1).clamp(0,1).cpu().numpy()
+            return predict_image(network,diffusion,x,model)
     return predict,checkpoint,manifest
 
 
