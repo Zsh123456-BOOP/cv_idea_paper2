@@ -148,3 +148,22 @@ DocDiff-seal 与 Restormer-motion 几乎没有按当前阈值擦除划线，即�
 798 条 OCR 全部完成；3 条触及 256-token 上限（NAFNet-GoPro32 1 条、DE-GAN-binarize 2 条），固定协议照常计分，选中模型没有截断。17 项针对性测试通过，18 份参数均严格匹配加载；HTML 脚本语法与 42×19 图像／读数完整性通过，另抽查 4 个固定种子样例。没有新增同数据微调，也没有替换当前标注预填权重。
 
 服务器产物 `/home/zsh/hme/outputs/paper2_pretrained_validation20261009`；权重与下载哈希在 `/home/zsh/hme/outputs/paper2_official_weights20261009`。本机离线比较页 [work/pretrained_validation20261009/report/index.html](work/pretrained_validation20261009/report/index.html)，精确数值为相邻 `summary.json`，几何诊断 `work/pretrained_validation20261009/cycle_resize_diagnostic.json`。初次 CycleGAN 容器格式加载失败记录保留；修正为读取作者 `model_state_dict` 后，全部候选推理成功。
+
+## 2026-10-09：StainRestorer 官方权重验证完成，同数据适配已启动
+
+源码快照 `d47f248a`，官方污渍／水印／印章三套权重已完整下载、校验传输哈希并严格匹配加载。11 道验证题中 41 处可读划线用于选版，另 1 处涂黑只记录；人工像素验证仍为独立 16 区域，固定增亮阈值 0.2。GPU3 共 168 条 Qwen3-VL-8B 转写全部完成，无长度截断；北京时间 11:25 生成报告。没有使用测试集选官方权重。
+
+| 官方权重版本 | 字符读回% | 严格全对（41 处） | 划线去除召回%（16 区域） | 正常墨迹误擦%（16 区域） |
+|---|---:|---:|---:|---:|
+| 同次原图 | 46.43 | 3 | — | — |
+| StainRestorer-watermark | 47.24 | 4 | 0.00 | 0.00 |
+| StainRestorer-stain | 46.21 | 3 | 0.00 | 0.00 |
+| StainRestorer-seal | 45.62 | 4 | 0.00 | 0.00 |
+
+按预先规则选中去水印版本，但相对同次原图只有 +0.81 个百分点；在 16 个像素区域中没有达到固定阈值的划线去除。42 个转写区域相对原图的平均绝对灰度变化分别为污渍版 0.893、水印版 0.337、印章版 0.053（0–255 灰度单位）。这些结果不支持“官方权重已有效恢复底层文字”。
+
+复查报告 42×4 张图像及转写完整，42 张原图与此前 18 权重验证逐字节一致，但 41 处划线中 4 处原图转写有变化；原图读回因此由此前 44.16% 变成本次 46.43%。未隔离运行批次／数值因素，只与同次原图配对，不将本次分数直接塞进旧候选排名。检查记录在离线报告旁 `artifact_checks.json`。
+
+本机报告：[work/stainrestorer20261009/released/report/index.html](work/stainrestorer20261009/released/report/index.html)。服务器主目录 `/home/zsh/hme/outputs/paper2_stainrestorer20261009`，资源目录 `paper2_stainrestorer_resources20261009`，`released/COMPLETED` 仅代表官方权重验证结束。22 项服务器针对性测试通过；100 步训练检查的 loss 从 0.4245 降至 0.0115，权重重载预测差异 0 灰度级。不同批次、短余弦调度的检查损失仅用作连通性检查，不作为泛化成绩。
+
+正式训练在北京时间 11:25:36 从随机初始化启动，使用 GPU3；进程及日志见主目录旁 `.pid`、`.launch.log`。与既有六基线共用 10,788 合成训练对、16 区域选版规则，最大 80,000 步／最小 40,000 步及既定早停，不加载上述选中的官方权重。实测检查阶段约 1.08 秒／更新，粗估 12–24 小时，另加验证及评测时间；实际以训练日志为准。完整流程会自动重载冻结版本，再运行既有 81 处可读划线与 7 题像素测试并生成 `report/`；根目录 `COMPLETED` 才代表全部结束。**正式训练／测试结果尚未产生，当前标注模型没有替换。**
