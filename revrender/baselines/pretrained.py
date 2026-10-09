@@ -97,6 +97,17 @@ def catalogue(args):
     print(json.dumps({'candidates':len(rows),'names':[r['name'] for r in rows]}))
 
 
+def checkpoint_parameters(value):
+    """Unwrap author release containers without accepting incomplete weights."""
+    for key in ('model_state_dict','params','state_dict'):
+        if isinstance(value,dict) and key in value:
+            value=value[key]
+            break
+    require(isinstance(value,dict) and value,'empty or unsupported checkpoint')
+    if all(k.startswith('module.') for k in value):value={k[7:]:v for k,v in value.items()}
+    return value
+
+
 def released_predictor(spec,weights,upstream):
     model=spec['model'];source=verified_source(upstream/model)
     paths=[weights/p for p in spec['weights']]
@@ -122,10 +133,7 @@ def released_predictor(spec,weights,upstream):
         torch.manual_seed(SEED);torch.set_num_threads(4);torch.backends.cudnn.benchmark=False
         network,diffusion,_=build(model,upstream/model,spec.get('architecture'))
         def state(path):
-            value=torch.load(path,map_location='cpu',weights_only=True)
-            if isinstance(value,dict) and 'params' in value:value=value['params']
-            if all(k.startswith('module.') for k in value):value={k[7:]:v for k,v in value.items()}
-            return value
+            return checkpoint_parameters(torch.load(path,map_location='cpu',weights_only=True))
         if model=='DocDiff':
             network.init_predictor.load_state_dict(state(paths[0]),strict=True)
             network.denoiser.load_state_dict(state(paths[1]),strict=True)

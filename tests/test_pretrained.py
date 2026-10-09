@@ -5,8 +5,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from revrender.baselines.pretrained import candidates, report, restore, validation_revisions
+from revrender.baselines.pretrained import candidates, checkpoint_parameters, report, restore, validation_revisions
 from revrender.util import RefusedError
+
+
+def test_author_checkpoints_unwrap_metadata_but_preserve_parameter_keys():
+    parameters={'module.layer.weight':[1,2],'module.layer.bias':[3]}
+    for key in ('model_state_dict','params','state_dict'):
+        assert checkpoint_parameters({'epoch':42,key:parameters})=={'layer.weight':[1,2],'layer.bias':[3]}
+    assert checkpoint_parameters({'layer.weight':[1]})=={'layer.weight':[1]}
+    with pytest.raises(RefusedError):checkpoint_parameters({})
 
 
 def test_only_completed_readable_validation_revisions_are_selected():
