@@ -165,3 +165,18 @@ def test_reviewed_training_crop_uses_polygon_and_ignores_archived_pixels():
     assert image[1,8]==20 and label[1,8]==1
     _,negative=M.reviewed_crop(page,{**row,'not_revision':True})
     assert not negative.any()
+
+
+def test_unknown_pixels_are_not_silently_converted_to_binary_training_labels():
+    page=Image.fromarray(np.full((10,10),20,np.uint8))
+    row={'id':'r','box':[0,0,10,10],'region':[[0,0],[10,0],[10,3],[3,3],[3,10],[0,10]],
+         'runs':[[25,1]],'confirmed':True,'uncertainMask':{'box':[0,0,10,10],'runs':[[23,1]]}}
+    with pytest.raises(RuntimeError,match='ignore-mask'):
+        M.reviewed_crop(page,row)
+    with pytest.raises(RuntimeError,match='uncertain'):
+        M.geometry({'done':False,'revisions':[row]})
+    # Shrinking the polygon parks older unknown annotations without discarding them.
+    row['uncertainMask']['runs']=[[88,1]]
+    _,mask=M.reviewed_crop(page,row)
+    assert mask.sum()==1 and mask[2,5]==1
+    assert len(M.geometry({'done':False,'revisions':[row]})['strokes'])==1

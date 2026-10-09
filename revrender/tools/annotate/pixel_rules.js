@@ -45,7 +45,7 @@
   }
   function reshape(state, region, size) {
     region=validRegion(region,size); const box=cropBox(region,size);
-    return {...clipRegion(state,region,box), confirmed:false};
+    return {...clipRegion(state,region,box), confirmed:false, text_confirmed:false};
   }
   function regionPixels(region,box){
     const [l,t,r,b]=box,width=r-l,out=new Uint8Array(width*(b-t));
@@ -65,17 +65,30 @@
     }
     return {...state,region,box,runs:encode(active),outsideMask:{box:all,runs:encode(combined)}};
   }
-  function keepPixels(state){
+  function layerPixels(state,name){
     const size=(state.box[2]-state.box[0])*(state.box[3]-state.box[1]);
-    return state.manualKeep?decode(remap(state.manualKeep.runs,state.manualKeep.box,state.box),size):new Uint8Array(size);
+    return state[name]?decode(remap(state[name].runs,state[name].box,state.box),size):new Uint8Array(size);
   }
-  function saveKeep(state,active){
+  function keepPixels(state){return layerPixels(state,'manualKeep');}
+  function uncertainPixels(state){return layerPixels(state,'uncertainMask');}
+  function saveLayer(state,name,active){
     // Keep native coordinates outside a temporarily shrunken crop as well.
-    const old=state.manualKeep,box=old?[Math.min(old.box[0],state.box[0]),Math.min(old.box[1],state.box[1]),Math.max(old.box[2],state.box[2]),Math.max(old.box[3],state.box[3])]:state.box.slice();
+    const old=state[name],box=old?[Math.min(old.box[0],state.box[0]),Math.min(old.box[1],state.box[1]),Math.max(old.box[2],state.box[2]),Math.max(old.box[3],state.box[3])]:state.box.slice();
     const width=box[2]-box[0],size=width*(box[3]-box[1]),all=old?decode(remap(old.runs,old.box,box),size):new Uint8Array(size);
     const [l,t,r,b]=state.box;
     for(let y=t;y<b;y++)for(let x=l;x<r;x++)all[(y-box[1])*width+x-box[0]]=active[(y-t)*(r-l)+x-l];
-    state.manualKeep={box,runs:encode(all)};
+    state[name]={box,runs:encode(all)};
+  }
+  function saveKeep(state,active){saveLayer(state,'manualKeep',active);}
+  function saveUncertain(state,active){saveLayer(state,'uncertainMask',active);}
+  function keepOnly(state,grey){
+    const keep=keepPixels(state),unknown=uncertainPixels(state),domain=regionPixels(state.region,state.box),mask=new Uint8Array(grey.length);
+    let kept=0,uncertain=0,removed=0;
+    for(let i=0;i<mask.length;i++)if(domain[i]&&grey[i]<245){
+      if(unknown[i])uncertain++;else if(keep[i])kept++;else{mask[i]=1;removed++;}
+    }
+    if(!kept)throw Error('请先用绿色“保护原字”涂出要保留的笔画，再预览清理。');
+    return {runs:encode(mask),kept,uncertain,removed};
   }
   function whiteOutside(rgba,allowed){
     for(let i=0;i<allowed.length;i++)if(!allowed[i])for(let c=0;c<3;c++)rgba[i*4+c]=255;
@@ -87,7 +100,7 @@
     return {runs:encode(mask), removed};
   }
   function restoreRow(base, saved) {
-    return {runs:base.runs,box:base.box,region:base.region,confirmed:false,not_revision:false,deleted:false,ops:0,seconds:0,note:'',...saved};
+    return {runs:base.runs,box:base.box,region:base.region,text:base.text||'',unreadable:false,text_confirmed:false,confirmed:false,not_revision:false,deleted:false,ops:0,seconds:0,note:'',...saved};
   }
   function importData(pack, current, value) {
     if(value.schema!=='paper2-pixel-review-v1'||value.pack!==pack.id)throw Error('文件不属于这批题');
@@ -101,6 +114,10 @@
         if(base&&base.page!==pi)throw Error('区域与题目不匹配');
         validBox(r.box,pack.pages[pi].size);validRegion(r.region,pack.pages[pi].size);
         decode(r.runs,(r.box[2]-r.box[0])*(r.box[3]-r.box[1]));
+        for(const name of ['manualKeep','uncertainMask'])if(r[name]){
+          validBox(r[name].box,pack.pages[pi].size);
+          decode(r[name].runs,(r[name].box[2]-r[name].box[0])*(r[name].box[3]-r[name].box[1]));
+        }
         if(!pack.rows.some(b=>b.id===r.id))extra.set(r.id,{...r,page:pi});
         next.rows[r.id]=restoreRow(r,{...r,page:pi});
       }
@@ -120,17 +137,20 @@
   }
   const AUTO_CLEANUP=Object.freeze({threshold:100,radius:4,maxArea:12,gray:true,dots:true});
   const CLEANUP_POLICY='residue-100-4-12-v1';
-  function cleanupStamp(state){return {policy:CLEANUP_POLICY,box:state.box.slice(),region:state.region?.map(p=>p.slice()),runs:state.runs.map(r=>r.slice())};}
+  function cleanupStamp(state){return {policy:CLEANUP_POLICY,box:state.box.slice(),region:state.region?.map(p=>p.slice()),runs:state.runs.map(r=>r.slice()),labelVersion:1,manualKeep:state.manualKeep,uncertainMask:state.uncertainMask};}
   function autoClean(state,grey){
     if(state.deleted||state.not_revision)return 0;
     const stamp=cleanupStamp(state);
-    if(state.autoCleanup?.policy===stamp.policy&&JSON.stringify(state.autoCleanup.box)===JSON.stringify(stamp.box)&&JSON.stringify(state.autoCleanup.region)===JSON.stringify(stamp.region)&&JSON.stringify(state.autoCleanup.runs)===JSON.stringify(stamp.runs))return 0;
+    if(JSON.stringify(state.autoCleanup)===JSON.stringify(stamp))return 0;
+    // Upgrade a previously cleaned draft without expanding its erase mask again.
+    if(state.autoCleanup&&!state.autoCleanup.labelVersion&&!state.uncertainMask&&
+        ['policy','box','region','runs'].every(k=>JSON.stringify(state.autoCleanup[k])===JSON.stringify(stamp[k]))){state.autoCleanup=stamp;return 0;}
     const width=state.box[2]-state.box[0],mask=decode(state.runs,grey.length);
     const allowed=state.region?regionPixels(state.region,state.box):new Uint8Array(grey.length).fill(1),cleanGrey=grey.slice();
     for(let i=0;i<mask.length;i++)if(!allowed[i]){mask[i]=0;cleanGrey[i]=255;}
-    const keep=keepPixels(state);for(let i=0;i<mask.length;i++)if(keep[i])mask[i]=0;
+    const keep=keepPixels(state),unknown=uncertainPixels(state);for(let i=0;i<mask.length;i++)if(keep[i]||unknown[i])mask[i]=0;
     const candidate=residueCandidates(cleanGrey,mask,width,AUTO_CLEANUP);let added=0;
-    for(let i=0;i<mask.length;i++)if(candidate.added[i]&&allowed[i]&&!keep[i]){mask[i]=1;added++;}
+    for(let i=0;i<mask.length;i++)if(candidate.added[i]&&allowed[i]&&!keep[i]&&!unknown[i]){mask[i]=1;added++;}
     state.runs=encode(mask);state.autoCleanup=cleanupStamp(state);
     state.autoCleanedPixels=(state.autoCleanedPixels||0)+added;
     return added;
@@ -180,5 +200,5 @@
     }
     return {added,gray:countGray,dots:countDots,groups,total:countGray+countDots};
   }
-  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside,keepPixels,saveKeep};
+  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside,keepPixels,saveKeep,uncertainPixels,saveUncertain,keepOnly};
 });

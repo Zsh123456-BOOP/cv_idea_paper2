@@ -1,7 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id), R=PixelReview, clone=x=>JSON.parse(JSON.stringify(x));
 let pack,rows,key,backupKey,store,at=0,wholePage=0,inDetail=false,mode='add',zoom=3,hidden=false;
-let mask,original,grey,allowed,manualKeep,history=[],future=[],drawing=false,lastPoint=null,serial=0,busy=false,lastTime=0;
+let mask,original,grey,allowed,manualKeep,uncertain,keepProposal=null,history=[],future=[],drawing=false,lastPoint=null,serial=0,busy=false,lastTime=0;
 const images=new Map();
 let lastAutoCleaned=0;
 let backupHandle=null,backupPending=null,backupWriting=false,brushSaveTimer=null,space=false;
@@ -23,15 +23,17 @@ async function flushBackup(){
   catch(e){$('saveState').textContent='文件备份失败：'+e.message+'；请导出备份';$('saveState').classList.add('error');backupHandle=null;}
   finally{backupWriting=false;}
 }
-function scheduleBrushSave(){if(!brushSaveTimer)brushSaveTimer=setTimeout(()=>{brushSaveTimer=null;if(drawing){state().runs=R.encode(mask);R.saveKeep(state(),manualKeep);save();}},200);}
+function saveLabels(){R.saveKeep(state(),manualKeep);R.saveUncertain(state(),uncertain);}
+function scheduleBrushSave(){if(!brushSaveTimer)brushSaveTimer=setTimeout(()=>{brushSaveTimer=null;if(drawing){state().runs=R.encode(mask);saveLabels();save();}},200);}
 
 function touch(){const now=Date.now();if(lastTime&&document.visibilityState==='visible'){const seconds=Math.min((now-lastTime)/1000,60);if(inDetail&&row())state().seconds+=seconds;else store.pageSeconds[wholePage]=(store.pageSeconds[wholePage]||0)+seconds;}lastTime=now;}
 function status(text,error=false){$('status').textContent=text;$('status').className='status'+(error?' error':'');}
 function invalidate(r){const s=ensure(r);s.confirmed=false;s.ops++;store.done[r.page]=false;}
-function cleanActive(){R.saveKeep(state(),manualKeep);for(let i=0;i<mask.length;i++)if(!allowed[i])mask[i]=0;state().runs=R.encode(mask);const added=R.autoClean(state(),grey);mask=R.decode(state().runs,grey.length);return added;}
+function cleanActive(){saveLabels();for(let i=0;i<mask.length;i++)if(!allowed[i]||manualKeep[i]||uncertain[i])mask[i]=0;state().runs=R.encode(mask);const added=R.autoClean(state(),grey);mask=R.decode(state().runs,grey.length);return added;}
 function changed(){cleanActive();invalidate(row());save();nav();}
 function remember(){history.push({store:clone(store),at,wholePage,inDetail,chosen:whole.selected,editing:whole.editing});if(history.length>50)history.shift();future=[];}
-function cancelPending(){finishPaint();serial++;busy=false;drawing=false;$('edit').style.opacity=1;}
+function cancelPreview(){keepProposal=null;$('keepPreview').hidden=true;}
+function cancelPending(){finishPaint();cancelPreview();serial++;busy=false;drawing=false;$('edit').style.opacity=1;}
 async function imageOf(pi){if(images.has(pi))return images.get(pi);const im=new Image();im.src=pack.pages[pi].image;await im.decode();images.set(pi,im);return im;}
 function cropData(pi,box){const im=images.get(pi),[l,t,r,b]=box,c=document.createElement('canvas');c.width=r-l;c.height=b-t;const cx=c.getContext('2d');cx.drawImage(im,l,t,r-l,b-t,0,0,r-l,b-t);return cx.getImageData(0,0,r-l,b-t);}
 async function cleanStore(candidate){
@@ -48,7 +50,7 @@ async function cleanStore(candidate){
   candidate.imageRevision=pack.image_revision||'original';return removed;
 }
 function nav(){
-  $('progress').textContent=selectingRegions()?`已框选 ${rows.length} 处 · ${Object.values(store.done).filter(Boolean).length} 题完成`:`${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} 处`;
+  $('progress').textContent=selectingRegions()?`已框选 ${rows.length} 处 · ${Object.values(store.done).filter(Boolean).length} 题完成`:`像素 ${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length} / ${rows.length}`;
   const nav=$('nav');nav.replaceChildren();
   pack.pages.forEach((p,i)=>{
     const h=document.createElement('button');h.className='question'+(!inDetail&&i===wholePage?' active':'');
@@ -70,25 +72,39 @@ async function show(index){
   Object.assign(s,R.clipRegion(s,s.region,R.cropBox(s.region,pack.pages[row().page].size)));allowed=R.regionPixels(s.region,s.box);
   original=cropData(row().page,s.box);R.whiteOutside(original.data,allowed);grey=new Uint8Array(original.width*original.height);
   for(let i=0;i<grey.length;i++)grey[i]=Math.round((original.data[4*i]+original.data[4*i+1]+original.data[4*i+2])/3);
-  manualKeep=R.keepPixels(s);R.autoClean(s,grey);mask=R.decode(s.runs,grey.length);for(const id of ['edit','result']){$(id).width=original.width;$(id).height=original.height;}
+  manualKeep=R.keepPixels(s);uncertain=R.uncertainPixels(s);R.autoClean(s,grey);mask=R.decode(s.runs,grey.length);for(const id of ['edit','result']){$(id).width=original.width;$(id).height=original.height;}
   const n=rows.filter((r,i)=>r.page===row().page&&i<=at).length;
   $('title').textContent=`第 ${wholePage+1} 题 · 划线 ${n} · 多边形裁切 ${original.width} × ${original.height}`;$('notRevision').checked=s.not_revision;$('note').value=s.note;
+  $('transcription').value=s.text||'';$('unreadable').checked=!!s.unreadable;$('textConfirmed').checked=!!s.text_confirmed;updateTextState();
   $('previous').disabled=at===0;$('next').disabled=at===rows.length-1;
   paint();viewports.fit();nav();lastTime=Date.now();save();status(s.confirmed?'这处已确认。继续修改会取消确认。':'仅显示、编辑多边形内部；框外已遮白。');
 }
 function paint(){
   if(!original)return;
   const over=new ImageData(new Uint8ClampedArray(original.data),original.width,original.height),clean=new ImageData(new Uint8ClampedArray(original.data),original.width,original.height);
+  const displayed=keepProposal?R.decode(keepProposal.runs,mask.length):mask;let red=0,green=0,orange=0;
   for(let i=0;i<mask.length;i++){
-    if(!mask[i]||state().not_revision)continue;
-    for(let c=0;c<3;c++)clean.data[4*i+c]=255;
-    if(!hidden){over.data[4*i]=Math.round(over.data[4*i]*.45+230*.55);over.data[4*i+1]*=.45;over.data[4*i+2]*=.45;}
+    if(!allowed[i]||grey[i]>=245||state().not_revision)continue;
+    let color=null;
+    if(uncertain[i]){orange++;color=[230,148,0];}
+    else if(manualKeep[i]){green++;color=[0,155,91];}
+    else if(displayed[i]){red++;color=[230,35,55];for(let c=0;c<3;c++)clean.data[4*i+c]=255;}
+    if(color&&!hidden)for(let c=0;c<3;c++)over.data[4*i+c]=Math.round(over.data[4*i+c]*.38+color[c]*.62);
   }
   $('edit').getContext('2d').putImageData(over,0,0);$('result').getContext('2d').putImageData(clean,0,0);
-
+  $('labelStats').textContent=`${keepProposal?'预览 · ':''}擦除 ${red} 像素 · 保护 ${green} 像素 · 不确定 ${orange} 像素（保留原图，单独导出）`;
+  $('resultTitle').textContent=keepProposal?'清理预览 · 尚未应用，请检查所有原字都已保护':'处理结果 · 检查原字，不确定区域保持原图';
 }
 function point(e){const c=$('edit'),b=c.getBoundingClientRect();return [Math.max(0,Math.min(c.width-1,Math.round((e.clientX-b.left)*c.width/b.width))),Math.max(0,Math.min(c.height-1,Math.round((e.clientY-b.top)*c.height/b.height)))];}
-function dab(x,y,add){const radius=Number($('radius').value),w=original.width,h=original.height;for(let yy=Math.max(0,y-radius);yy<=Math.min(h-1,y+radius);yy++)for(let xx=Math.max(0,x-radius);xx<=Math.min(w-1,x+radius);xx++)if(allowed[yy*w+xx]&&(xx-x)**2+(yy-y)**2<=radius**2){const i=yy*w+xx;mask[i]=add&&grey[i]<245?1:0;manualKeep[i]=add?0:1;}}
+function dab(x,y,tool){
+  if(typeof tool==='boolean')tool=tool?'paint':'erase';
+  const radius=Number($('radius').value),w=original.width,h=original.height;
+  for(let yy=Math.max(0,y-radius);yy<=Math.min(h-1,y+radius);yy++)for(let xx=Math.max(0,x-radius);xx<=Math.min(w-1,x+radius);xx++)if(allowed[yy*w+xx]&&(xx-x)**2+(yy-y)**2<=radius**2){
+    const i=yy*w+xx;
+    if(tool==='clear'){manualKeep[i]=0;uncertain[i]=0;continue;}
+    mask[i]=tool==='paint'&&grey[i]<245?1:0;manualKeep[i]=tool==='erase'?1:0;uncertain[i]=tool==='uncertain'&&grey[i]<245?1:0;
+  }
+}
 async function suggest(x,y,add){
   if(busy)return;touch();remember();const ticket=++serial;busy=true;$('edit').style.opacity=.65;status('正在按你的提示修正附近笔画…');
   try{
@@ -105,15 +121,15 @@ for(const id of ['editViewport','resultViewport']){
     if(!original||busy)return;
     if(id==='resultViewport'||mode==='pan'||space||e.button===2||e.button===1||e.shiftKey){touch();viewports.down(e,view);return;}
     if(e.target!==$('edit'))return;
-    e.preventDefault();touch();const [x,y]=point(e);if(!allowed[y*original.width+x])return;
+    e.preventDefault();touch();const [x,y]=point(e);if(!allowed[y*original.width+x])return;cancelPreview();
     if(mode==='add'||mode==='keep'){suggest(x,y,mode==='add');return;}
-    remember();invalidate(row());drawing=true;lastPoint=[x,y];view.setPointerCapture(e.pointerId);dab(x,y,mode==='paint');paint();scheduleBrushSave();
+    remember();invalidate(row());drawing=true;lastPoint=[x,y];view.setPointerCapture(e.pointerId);dab(x,y,mode);paint();scheduleBrushSave();
   };
   view.onpointermove=e=>{
     if(viewports.drag){viewports.move(e);return;}
     if(!drawing)return;
     const p=point(e),distance=Math.max(Math.abs(p[0]-lastPoint[0]),Math.abs(p[1]-lastPoint[1]));
-    for(let i=0;i<=distance;i++)dab(Math.round(lastPoint[0]+(p[0]-lastPoint[0])*i/Math.max(1,distance)),Math.round(lastPoint[1]+(p[1]-lastPoint[1])*i/Math.max(1,distance)),mode==='paint');
+    for(let i=0;i<=distance;i++)dab(Math.round(lastPoint[0]+(p[0]-lastPoint[0])*i/Math.max(1,distance)),Math.round(lastPoint[1]+(p[1]-lastPoint[1])*i/Math.max(1,distance)),mode);
     lastPoint=p;paint();scheduleBrushSave();
   };
   view.onpointerup=view.onpointercancel=()=>{viewports.up();finishPaint();};
@@ -158,7 +174,7 @@ async function restore(from,to){
   for(const [id,s] of Object.entries(previous.store.rows)){
     const now=latest.rows[id];if(!now)continue;
     s.seconds=Math.max(s.seconds,now.seconds);
-    const different=JSON.stringify([s.box,s.region,s.runs,s.not_revision])!==JSON.stringify([now.box,now.region,now.runs,now.not_revision]);
+    const different=JSON.stringify([s.box,s.region,s.runs,s.not_revision,s.manualKeep,s.uncertainMask])!==JSON.stringify([now.box,now.region,now.runs,now.not_revision,now.manualKeep,now.uncertainMask]);
     s.ops=Math.max(s.ops,now.ops)+(different?1:0);
     // An explicit undo must survive reload instead of immediately being auto-cleaned again.
     s.autoCleanup=R.cleanupStamp(s);
@@ -176,12 +192,28 @@ $('refineBtn').onclick=()=>{if(whole.selected)show(rows.findIndex(r=>r.id===whol
 $('wholeFit').onclick=()=>whole.fit();$('wholeMore').onclick=()=>whole.zoom(1.25);$('wholeLess').onclick=()=>whole.zoom(.8);
 $('wholeHide').onclick=()=>{whole.hidden=!whole.hidden;whole.draw();};
 $('prevPage').onclick=()=>overview(Math.max(0,wholePage-1));$('nextPage').onclick=()=>overview(Math.min(pack.pages.length-1,wholePage+1));
-document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{mode=b.dataset.mode;document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('active',x===b));});
+document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{finishPaint();mode=b.dataset.mode;document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('active',x===b));});
+$('keepOnly').onclick=()=>{
+  if(!original||busy||state().not_revision)return;finishPaint();touch();
+  try{keepProposal=R.keepOnly(state(),grey);$('keepPreview').hidden=false;$('keepPreviewText').textContent=`预览擦除 ${keepProposal.removed} 个墨迹像素；绿色及不确定部分保留。尚未保存。`;paint();}
+  catch(e){status(e.message,true);}
+};
+$('cancelKeepOnly').onclick=()=>{cancelPreview();paint();status('已取消预览，标注未改变。');};
+$('applyKeepOnly').onclick=()=>{
+  if(!keepProposal)return;touch();remember();mask=R.decode(keepProposal.runs,mask.length);cancelPreview();changed();paint();status('已按保留笔画清理并保存；不确定部分仍保留。可撤销。');
+};
 $('more').onclick=()=>viewports.zoom(zoom*1.4);$('less').onclick=()=>viewports.zoom(zoom/1.4);$('fitDetail').onclick=()=>viewports.fit();$('hide').onclick=()=>{hidden=!hidden;paint();};
-$('notRevision').onchange=()=>{touch();remember();state().not_revision=$('notRevision').checked;changed();paint();};
+$('notRevision').onchange=()=>{finishPaint();cancelPreview();touch();remember();state().not_revision=$('notRevision').checked;changed();paint();};
 $('note').oninput=()=>{touch();state().note=$('note').value;save();};
+function updateTextState(){$('textState').textContent=state().text_confirmed?'已校对 ✓':'未校对';$('transcription').disabled=!!state().unreadable;}
+function textChanged(){touch();state().text=$('transcription').value;state().unreadable=$('unreadable').checked;state().text_confirmed=false;$('textConfirmed').checked=false;updateTextState();save();nav();}
+$('transcription').oninput=textChanged;$('unreadable').onchange=textChanged;
+$('textConfirmed').onchange=()=>{
+  if($('textConfirmed').checked&&!state().unreadable&&!state().text?.trim()){$('textConfirmed').checked=false;status('请先填写被划内容，或勾选“整处无法辨认”。',true);return;}
+  touch();state().text_confirmed=$('textConfirmed').checked;updateTextState();save();nav();
+};
 $('previous').onclick=()=>show(at-1);$('next').onclick=()=>show(at+1);
-$('confirm').onclick=()=>{if(busy||!original)return;finishPaint();touch();state().runs=R.encode(mask);state().confirmed=true;state().needs_clean_review=false;save();nav();if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
+$('confirm').onclick=()=>{if(busy||!original)return;if(keepProposal){status('请先应用或取消清理预览，再确认这处。',true);return;}finishPaint();touch();state().runs=R.encode(mask);state().confirmed=true;state().needs_clean_review=false;save();nav();if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
 $('pageDone').onclick=()=>{
   const pi=inDetail?row().page:wholePage;
   if(!selectingRegions()&&rows.some(r=>r.page===pi&&!ensure(r).confirmed)){status('这题还有未确认的区域，请逐处复核后再确认整题。',true);return;}
@@ -189,7 +221,7 @@ $('pageDone').onclick=()=>{
 };
 function exported(source=store){
   const pages=R.exportPages(pack,source);
-  return {schema:'paper2-pixel-review-v1',pack:pack.id,exported_at:new Date().toISOString(),task:pack.task||'strike_only',image_revision:source.imageRevision||'original',image_source:source.imageRevision===pack.image_revision?pack.image_source:undefined,pages};
+  return {schema:'paper2-pixel-review-v1',annotation_version:2,label_semantics:{runs:'erase',manualKeep:'protect',uncertainMask:'unknown_not_ground_truth',text_confirmed:'independent_text_review'},pack:pack.id,exported_at:new Date().toISOString(),task:pack.task||'strike_only',image_revision:source.imageRevision||'original',image_source:source.imageRevision===pack.image_revision?pack.image_source:undefined,pages};
 }
 function download(value,name){const blob=new Blob([JSON.stringify(value)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function deleteRegion(id){
@@ -228,7 +260,8 @@ $('import').onchange=async e=>{
 document.addEventListener('keydown',e=>{
   if(e.isComposing)return;
   const editingText=['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)||e.target.isContentEditable;
-  if(inDetail&&!editingText&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&['b','e'].includes(e.key.toLowerCase())){e.preventDefault();document.querySelector('[data-mode="'+(e.key.toLowerCase()==='b'?'paint':'erase')+'"]').click();return;}
+  const brushes={b:'paint',e:'erase',u:'uncertain',x:'clear'};
+  if(inDetail&&!editingText&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&brushes[e.key.toLowerCase()]){e.preventDefault();document.querySelector('[data-mode="'+brushes[e.key.toLowerCase()]+'"]').click();return;}
   if(['INPUT','TEXTAREA','BUTTON','SELECT'].includes(e.target.tagName))return;const k=e.key.toLowerCase();
   if((e.ctrlKey||e.metaKey)&&k==='z'){e.preventDefault();restore(e.shiftKey?future:history,e.shiftKey?history:future);}
   else if(k==='0'||k==='escape'){e.preventDefault();if(inDetail)overview();else whole.fit();}
@@ -258,7 +291,7 @@ async function start(){
     $('snapshotBtn').hidden=false;
     document.querySelectorAll('[data-mode="add"],[data-mode="keep"]').forEach(b=>b.hidden=true);
     document.querySelector('[data-mode="paint"]').click();
-    $('detailHint').textContent+=' 离线版保留模型预填；用画笔补划线、橡皮恢复文字。';
+    $('detailHint').textContent+=' 模型预填已保留；不需要启动服务。';
   }
   if(selectingRegions()){
     $('appTitle').textContent='划线区域框选';$('appSubtitle').textContent='先框选需要去划线的区域，模型预填后再精修。';

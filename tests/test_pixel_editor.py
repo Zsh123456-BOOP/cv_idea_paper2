@@ -138,7 +138,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
           getContext:()=>({drawImage(){},putImageData(){},getImageData:(x,y,w,h)=>({width:w,height:h,data:new Uint8ClampedArray(w*h*4).fill(20)})})};
         if(id)nodes.set(id,n);return n;
       }
-      const buttons=['add','keep','paint','erase','pan'].map(mode=>{const n=node(mode);n.dataset.mode=mode;return n;});
+      const buttons=['add','keep','paint','erase','uncertain','clear','pan'].map(mode=>{const n=node(mode);n.dataset.mode=mode;return n;});
       node('review-pack').textContent=JSON.stringify(pack);node('review-draft').textContent='null';
       const doc={visibilityState:'visible',getElementById:node,createElement:()=>node(),addEventListener:(name,fn)=>handlers[name]=fn,
         querySelectorAll:q=>q==='[data-mode]'?buttons:buttons.slice(0,2),querySelector:q=>buttons.find(b=>q.includes('\"'+b.dataset.mode+'\"'))};
@@ -187,6 +187,31 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         vm.runInContext('dab(8,8,true);changed()',ctx);
         const brushOutside=vm.runInContext('mask[88]',ctx);
 
+        vm.runInContext("state().region=[[0,0],[10,0],[10,10],[0,10]];state().runs=[];delete state().manualKeep;delete state().uncertainMask;",ctx);
+        await vm.runInContext('show(0)',ctx);
+        vm.runInContext("grey.fill(255);for(const i of [33,34,36,88])grey[i]=20;remember();drawing=true;dab(3,3,'erase');dab(4,3,'uncertain');finishPaint();",ctx);
+        handlers.keydown(keyEvent('U'));const uncertainKey=vm.runInContext('mode',ctx);
+        handlers.keydown(keyEvent('X'));const clearKey=vm.runInContext('mode',ctx);
+        const beforeProposal=vm.runInContext('JSON.stringify(state().runs)',ctx);
+        vm.runInContext("$('keepOnly').onclick();$('confirm').onclick();",ctx);
+        const previewOnly=vm.runInContext("!!keepProposal&&!state().confirmed&&JSON.stringify(state().runs)",ctx);
+        vm.runInContext("$('cancelKeepOnly').onclick();",ctx);
+        const cancelled=vm.runInContext('!keepProposal&&JSON.stringify(state().runs)',ctx);
+        vm.runInContext("$('keepOnly').onclick();$('applyKeepOnly').onclick();",ctx);
+        const appliedKeep=vm.runInContext('({runs:state().runs,protected:manualKeep[33],unknown:uncertain[34]})',ctx);
+        await vm.runInContext('restore(history,future)',ctx);
+        const undoneKeep=vm.runInContext('JSON.stringify(state().runs)',ctx);
+        await vm.runInContext('restore(future,history)',ctx);
+        vm.runInContext("$('transcription').value='x + ?';$('transcription').oninput();$('textConfirmed').checked=true;$('textConfirmed').onchange();",ctx);
+        const separateText=vm.runInContext('state().text_confirmed&&!state().confirmed',ctx);
+        const labelled=vm.runInContext('exported()',ctx);
+        node('review-draft').textContent=vm.runInContext('JSON.stringify(store)',ctx);disk.clear();await vm.runInContext('start()',ctx);
+        const labelReload=vm.runInContext("({text:state().text,checked:state().text_confirmed,protected:manualKeep[33],unknown:uncertain[34],erased:mask[34]})",ctx);
+        vm.runInContext("remember();drawing=true;dab(4,3,'clear');finishPaint();",ctx);
+        const cleared=vm.runInContext('uncertain[34]===0&&manualKeep[34]===0',ctx);
+        await vm.runInContext('restore(history,future)',ctx);
+        const unknownUndo=vm.runInContext('uncertain[34]===1&&mask[34]===0',ctx);
+
         vm.runInContext("pack.task='region_selection';",ctx);await vm.runInContext('overview(0)',ctx);
         vm.runInContext('whole.handlers.create([[0,0],[3,0],[3,3],[0,3]]);',ctx);
         vm.runInContext("$('pageDone').onclick();",ctx);
@@ -194,7 +219,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         node('review-pack').textContent=JSON.stringify({...pack,id:'empty-frames',task:'region_selection',rows:[],initial_export:undefined});
         node('review-draft').textContent='null';disk.clear();await vm.runInContext('start()',ctx);
         const blankFrames=vm.runInContext("({rows:rows.length,detail:inDetail,task:pack.task})",ctx);
-        console.log(JSON.stringify({blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey}));
+        console.log(JSON.stringify({blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey,uncertainKey,clearKey,beforeProposal,previewOnly,cancelled,appliedKeep,undoneKeep,separateText,labelled,labelReload,cleared,unknownUndo}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
@@ -212,6 +237,46 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
     assert got['applied']=={'runs':[[44,2]],'confirmed':False}
     assert got['outsideWhite'] and got['brushOutside']==0
     assert [got[k] for k in ['eraseKey','textKey','imeKey','paintKey']]==['erase','erase','erase','paint']
+    assert got['uncertainKey']=='uncertain' and got['clearKey']=='clear'
+    assert got['beforeProposal']==got['previewOnly']==got['cancelled']==got['undoneKeep']
+    assert got['appliedKeep']=={'runs':[[36,1],[88,1]],'protected':1,'unknown':1}
+    assert got['separateText'] and got['cleared'] and got['unknownUndo']
+    assert got['labelReload']=={'text':'x + ?','checked':True,'protected':1,'unknown':1,'erased':0}
+    assert got['labelled']['annotation_version']==2
+    assert got['labelled']['label_semantics']['uncertainMask']=='unknown_not_ground_truth'
+
+
+def test_keep_only_requires_ink_protection_and_preserves_unknown_and_polygon():
+    got=js('''
+      const base={id:'p#r',page:0,box:[0,0,10,10],region:[[0,0],[10,0],[10,3],[3,3],[3,10],[0,10]],runs:[]};
+      const s=R.restoreRow(base),grey=new Uint8Array(100).fill(255),keep=new Uint8Array(100),unknown=new Uint8Array(100);
+      for(const i of [22,23,25,77])grey[i]=20;
+      keep[0]=1;R.saveKeep(s,keep);let refused=false;try{R.keepOnly(s,grey);}catch(e){refused=true;}
+      keep[22]=1;unknown[23]=1;R.saveKeep(s,keep);R.saveUncertain(s,unknown);
+      const before=JSON.stringify(s),proposal=R.keepOnly(s,grey),unchanged=before===JSON.stringify(s);
+      s.runs=[[22,4]];R.autoClean(s,grey);const clean=s.runs;
+      const small=R.reshape(s,[[0,0],[3,0],[3,3],[0,3]],[10,10]);R.saveUncertain(small,R.uncertainPixels(small));
+      const expanded=R.reshape(small,base.region,[10,10]);
+      const pack={id:'fixture',pages:[{id:'p',size:[10,10]}],rows:[base]},store={rows:{'p#r':expanded},extra:[],done:{},pageSeconds:{}};
+      const imported=R.importData(pack,{rows:{},extra:[],done:{},pageSeconds:{}},{schema:'paper2-pixel-review-v1',pack:pack.id,pages:R.exportPages(pack,store)});
+      const reloaded=imported.rows['p#r'];
+      return {refused,unchanged,proposal,clean,protected:R.keepPixels(reloaded)[22],unknown:R.uncertainPixels(reloaded)[23]};
+    ''')
+    assert got['refused'] and got['unchanged']
+    assert got['proposal']=={'runs':[[25,1]],'kept':1,'uncertain':1,'removed':1}
+    assert got['protected']==got['unknown']==1
+    assert got['clean']==[[24,2]]
+
+
+def test_legacy_cleaned_draft_is_upgraded_without_another_erase_pass():
+    got=js('''
+      const s={box:[0,0,20,20],runs:[[105,1]],confirmed:true,manualKeep:{box:[0,0,20,20],runs:[[110,1]]}};
+      const stamp=R.cleanupStamp(s);delete stamp.labelVersion;delete stamp.manualKeep;delete stamp.uncertainMask;s.autoCleanup=stamp;
+      const grey=new Uint8Array(400).fill(255);grey[105]=20;grey[106]=150;
+      const added=R.autoClean(s,grey);
+      return {added,runs:s.runs,confirmed:s.confirmed,version:s.autoCleanup.labelVersion};
+    ''')
+    assert got=={'added':0,'runs':[[105,1]],'confirmed':True,'version':1}
 
 
 def test_residue_proposals_are_local_protect_dark_ink_and_do_not_mutate_masks():
