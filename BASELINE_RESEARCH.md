@@ -1,8 +1,8 @@
 # 划线下手写内容恢复：Baseline 调研与实验清单
 
-核查日期：2026-10-08。对象：第二篇论文，学生完整作答中的划线分离、文字保护及被划内容识别。
+更新日期：2026-10-09。对象：第二篇论文，学生完整作答中的划线分离、文字保护及被划内容识别。第 1–11 节保留 10-08 的调研记录；第 12 节补充 2025/2026 文献与官方权重核查，本轮实际验证结果另见 RESULTS。
 
-本文区分“论文已正式发表”“发表场所达到要求”“作者公开了代码”“代码可以正确复现”四件事。检索到论文或 GitHub 页面，不代表后两项已经满足。本轮只调研、检查源码和制定清单，没有启动新训练、修改标注或替换现有模型。
+本文区分“论文已正式发表”“发表场所达到要求”“作者公开了代码”“代码可以正确复现”四件事。检索到论文或 GitHub 页面，不代表后两项已经满足。10-08 的调研未启动训练；10-09 按用户要求下载作者发布的权重并直接验证，不进行新训练，也不替换现有标注模型。
 
 ## 1. 决策：不能只跑原来的三个通用恢复模型
 
@@ -288,4 +288,57 @@ GPU0/3 是此前允许的设备范围，本调研没有实际调度 GPU，也没
 | megvii-research/NAFNet | `2b4af71ebe098a92a75910c233a3965a3e93ede4` | 已有适配及本轮官方配置复查 |
 | dali92002/DE-GAN | `7281836455608337c940fa0de67cceffbc5c026d` | 已有适配及本轮发表、源码复查 |
 
-检索及代码摘录保存在本机忽略目录 `work/baseline_research20261008/evidence/`，不把第三方代码、模型或数据提交进本仓库。代码、分区或论文可用性随时间变化，本报告反映 2026-10-08 的核查状态。“未找到作者实现”是本次检索边界，不是断言不存在。
+检索及代码摘录保存在本机忽略目录 `work/baseline_research20261008/evidence/`，不把第三方代码、模型或数据提交进本仓库。代码、分区或论文可用性随时间变化，第 1–11 节反映 2026-10-08 的核查状态。“未找到作者实现”是本次检索边界，不是断言不存在。
+
+## 12. 2026-10-09 更新：近期论文与官方权重直接验证
+
+### 12.1 有 2025、2026 年的工作，不能只列旧模型
+
+本次检索时间范围为 2025-01-01 至 2026-10-09，分别查找直接划线恢复、文档去污、文字修补，以及这些论文的作者代码和权重。发表依据优先采用出版社、会议论文集、作者机构记录；代码和权重另查作者仓库。以下“未确认权重”只表示本次没有找到可核验的下载入口。
+
+| 方法 | 已确认发表 | 实际任务与我们的关系 | 代码／权重现状与安排 |
+| --- | --- | --- | --- |
+| Zhong 等：Struck-out handwritten word detection and restoration for automatic descriptive answer evaluation | Signal Processing: Image Communication，2025 年 1 月卷期，CCF C；2024 年在线 | **直接相关**：检测划线词，用 U-Net 与 Bi-LSTM 恢复文字，用于作答评价 | 机构与 DOI 确认发表；未确认作者完整恢复实现及权重。优先补齐全文与实现，不用摘要自行拼网络冒充复现 |
+| MathScrub | IEEE TLT，2026-02-24，19:141–154；等级仍待官方口径核验 | **场景直接相关**：数学考试、删除检测、几何修补、VLM 转 LaTeX；是否恢复被作废的底层内容仍需全文核对 | MathStrike 数据公开；未确认完整模型代码与权重。数据卡的标签区分保留有效符号和删除划线／噪声，不能据此当作我们的像素真值 |
+| A study of handwritten text recognition with cross-out words | IJDAR，2026-07-02，CCF C | **直接相关的实验路线**：比较识别器适应划线、先恢复再识别及组合 | 公开项目；其中 COR 恢复器仍来自 DAS 2022 的 Generator，不能算成一个全新的 2026 恢复架构；未确认新发布的 COR 权重 |
+| Uni-DocDiff | **ACM MM 2025，CCF A**；DOI 10.1145/3746027.3755362 | 新的统一文档扩散模型，任务提示和先验池处理多种退化。其 handwriting removal 明确是**删除手写、保留印刷字**，与我们保留手写底层文字的目标不同 | 已读作者全文并确认 ACM 出版信息；未确认公开可运行实现或权重。作为新的文档恢复候选，不能把原生去手写模式直接当去划线模式 |
+| MMDIR | **CVPR 2026 主会，CCF A**，8387–8396 | 指令驱动的混合退化恢复，涵盖模糊、阴影、水印、印章 | CVF 正式论文可核验；作者仓库仍以 README、数据和预测结果为主，没有可验证的模型训练／推理代码及权重。预测图片不是模型权重 |
+| MMTINet：Fusing Text Semantics for Text Image Inpainting | **ICDAR 2025，CCF C**，385–397，2025-09-16 | 从图像自身提取文字语义，恢复缺损／遮挡文字；原场景偏自然场景文字，不是手写数学划线 | 出版社摘要和发表信息已核验；完整内容受订阅限制，未确认作者代码或权重。比单纯去噪更接近“文字补全”，但复现条件未就绪 |
+| Bridging Knowledge Gap Between Image Inpainting and Large-Area Visible Watermark Removal | **AAAI 2025，CCF A**，2025-04-11 | 用残留背景分支与门控融合，将 LaMa 修补先验用于去水印；处理不精确掩膜的思路值得参考，但原任务是自然图像水印 | 已读论文与作者页；作者声明源码在补充材料，本轮未取得可核验的完整补充包和权重。不能写成“无代码”，也不能说已就绪 |
+| StainRestorer | WACV 2025，正式发表；本轮 CCF 目录未列 WACV | 文档污渍／印章去除，是较新的文档恢复对照 | 作者仓库有训练、推理和 **Weights release**。技术上值得试，但不擅自把 WACV 标为 CCF B/C；在用户原等级约束下列补充对照 |
+| DocWaveDiff | WACV 2026，正式发表；同上不套 CCF 主会等级 | 小波预测与扩散细化，涵盖去模糊和手写删除 | 官方代码存在；README 未确认独立可下载的预训练权重。训练输出目录 `checksave` 不等于已发布权重 |
+
+逐项主来源：
+
+- Zhong 2025：[作者机构记录](https://salford-repository.worktribe.com/output/3227736)、[出版 DOI](https://doi.org/10.1016/j.image.2024.117214)。
+- MathScrub：[作者机构正式记录](https://research.cuhk.edu.hk/en/publications/mathscrub-single-pipeline-strike-out-removal-and-latex-generation/)、[MathStrike 标签定义](https://huggingface.co/datasets/Incinciblecolonel/MathStrike/blob/main/README.md)。
+- IJDAR 2026：[出版社全文](https://link.springer.com/article/10.1007/s10032-026-00603-8)、[作者项目](https://github.com/LTU-Machine-Learning/HTR_with_cross-out)。
+- Uni-DocDiff：[含 ACM 出版信息的作者全文](https://arxiv.org/html/2508.04055v1)、[正式出版 DOI](https://doi.org/10.1145/3746027.3755362)。作者全文明确区分“删除手写、保留印刷字”，不是本文自行推断任务目标。
+- MMDIR：[CVPR 2026 正式论文](https://openaccess.thecvf.com/content/CVPR2026/html/Li_MMDIR_Multimodal_Instruction-Driven_Framework_for_Mixed-Degradation_Document_Image_Restoration_CVPR_2026_paper.html)、[作者仓库](https://github.com/xiaomore/MMDIR)。
+- MMTINet：[Springer 正式论文与摘要](https://link.springer.com/chapter/10.1007/978-3-032-04630-7_22)。
+- AAAI 去水印：[会议论文页](https://ojs.aaai.org/index.php/AAAI/article/view/32484)、[作者全文](https://arxiv.org/html/2504.04687v1)、[作者项目页](https://chaoweifang.github.io/publication/aaai2025bridging_knowledge_gap/)。
+- StainRestorer：[CVF 正式论文](https://openaccess.thecvf.com/content/WACV2025/papers/Li_High-Fidelity_Document_Stain_Removal_via_A_Large-Scale_Real-World_Dataset_and_WACV_2025_paper.pdf)、[官方代码](https://github.com/CXH-Research/StainRestorer)、[官方权重 release](https://github.com/CXH-Research/StainRestorer/releases/tag/Weights)。
+- DocWaveDiff：[会议全文](https://openaccess.thecvf.com/content/WACV2026/papers/Marulli_DocWaveDiff_A_Predict-and-Refine_approach_for_Document_Image_Enhancement_with_Wavelet_WACV_2026_paper.pdf)、[官方代码](https://github.com/miccunifi/DocWaveDiff)。
+
+另外检索到 DocRevive（CVPR 2026 **Workshop**）和 DocPure（2026 年 arXiv）。前者不能按 CVPR 主会 A 类计，后者本轮只确认预印本；因此没有为了年份新就塞进合格主基线。DocStormer 本轮仍只确认到 2023 年预印本，不能当作 2025/2026 新论文。
+
+**后续清单建议：** 已能运行的六个系统保留；近期直接相关方法优先解决 Zhong 2025、MathScrub 的任务定义与实现可用性，新文档方法重点跟进 Uni-DocDiff、MMDIR，文字修补补充关注 MMTINet。没有实现的论文先放相关工作与待复现，不报虚构成绩。若放宽会议等级，StainRestorer 是本次确认有官方权重的 2025 补充候选。
+
+### 12.2 旧方法确实发布了权重，本轮直接加载
+
+| 系列 | 本轮下载并纳入的权重 | 官方出处 | 说明 |
+| --- | --- | --- | --- |
+| Strikethrough-CycleGAN | ORIGINAL 5 个、ORIGINAL_WITH_AUX_DISCR 5 个 | [v1.0 release](https://github.com/RaphaelaHeil/strikethrough-removal-cyclegans/releases/tag/v1.0) | 作者不同训练运行，共 10 个候选；推理不用人工类型。需要真实类型通道的 ATTR_GUIDED 两组排除 |
+| DocDiff | deblur、seal 各一对粗预测器＋扩散器 | [官方 checksave](https://github.com/Royalvice/DocDiff/tree/main/checksave) | **更正：仓库不只有去模糊权重，也有去印章权重。** 两套都直接验证 |
+| NAFNet | GoPro width32、SIDD width32 | [官方权重表](https://github.com/megvii-research/NAFNet) | 分别在自然图像去模糊／去噪上训练，保留对应网络配置 |
+| Restormer | motion deblurring | [官方去模糊说明](https://github.com/swz30/Restormer/blob/main/Motion_Deblurring/README.md) | 真实去噪权重的官方 Google Drive 返回下载配额超限，未混用未经核验的镜像；本轮用成功下载的去模糊版本 |
+| DE-GAN | watermark、deblur、binarization | [官方仓库及权重链接](https://github.com/dali92002/DE-GAN) | 对应 512／1024／1024 最大层宽，二值化版本保留作者 0.95 阈值 |
+| COR-Generator | 未纳入预训练权重测试 | [作者仓库](https://github.com/RaphaelaHeil/paired_strikethrough_removal) | 有训练代码，但本次仍未确认官方已训练 Generator 下载入口；此前我们自行训练的权重不能冒充作者权重 |
+
+合计 **5 个系列、18 个官方权重版本**。这是跨域直接推理，模型训练时使用作者各自的数据，**不是**重新用本项目的 10,788 对合成图训练；不能与前一轮同数据重训结果混为一张公平训练表。
+
+本轮协议：转写验证使用既有验证划分中已完成的 11 题、41 处可读划线；另有 1 处可读涂黑仅记录，不参加划线选版。像素验证使用既有 16 处独立人工区域。使用清洁 PNG、相同裁图与固定 Qwen3-VL-8B 提示和解码；无优化、无测试集选版、无标注页自动残留清理。CycleGAN 按作者 128×512 输入处理后逆映射，其他方法使用原生分辨率 256 裁块；这些尺寸适配会影响跨域效果，已记录。
+
+选版规则在推理前写入 manifest：先按 41 处被划字符读回率，再依次以严格全对、较低文字误擦和名称处理同分。同时报告划线去除、文字损伤及完整转写，避免把“擦得多”当作“恢复得好”。18 个候选在小验证集上择优有乐观偏差，所得仅是后续候选，不能称为最终泛化成绩或自动替换人工微调标注模型。
+
+检索证据在本机 `work/pretrained_validation20261009/evidence/`；下载权重在本机 `work/official_weights20261009/` 与服务器 `outputs/paper2_official_weights20261009/`，权重哈希、具体来源和模型配置写入运行记录，不进入 Git。

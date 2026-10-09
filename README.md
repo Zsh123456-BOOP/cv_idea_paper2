@@ -613,3 +613,11 @@ COR 和 CycleGAN 最大 80,910 次 batch4 更新，相当于 30 轮的期望见�
 所有权重按冻结选择重新加载，与保存的原生验证预测比较，最多允许 1 灰度级浮点差异。训练保存输入/源码哈希、优化器、步数、验证曲线和设备峰值。共同推理采用原生 256 网格重叠裁块，不拉伸手写字；恢复图之后不加方法专属清理。公开源码仅存忽略产物目录，Git 只保存适配代码。
 
 完成入口 `scripts/finish_restoration_suite.sh SUITE UPSTREAM` 等待三条训练队列成功后，调用已有 `eval_restoration_pilot.sh --suite`，只评估冻结权重，在空闲 GPU3 上运行共同 Qwen3-VL-8B，并生成 `SUITE/report/index.html` 与 `summary.json`。模型或验证失败则中止评测并留错误标记；不以不完整模型表冒充最终比较。100 步冒烟已经在三卡全部通过，六个选定模型的验证图重载一致（DE-GAN 最大 1 灰度级浮点差异）。
+
+### 作者公开权重的直接验证（2026-10-09）
+
+用户要求先下载作者已经训练好的模型，再在我们的验证数据上选候选。入口 `python -m revrender.baselines.pretrained`：`prepare` 只接收既有划分中完成标注的可读验证区域，`catalogue` 保存下载文件哈希和预先声明的选版规则，`infer` 严格加载匹配的官方架构／参数，`report` 检查转写完整性并生成离线比较页。合并图包和 Qwen 读取复用 `baselines.restoration_export merge`、`recognize_lines`、`eval.revision_boxes read`。
+
+下载来源见 [BASELINE_RESEARCH.md](BASELINE_RESEARCH.md) 第 12 节：CycleGAN 普通及辅助判别器各 5 份，DocDiff 去模糊／去印章，NAFNet GoPro／SIDD width32，Restormer 去模糊，DE-GAN 去水印／去模糊／二值化，共 18 份。COR 尚未确认作者权重，Restormer 去噪官方链接下载配额超限；不能用本项目训练权重替代后声称直接测试作者模型。下载清单在产物 `paper2_official_weights20261009/download_manifest.json`。
+
+本轮不训练；11 题的 41 处可读划线按固定 Qwen3-VL-8B 字符读回率选版，同分依次看严格完全正确、较低正常墨迹误擦和名称。另 1 处可读涂黑不用于划线排名，独立 16 处人工像素验证用于统计漏擦与误擦。CycleGAN 使用作者缩放／补白几何再逆映射，其余原生 256 裁块；均不加标注界面的自动残留清理。来源、尺寸和预训练任务不同，这是作者权重的跨域适用性比较，不能与上一节同数据重训的测试成绩混排。结果目录 `paper2_pretrained_validation20261009/report/`，精确数值与限制见 RESULTS。
