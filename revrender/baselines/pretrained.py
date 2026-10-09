@@ -18,7 +18,7 @@ from .. import pages
 from ..data.clean_pages import review_clean
 from ..eval.revision_boxes import prepare, read_labels
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
-from .restoration import module_file, removal_counts, removal_metrics, restore_native, verified_source
+from .restoration import MODELS, module_file, removal_counts, removal_metrics, restore_native, verified_source
 
 
 def validation_revisions(labels, selection):
@@ -77,6 +77,8 @@ def candidates(weights):
         enc_blk_nums=[2,2,4,8],middle_blk_num=12,dec_blk_nums=[2,2,2,2]))
     add('Restormer-motion','Restormer',['restormer_motion_deblurring.pth'])
     add('Restormer-denoise','Restormer',['restormer_real_denoising.pth'],architecture={'LayerNorm_type':'BiasFree'})
+    for task,file in [('stain','StainDoc.pth'),('watermark','StainDoc_mark.pth'),('seal','StainDoc_seal.pth')]:
+        add('StainRestorer-'+task,'StainRestorer',['StainRestorer/'+file])
     for task,file,big in [('watermark','watermark_rem_weights.h5',512),('deblur','deblur_weights.h5',1024),
                           ('binarize','binarization_generator_weights.h5',1024)]:
         found=list(weights.glob('DE-GAN/**/'+file))
@@ -88,6 +90,8 @@ def candidates(weights):
 
 def catalogue(args):
     out=make_output_dir(args.output_dir);rows=candidates(args.weights)
+    if getattr(args,'model',None):rows=[r for r in rows if r['model']==args.model]
+    require(rows,'no matching released checkpoints')
     write_json(out/'candidates.json',rows)
     write_manifest(out,config=to_jsonable(args),inputs={str(args.weights/p):d for r in rows for p,d in zip(r['weights'],r['sha256'])},
         selection='maximum validation line character readback; tie: strict exact, lower valid-ink damage, lexical name',
@@ -242,6 +246,7 @@ def main(argv=None):
     for k in ('labels','pages'):prep.add_argument('--'+k,type=Path,action='append',required=True)
     prep.add_argument('--selection',type=Path,required=True)
     cat=sub.add_parser('catalogue');cat.add_argument('--weights',type=Path,required=True)
+    cat.add_argument('--model',choices=MODELS)
     inf=sub.add_parser('infer');inf.add_argument('--candidate',required=True)
     for k in ('catalogue','weights','upstream','human-validation','input-pack'):inf.add_argument('--'+k,type=Path,required=True)
     rep=sub.add_parser('report')

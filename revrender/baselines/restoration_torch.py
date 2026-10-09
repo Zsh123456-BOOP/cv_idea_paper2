@@ -1,4 +1,4 @@
-"""Load unchanged official NAFNet / DocDiff architectures and train task pairs."""
+"""Load unchanged official restoration architectures and train task pairs."""
 import copy
 import math
 import contextlib
@@ -35,6 +35,9 @@ def build(model,root,architecture=None):
     if model=='Restormer':
         m=module_file('official_restormer',root/'basicsr/models/archs/restormer_arch.py')
         return m.Restormer(**(architecture or {})).cuda(),None,None
+    if model=='StainRestorer':
+        m=module_file('official_stainrestorer',root/'models/StainRestorer.py')
+        return m.StainRestorer(**(architecture or {})).cuda(),None,None
     if model in ('COR-Generator','Strikethrough-CycleGAN'):
         file=root/'src/_models.py' if model=='COR-Generator' else root/'strikethrough_removal/src/network/generators.py'
         m=module_file('official_dense_'+model.replace('-','_'),file)
@@ -65,6 +68,18 @@ def image_tensor(x,model):
     return t.repeat(1,3,1,1)
 
 
+def final_image(output,model):
+    # The release infer.py passes a list into metrics; train.py correctly uses [0].
+    return output[0] if model=='StainRestorer' else output
+
+
+def stain_loss(outputs,target):
+    from torchmetrics.functional.image import structural_similarity_index_measure
+    # Both stages are supervised, exactly as in the author's train.py.
+    return sum(F.mse_loss(value,target)+.2*(1-structural_similarity_index_measure(value,target))
+               for value in outputs)
+
+
 @torch.no_grad()
 def predict_image(network,diffusion,x,model):
     network.eval()
@@ -74,7 +89,11 @@ def predict_image(network,diffusion,x,model):
             initial=network.init_predictor(xx,torch.zeros(len(xx),dtype=torch.long,device=xx.device))
             with contextlib.redirect_stdout(io.StringIO()):
                 out=initial+diffusion(torch.randn_like(initial),initial,pre_ori='True')
-        else:out=network(xx)
+        else:
+            # Native validation may batch several tiles. Keep the same per-image
+            # memory bound as StainRestorer training without changing its output.
+            if model=='StainRestorer':out=torch.cat([final_image(network(im[None]),model) for im in xx])
+            else:out=network(xx)
     if model in ('COR-Generator','Strikethrough-CycleGAN'):out=1-out
     return out.mean(1).clamp(0,1).cpu().numpy()
 
@@ -85,13 +104,16 @@ def train(e):
     torch.backends.cudnn.benchmark=False
     network,diffusion,lap=build(a.model,a.upstream/a.model)
     is_doc=a.model=='DocDiff';is_cor=a.model=='COR-Generator';is_rest=a.model=='Restormer'
+    is_stain=a.model=='StainRestorer'
     if is_cor:opt=torch.optim.Adam(network.parameters(),lr=1e-3,betas=(.9,.999))
+    elif is_stain:opt=torch.optim.AdamW(network.parameters(),lr=2e-4,betas=(.9,.999),weight_decay=.01,eps=1e-8)
     else:
         opt=torch.optim.AdamW(network.parameters(),lr=1e-4 if is_doc else 3e-4 if is_rest else 1e-3,
             weight_decay=1e-4 if is_doc or is_rest else 1e-3,
             betas=(.9,.999) if is_doc or is_rest else (.9,.9))
     scheduler=None
     if a.model=='NAFNet':scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-7)
+    if is_stain:scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-6)
     if is_rest:
         # Preserve the official flat/cosine fractions, scale duration to declared task budget.
         flat=max(1,round(a.steps*92000/300000))
@@ -107,10 +129,15 @@ def train(e):
     config={'parameters':sum(p.numel() for p in network.parameters()),'framework':torch.__version__,
         'architecture':a.model+' unchanged official architecture',
         'loss':('official PRE_ORI L2 high/low frequency, beta50/T100' if is_doc else
-                'BCE on inverted images' if is_cor else 'L1' if is_rest else 'official PSNR loss'),
+                'BCE on inverted images' if is_cor else 'L1' if is_rest else
+                'both stages: MSE + 0.2*(1-SSIM), author torchmetrics defaults per image' if is_stain else 'official PSNR loss'),
         'diffusion_steps':100 if is_doc else None,'ema':ema is not None,'precision':'float32',
         'ema_rule':'official .9999 parameter average every 100 updates after step 2000; initial model copy; raw and EMA validation candidates' if ema is not None else None,
         'adaptation':'256 native tiles; batch4; seed42; no rotation; task-specific budget; Restormer fixed patches and scaled flat/cosine schedule'}
+    if is_stain:
+        import torchmetrics
+        config.update(initialization='random; no author checkpoint',torchmetrics=torchmetrics.__version__,
+            microbatch=1,adaptation='native256; effective batch4 via single-image gradients; image-wise SSIM matches author batch1 config; cosine scaled to task update budget; seed42; no rotation')
     write_json(e.out/'model_config.json',config);e.log(config)
     active=network
 
@@ -128,13 +155,14 @@ def train(e):
     for step in range(1,a.steps+1):
         if step==1:before=next(network.parameters()).detach().clone()
         x,y=e.batch();network.train();opt.zero_grad(set_to_none=True)
-        # Restormer has no batch norm: microbatch1 preserves effective batch4 while sharing GPU memory safely.
-        size=1 if is_rest else len(x);value=0.
+        # These architectures have no batch norm. Accumulate an effective batch4.
+        size=1 if is_rest or is_stain else len(x);value=0.
         for start in range(0,len(x),size):
             xx=image_tensor(x[start:start+size],a.model);yy=image_tensor(y[start:start+size],a.model)
             if is_doc:loss=docdiff_loss(network,diffusion,lap,xx,yy)
             elif is_cor:loss=F.binary_cross_entropy(network(xx),yy)
             elif is_rest:loss=F.l1_loss(network(xx),yy)
+            elif is_stain:loss=stain_loss(network(xx),yy)
             else:loss=10/np.log(10)*torch.log(((network(xx)-yy)**2).mean((1,2,3))+1e-8).mean()
             require(torch.isfinite(loss).item(),'nonfinite training loss')
             loss=loss*(len(xx)/len(x));value+=float(loss.detach());loss.backward()

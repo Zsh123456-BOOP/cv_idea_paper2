@@ -17,7 +17,7 @@ from PIL import Image
 
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
-MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer']
+MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer', 'StainRestorer']
 
 
 def verified_source(path):

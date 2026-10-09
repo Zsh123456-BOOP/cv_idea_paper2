@@ -4,20 +4,17 @@ set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 RUNS=()
 GPU=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0; CARD=0; NUMA=0
-if [ "$1" = --suite ]; then
+if [ "$1" = --runs ]; then
+  UPSTREAM="$2"; OUT="$3"; CARD="$4"; RUNS=("${@:5}")
+  test "${#RUNS[@]}" -gt 0
+  for run in "${RUNS[@]}"; do test -f "$run/inference_verified.json"; done
+elif [ "$1" = --suite ]; then
   SUITE="$2"; UPSTREAM="$3"; OUT="$4"
   for lane in 0 2 3; do test -f "$SUITE/lane$lane/COMPLETED"; done
   RUNS=("$SUITE/lane0/COR-Generator_gold_pixels" "$SUITE/lane0/Restormer_gold_pixels"
         "$SUITE/lane2/NAFNet_gold_pixels" "$SUITE/lane2/DE-GAN_gold_pixels"
         "$SUITE/lane3/Strikethrough-CycleGAN_gold_pixels" "$SUITE/lane3/DocDiff_gold_pixels")
   CARD="${5:-3}"
-  case "$CARD" in
-    0) GPU=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0; NUMA=0 ;;
-    2) GPU=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0; NUMA=1 ;;
-    3) GPU=GPU-314fdf43-7a94-4e29-20d0-fbd496632b1b; NUMA=1 ;;
-    *) exit 2 ;;
-  esac
-  export ALLOW_GPU3=1
 else
   LANE0="$1"; LANE3="$2"; UPSTREAM="$3"; OUT="$4"
   test -f "$LANE0/COMPLETED" && test -f "$LANE3/COMPLETED"
@@ -25,6 +22,13 @@ else
     RUNS+=("$LANE0/NAFNet_$arm" "$LANE0/DE-GAN_$arm" "$LANE3/DocDiff_$arm")
   done
 fi
+case "$CARD" in
+  0) GPU=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0; NUMA=0 ;;
+  2) GPU=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0; NUMA=1 ;;
+  3) GPU=GPU-314fdf43-7a94-4e29-20d0-fbd496632b1b; NUMA=1 ;;
+  *) exit 2 ;;
+esac
+export ALLOW_GPU3=1
 test ! -e "$OUT" || { echo 'create-only output exists'; exit 2; }
 require_clean_source
 mkdir "$OUT"

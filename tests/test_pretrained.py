@@ -47,6 +47,15 @@ def test_official_geometry_restores_original_extent_without_white_padding():
     with pytest.raises(RefusedError):restore(lambda x:x,np.zeros((5,5)),'unknown')
 
 
+def test_stain_release_registers_three_distinct_task_weights(tmp_path):
+    source=tmp_path/'StainRestorer';source.mkdir()
+    for name in ('StainDoc.pth','StainDoc_mark.pth','StainDoc_seal.pth'):(source/name).write_bytes(name.encode())
+    rows=candidates(tmp_path)
+    assert {r['name'] for r in rows}=={'StainRestorer-stain','StainRestorer-watermark','StainRestorer-seal'}
+    assert len({r['sha256'][0] for r in rows})==3
+    assert all(r['layout']=='native256' and r['model']=='StainRestorer' for r in rows)
+
+
 def test_selection_uses_transcription_validation_and_checks_complete_readings(tmp_path):
     from PIL import Image
     pack=tmp_path/'pack';pack.mkdir();picture=pack/'crop.png';Image.new('L',(8,8),255).save(picture)

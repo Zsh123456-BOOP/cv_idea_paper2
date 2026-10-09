@@ -621,3 +621,13 @@ COR 和 CycleGAN 最大 80,910 次 batch4 更新，相当于 30 轮的期望见�
 下载来源见 [BASELINE_RESEARCH.md](BASELINE_RESEARCH.md) 第 12 节：CycleGAN 普通及辅助判别器各 5 份，DocDiff 去模糊／去印章，NAFNet GoPro／SIDD width32，Restormer 去模糊，DE-GAN 去水印／去模糊／二值化，共 18 份。COR 尚未确认作者权重，Restormer 去噪官方链接下载配额超限；不能用本项目训练权重替代后声称直接测试作者模型。下载清单在产物 `paper2_official_weights20261009/download_manifest.json`。
 
 本轮不训练；11 题的 41 处可读划线按固定 Qwen3-VL-8B 字符读回率选版，同分依次看严格完全正确、较低正常墨迹误擦和名称。另 1 处可读涂黑不用于划线排名，独立 16 处人工像素验证用于统计漏擦与误擦。CycleGAN 使用作者缩放／补白几何再逆映射，其余原生 256 裁块；均不加标注界面的自动残留清理。来源、尺寸和预训练任务不同，这是作者权重的跨域适用性比较，不能与上一节同数据重训的测试成绩混排。结果目录 `paper2_pretrained_validation20261009/report/`，精确数值与限制见 RESULTS。
+
+### StainRestorer 补充基线（2026-10-09）
+
+用户授权先验证 WACV 2025 StainRestorer 三套官方权重，再做同数据适配；WACV 作为补充实验，不计入此前按 CCF 筛选的六个核心系统。出处：[作者代码](https://github.com/CXH-Research/StainRestorer)、[Weights release](https://github.com/CXH-Research/StainRestorer/releases/tag/Weights)。原版源码及下载权重保留在独立产物目录，记录 Git 版本、文件哈希和 URL。
+
+入口复用 `baselines.pretrained` 和 `baselines.restoration`。推理取作者训练验证使用的第一个输出，即最终图；官方 `infer.py` 把两个输出组成的列表传给指标的问题在适配入口纠正，模型源码不改。污渍／水印／印章三种官方权重在既有 41 处划线转写验证及 16 处像素验证上比较，固定原生 256 裁块，仍按字符读回选版；不能据此选择正式训练初始化。
+
+正式适配从随机初始化开始，与六基线共用 10,788 对 darken-only v4 gold_pixels、596 对合成验证及 16 处人工选版区域，不混入 50 处真实训练标注。使用作者两级输出 MSE + 0.2×(1−SSIM)、AdamW（2e-4，weight_decay=0.01）、缩短到任务预算的 cosine（终值 1e-6）；有效 batch4，由单图梯度累积实现，SSIM 每图计算与作者 batch1 配置一致。最大 80,000 步、40,000 步起连续 6 次验证不提升停止，每 5,000 步验证；选版按人工擦除 F1，与既有六基线相同。随机种子 42，灰度复制三通道，不旋转、不拉伸长行，不加专属清理。此为任务适配，不是原文 300 epoch／1024 测试协议的完整复现。
+
+`scripts/run_restoration_candidate.sh CARD MODEL DATA UPSTREAM WEIGHTS VALIDATION_INPUT OUT` 串联 100 步训练／重载检查、官方权重验证与离线报告、从头正式训练、冻结重载、既有 81 处可读划线测试和 7 题像素测试、最终报告。任一阶段失败即停并留 `FAILED`；输出目录只新建，禁止重复启动。`run_restoration_suite.sh` 可在第七个参数起指定补充模型；`eval_restoration_pilot.sh --runs` 只接受已经重载验证的训练结果，避免重跑六个已完成系统。GPU 限 0/2/3，3 号卡须空闲；额外 `torchmetrics==1.4.0.post0` 装到独立依赖目录，不改公用环境。已有标注预填模型不替换。

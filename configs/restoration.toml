@@ -53,3 +53,13 @@ eval_every = 5000
 validation_limit = 64
 min_steps = 40000
 patience = 6
+
+# WACV 2025 supplement; random initialization, same paired data and validation.
+# Author MSE + .2 SSIM at both stages, AdamW 2e-4, scaled cosine to 1e-6.
+[training.StainRestorer]
+steps = 80000
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 40000
+patience = 6

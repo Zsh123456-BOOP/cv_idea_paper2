@@ -9,15 +9,15 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def queue(tmp_path):
     scripts=tmp_path/'scripts';scripts.mkdir()
-    for name in ('_common.sh','run_restoration_suite.sh'):
+    for name in ('_common.sh','run_restoration_suite.sh','eval_restoration_pilot.sh'):
         shutil.copy(ROOT/'scripts'/name,scripts/name)
     (tmp_path/'deployment_origin.json').write_text('{}')
     binary=tmp_path/'bin';binary.mkdir()
     nvidia=binary/'nvidia-smi';nvidia.write_text('#!/bin/sh\nexit 1\n');nvidia.chmod(0o755)
     env={**os.environ,'PATH':str(binary)+os.pathsep+os.environ['PATH']}
     out=tmp_path/'lane'
-    def run(mode):
-        return subprocess.run(['bash',str(scripts/'run_restoration_suite.sh'),'0','data','sources',str(out),mode,'2'],
+    def run(mode,*models):
+        return subprocess.run(['bash',str(scripts/'run_restoration_suite.sh'),'0','data','sources',str(out),mode,'2',*models],
                               env=env,text=True,capture_output=True)
     return out,run
 
@@ -49,6 +49,26 @@ def test_resume_refuses_partial_existing_model(tmp_path):
     result=run('resume')
     assert result.returncode!=0 and (out/'FAILED').is_file()
     assert (dest/'partial').read_text()=='keep'
+
+
+def test_single_candidate_override_does_not_restart_original_lane_models(tmp_path):
+    out,run=queue(tmp_path);out.mkdir()
+    dest=out/'StainRestorer_gold_pixels';dest.mkdir()
+    (dest/'selection.json').write_text('frozen')
+    (dest/'inference_verified.json').write_text('verified')
+    result=run('resume','StainRestorer')
+    assert result.returncode==0,result.stderr
+    assert (out/'COMPLETED').is_file()
+    assert not (out/'COR-Generator_gold_pixels').exists()
+
+
+def test_explicit_evaluation_refuses_unverified_candidate(tmp_path):
+    queue(tmp_path)
+    run=tmp_path/'unverified';run.mkdir();(run/'selection.json').write_text('{}')
+    output=tmp_path/'evaluation'
+    result=subprocess.run(['bash',str(tmp_path/'scripts/eval_restoration_pilot.sh'),'--runs',
+                           'sources',str(output),'2',str(run)],capture_output=True,text=True)
+    assert result.returncode!=0 and not output.exists()
 
 
 def test_waits_until_memory_is_available(tmp_path):

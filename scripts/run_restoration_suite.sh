@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Six published baselines, one sequential lane per authorized card.
-# Usage: LANE DATA UPSTREAM OUT [smoke|formal|resume] [PHYSICAL_CARD]
+# Usage: LANE DATA UPSTREAM OUT [smoke|formal|resume] [PHYSICAL_CARD] [MODELS...]
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 LANE="$1"; DATA="$2"; UPSTREAM="$3"; OUT="$4"; MODE="${5:-formal}"
@@ -11,6 +11,7 @@ case "$LANE" in
   *) echo 'only lanes 0/2/3 authorized'; exit 2 ;;
 esac
 CARD="${6:-$LANE}"
+[ "$#" -lt 7 ] || MODELS=("${@:7}")
 case "$CARD" in
   0) GPU=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0; NUMA=0 ;;
   2) GPU=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0; NUMA=1 ;;
