@@ -20,18 +20,21 @@ def package(name,path):
     return m
 
 
-def build(model,root):
+def build(model,root,architecture=None):
     if model=='NAFNet':
         # Avoid BasicSR's unrelated dataset/extension auto-imports. Architecture files
         # are unchanged, including their own LayerNorm and local pooling code.
         for name,sub in [('basicsr','basicsr'),('basicsr.models','basicsr/models'),('basicsr.models.archs','basicsr/models/archs')]:package(name,root/sub)
         utils=package('basicsr.utils',root/'basicsr/utils');utils.get_root_logger=lambda **kw:logging.getLogger('NAFNet')
         m=module_file('basicsr.models.archs.NAFNet_arch',root/'basicsr/models/archs/NAFNet_arch.py')
-        network=m.NAFNetLocal(img_channel=3,width=32,middle_blk_num=1,enc_blk_nums=[1,1,1,28],dec_blk_nums=[1,1,1,1]).cuda()
+        options=dict(architecture or {})
+        cls=getattr(m,options.pop('type','NAFNetLocal'))
+        if not options:options=dict(img_channel=3,width=32,middle_blk_num=1,enc_blk_nums=[1,1,1,28],dec_blk_nums=[1,1,1,1])
+        network=cls(**options).cuda()
         return network,None,None
     if model=='Restormer':
         m=module_file('official_restormer',root/'basicsr/models/archs/restormer_arch.py')
-        return m.Restormer().cuda(),None,None
+        return m.Restormer(**(architecture or {})).cuda(),None,None
     if model in ('COR-Generator','Strikethrough-CycleGAN'):
         file=root/'src/_models.py' if model=='COR-Generator' else root/'strikethrough_removal/src/network/generators.py'
         m=module_file('official_dense_'+model.replace('-','_'),file)
