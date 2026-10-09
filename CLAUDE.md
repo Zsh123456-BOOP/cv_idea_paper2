@@ -95,3 +95,5 @@ python -m revrender.infer / .train / .eval.report / .eval.freeze ...            
 2026-10-08 六基线正式运行已启动：快照 `/home/zsh/hme/code_paper2_9f6ed161`，总目录 `/home/zsh/hme/outputs/paper2_restoration_suite20261008`；lane0 COR→Restormer、lane2 NAFNet→DE-GAN、lane3 CycleGAN→DocDiff。六组 100 步冒烟及推理重载均通过，21 项针对性测试通过。`finish_restoration_suite.sh` 已后台等待所有 lane 成功后自动测试并生成 `report/index.html`；检查 lane 的 COMPLETED/FAILED、根目录 EVALUATION_FAILED/COMPLETED 和 *.launch.log，不重复启动、不覆写产物。正式结果尚待产生，当前标注模型不更换。
 
 六基线续跑：原 lane0/lane3 在完成 COR/CycleGAN 后因其他任务占卡退出（0 卡仅余约5.6 GB，3卡不足20 GB），不是六组全部完成；NAFNet/DE-GAN 已完成。新增 resume 模式仅跳过 selection+inference_verified 齐全的模型，拒绝覆写未完成目录；不足显存改为等待，显式退出也留失败标记。剩余 Restormer→DocDiff 使用授权 GPU2 顺序续跑，输出仍归原 lane0/lane3；完成脚本第三参数 `2` 可恢复缺失模型并在同卡评测，旧失败标记带时间归档。GPU2 OCR 使用 .85 显存占比，转写模型/提示/解码参数不变。
+
+2026-10-09 最新状态：六基线已全部训练、冻结、统一评测成功，北京时间03:52完成；根目录 COMPLETED/report/summary.json 已确认，所有本轮GPU进程已结束。报告已拉到本机 work/restoration_suite20261008/index.html。读回：本轮原图47.69%，DE-GAN53.00%，COR52.65%，DocDiff50.78%，NAFNet50.28%，Restormer48.15%，普通CycleGAN47.62%；全部仅合成训练，未重评我们的历史模型。跨轮同一83张原图有7/81划线转写不同，不拼接旧分数判断胜负。详细限制及像素误擦见 RESULTS 最新节。不要再恢复已完成队列；标注预填模型保持不变。
