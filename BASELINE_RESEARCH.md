@@ -322,7 +322,7 @@ GPU0/3 是此前允许的设备范围，本调研没有实际调度 GPU，也没
 
 另外检索到 DocRevive（CVPR 2026 **Workshop**）和 DocPure（2026 年 arXiv）。前者不能按 CVPR 主会 A 类计，后者本轮只确认预印本；因此没有为了年份新就塞进合格主基线。DocStormer 本轮仍只确认到 2023 年预印本，不能当作 2025/2026 新论文。
 
-**后续清单建议：** 已能运行的六个系统保留；近期直接相关方法优先解决 Zhong 2025、MathScrub 的任务定义与实现可用性，新文档方法重点跟进 Uni-DocDiff、MMDIR，文字修补补充关注 MMTINet。没有实现的论文先放相关工作与待复现，不报虚构成绩。若放宽会议等级，StainRestorer 是本次确认有官方权重的 2025 补充候选。
+**后续清单建议：** 已能运行的六个系统保留；近期直接相关方法优先解决 Zhong 2025、MathScrub 的任务定义与实现可用性，文字修补补充关注 MMTINet。进一步核查后，建议新增 StainRestorer 作为 2025 年的补充实验，不将它冒充满足原 CCF 等级筛选的核心基线。Uni-DocDiff、MMDIR 先列相关工作和待复现，不因年份新就强行加入数值比较。四篇重点候选的资源证据及顺序见第 13 节。
 
 ### 12.2 旧方法确实发布了权重，本轮直接加载
 
@@ -342,3 +342,67 @@ GPU0/3 是此前允许的设备范围，本调研没有实际调度 GPU，也没
 选版规则在推理前写入 manifest：先按 41 处被划字符读回率，再依次以严格全对、较低文字误擦和名称处理同分。同时报告划线去除、文字损伤及完整转写，避免把“擦得多”当作“恢复得好”。18 个候选在小验证集上择优有乐观偏差，所得仅是后续候选，不能称为最终泛化成绩或自动替换人工微调标注模型。
 
 检索证据在本机 `work/pretrained_validation20261009/evidence/`；下载权重在本机 `work/official_weights20261009/` 与服务器 `outputs/paper2_official_weights20261009/`，权重哈希、具体来源和模型配置写入运行记录，不进入 Git。
+
+## 13. 2026-10-09 追加核查：四篇近期候选是否具备复现条件
+
+**建议：现有六个基线保留，新增 StainRestorer 补充实验；Zhong 2025 是最应争取补入的直接相关方法；Uni-DocDiff 与 MMDIR 暂列相关工作。** 以下区分论文发表、实际源码、模型权重与数据／预测图片。“未找到”仅表示这次公开检索和可访问资源的边界。
+
+| 方法 | 可核验代码 | 可核验权重 | 是否加入实验 |
+| --- | --- | --- | --- |
+| StainRestorer，WACV 2025 | 官方训练、模型、数据读取、推理源码齐全；推理入口有待修正之处 | 官方 Release 有污渍、水印、印章三套 `.pth`；三条下载地址均实际返回文件字节 | **建议加入补充基线，优先验证**；WACV 不计入本轮 CCF 核心清单 |
+| Zhong 等，SPIC 2025，CCF C | 机构记录和摘要可读；未找到可核验的作者完整恢复实现 | 未找到可核验下载入口 | **直接相关，优先争取加入**；先补齐全文与作者资源，不能把摘要拼装称为复现 |
+| Uni-DocDiff，ACM MM 2025，CCF A | 可访问作者全文未给出方法仓库；方法名 GitHub 检索未找到实现 | 未找到可核验下载入口 | **暂缓实验**；先列相关工作，且其原生去手写任务目标与我们不同 |
+| MMDIR，CVPR 2026，CCF A | 官方仓库当前只有 README；唯一分支 main，无 Release、Tag | 仓库未发布模型文件；README 外链标为数据集和预测结果 | **暂缓实验**；模型源码／权重发布后再考虑 |
+
+### 13.1 StainRestorer：资源真实存在，但需要小幅推理适配
+
+核查版本：[`CXH-Research/StainRestorer@f25239eb0ea817ce04bdfc2a3209157aa2e7998a`](https://github.com/CXH-Research/StainRestorer/tree/f25239eb0ea817ce04bdfc2a3209157aa2e7998a)。[Weights Release](https://github.com/CXH-Research/StainRestorer/releases/tag/Weights) 发布于 2024-11-28，早于 WACV 2025 卷期；以下是实际发布资产，不是“即将公开”的承诺。
+
+| 官方文件 | 字节数 | 对应任务 |
+| --- | ---: | --- |
+| [StainDoc.pth](https://github.com/CXH-Research/StainRestorer/releases/download/Weights/StainDoc.pth) | 27,676,762 | 文档污渍去除 |
+| [StainDoc_mark.pth](https://github.com/CXH-Research/StainRestorer/releases/download/Weights/StainDoc_mark.pth) | 27,679,426 | 文档水印去除 |
+| [StainDoc_seal.pth](https://github.com/CXH-Research/StainRestorer/releases/download/Weights/StainDoc_seal.pth) | 27,679,426 | 文档印章去除 |
+
+三条链接都通过 HTTP Range 取得前 64 字节，返回 206、总大小与 Release 一致，并具有 ZIP 文件头。这确认文件可下载，**尚不等于已完整下载、成功加载或在我们数据上验证**。
+
+静态源码检查发现两个适配点：
+
+1. [模型第 745 行](https://github.com/CXH-Research/StainRestorer/blob/f25239eb0ea817ce04bdfc2a3209157aa2e7998a/models/StainRestorer.py#L745) 返回 `[最终恢复图, 中间图]`；[训练验证第 96 行](https://github.com/CXH-Research/StainRestorer/blob/f25239eb0ea817ce04bdfc2a3209157aa2e7998a/train.py#L96) 正确取 `model(inp)[0]`，但 [infer.py 第 57–66 行](https://github.com/CXH-Research/StainRestorer/blob/f25239eb0ea817ce04bdfc2a3209157aa2e7998a/infer.py#L57) 把整个列表传给图像指标。后续入口应沿用作者验证代码取最终图；这是输出接口修正，不是改网络。本轮仅静态检查，未执行该脚本。
+2. [仓库配置](https://github.com/CXH-Research/StainRestorer/blob/f25239eb0ea817ce04bdfc2a3209157aa2e7998a/config.yml#L18) 默认 256×256，而[论文](https://openaccess.thecvf.com/content/WACV2025/papers/Li_High-Fidelity_Document_Stain_Removal_via_A_Large-Scale_Real-World_Dataset_and_WACV_2025_paper.pdf) 描述训练 256、测试 1024。直接默认运行不能声称复现论文原测试协议；我们的长行适配应保持笔画长宽比，记录裁块／缩放规则。
+
+论文同时验证污渍、水印、印章去除；后两类合成数据利用干净文档背景生成。其“去除覆盖层、保留文字”与我们有联系，但有色污渍／印章不等于黑色手写划线与文字交叉。因此值得作为新的文档恢复对照，不能预先认定效果优于专门去划线模型。
+
+建议下一次执行先将三套权重在同一冻结验证集上直接推理，按既定读回规则选版并同时报告文字误擦；不按测试集挑任务权重。若随后进入正式同数据比较，再用共同训练对和相同真实标注预算训练／微调。跨域官方权重成绩与同数据重训成绩分表。
+
+### 13.2 Zhong 2025：任务最接近，尚未拿到作者恢复实现
+
+[作者机构记录](https://salford-repository.worktribe.com/output/3227736)与[出版 DOI](https://doi.org/10.1016/j.image.2024.117214)确认题名、四位作者、2025 年 1 月卷期及 2024 年在线发表。摘要描述先检测划线词，再用 U-Net 与 Bi-LSTM 恢复实际文字像素，并服务于描述题评价，直接对应我们的研究问题。
+
+核查了题名、作者和方法相关代码检索；未找到可确认属于本文作者的完整恢复代码或权重。出版全文／补充附件本轮访问未成功，因此不能断言作者完全没有发布资源。[ScienceDirect 正确论文页](https://www.sciencedirect.com/science/article/pii/S0923596524001152)对应 PII `S0923596524001152`。
+
+避免两个误认：搜索中的 `ankurguria/StrikOR` 不是这篇论文的作者实现；[HWG-SOW 2026 资源](https://zenodo.org/records/21560739)和[相关仓库](https://github.com/said702/hwg-strikeout-detection)提供的是划线检测／分类研究及标签，不是本论文的文字恢复器。后者明确说 SOW 原图需向原作者获取，不能把标签 CSV 当恢复模型。
+
+建议将此文列为必讨论的直接相关工作和优先待复现候选。取得全文／作者资源后再决定使用官方实现或明确标为自行复现；本轮未向作者发送消息。
+
+### 13.3 Uni-DocDiff：尚未确认公开实现，去手写模式不能直接套用
+
+[可访问作者全文 v1](https://arxiv.org/html/2508.04055v1)与[正式出版 DOI](https://doi.org/10.1145/3746027.3755362)确认 ACM MM 2025。检查作者全文／摘要外链、Crossref 元数据、GitHub 的 `Uni-DocDiff`／`UniDocDiff` 仓库检索与 Hugging Face 模型检索，没有取得可核验的方法代码或模型文件。ACM 附件访问未完成，不能把这次未找到写成永久无代码。
+
+全文明确：handwriting removal 是删除手写、保留印刷内容；我们需要保留被划掉的手写字。**原生去手写模式的任务目标相反。** 即使未来拿到权重，也应先确认具体任务头／提示及适配办法，不能把删除所有手写的结果直接当去划线能力。[SyntheticDoc 作者论文](https://igl.ethz.ch/projects/SyntheticDoc/syntheticdoc-eccv-2026-woortmann-et-al.pdf)也记录了其研究当时 Uni-DocDiff 未发布代码／结果的复现限制，这只作旁证，不替代当前仓库核查。
+
+建议在相关工作中讨论统一文档扩散恢复；暂不增加为可运行实验。检索返回的 2023 DocDiff 仓库不是 Uni-DocDiff，不能混用名称或权重。
+
+### 13.4 MMDIR：有正式论文，但公开项目仍不具备模型推理条件
+
+[CVPR 2026 正式论文页](https://openaccess.thecvf.com/content/CVPR2026/html/Li_MMDIR_Multimodal_Instruction-Driven_Framework_for_Mixed-Degradation_Document_Image_Restoration_CVPR_2026_paper.html)与[作者仓库固定版本](https://github.com/xiaomore/MMDIR/tree/b1066ed4184b4c669b7105bd3620c42311e10602)可核验。通过公开 GitHub API 检查文件树、所有公开分支、Release 和 Tag：只有 main 分支的一个 README 文件，Release／Tag 均为空。
+
+README 两个网盘链接分别标为 **MixedDoc 数据集**与**模型预测结果**；预测图片不能供我们输入新答题卡推理。本轮未检查网盘内部全部文件，不对其中是否另藏未注明的附件作断言；公开页面目前没有可核验的源码或 checkpoint 入口。CVF 论文页也未列出补充包链接。
+
+它针对模糊、阴影、水印、印章及混合退化，适合讨论多退化文档恢复，但尚不能据此加入实际成绩表。等作者发布训练／推理模型与权重后再核验，不依据摘要重搭一个网络冒充官方复现。
+
+### 13.5 本轮检查范围
+
+围绕上述四篇额外执行 7 次 Exa 检索，请求 46 条结果（含重复），并检查作者论文、机构页、GitHub API、关键源码和发布附件。46 是请求的检索结果数量，不是已完整阅读的论文数量。主要限制是 Zhong 的出版全文／附件与 Uni-DocDiff 的 ACM 附件未成功取得；对这两者使用“未找到可核验资源”的口径。
+
+公开证据、下载探测与源码摘录保存在本机忽略目录 `work/baseline_research20261009/followup/`。本轮没有训练、推理或新增实验成绩；第 12 节的 18 份权重验证属于此前已经完成的实验，未因这次文献核查改写。
