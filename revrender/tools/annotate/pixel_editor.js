@@ -1,12 +1,13 @@
 'use strict';
 const $=id=>document.getElementById(id), R=PixelReview, clone=x=>JSON.parse(JSON.stringify(x));
 let pack,rows,key,backupKey,store,at=0,wholePage=0,inDetail=false,mode='add',zoom=3,hidden=false;
-let mask,original,grey,allowed,manualKeep,uncertain,keepProposal=null,history=[],future=[],drawing=false,lastPoint=null,serial=0,busy=false,lastTime=0;
+let mask,original,grey,allowed,manualKeep,uncertain,keepMarks,history=[],future=[],drawing=false,lastPoint=null,serial=0,busy=false,lastTime=0;
 const images=new Map();
 let lastAutoCleaned=0;
 let backupHandle=null,backupPending=null,backupWriting=false,brushSaveTimer=null,space=false;
 const row=()=>rows[at], state=()=>ensure(row());
 const selectingRegions=()=>pack?.task==='region_selection';
+const keeping=()=>state().annotationMode==='keep';
 function ensure(r){return store.rows[r.id]||(store.rows[r.id]=R.restoreRow(r));}
 function syncRows(){const all=[...pack.rows,...store.extra];all.forEach(r=>store.rows[r.id]=R.restoreRow(r,store.rows[r.id]));rows=all.filter(r=>!store.rows[r.id].deleted);at=Math.min(at,Math.max(0,rows.length-1));}
 function merged(r){return {...r,...ensure(r),page:r.page};}
@@ -23,19 +24,19 @@ async function flushBackup(){
   catch(e){$('saveState').textContent='文件备份失败：'+e.message+'；请导出备份';$('saveState').classList.add('error');backupHandle=null;}
   finally{backupWriting=false;}
 }
-function saveLabels(){R.saveKeep(state(),manualKeep);R.saveUncertain(state(),uncertain);}
+function saveLabels(){if(keeping())R.savePositive(state(),keepMarks);else{R.saveKeep(state(),manualKeep);R.saveUncertain(state(),uncertain);}}
 function scheduleBrushSave(){if(!brushSaveTimer)brushSaveTimer=setTimeout(()=>{brushSaveTimer=null;if(drawing){state().runs=R.encode(mask);saveLabels();save();}},200);}
 
 function touch(){const now=Date.now();if(lastTime&&document.visibilityState==='visible'){const seconds=Math.min((now-lastTime)/1000,60);if(inDetail&&row())state().seconds+=seconds;else store.pageSeconds[wholePage]=(store.pageSeconds[wholePage]||0)+seconds;}lastTime=now;}
 function status(text,error=false){$('status').textContent=text;$('status').className='status'+(error?' error':'');}
 function invalidate(r){const s=ensure(r);s.confirmed=false;s.ops++;store.done[r.page]=false;}
-function cleanActive(){saveLabels();for(let i=0;i<mask.length;i++)if(!allowed[i]||manualKeep[i]||uncertain[i])mask[i]=0;state().runs=R.encode(mask);const added=R.autoClean(state(),grey);mask=R.decode(state().runs,grey.length);return added;}
+function cleanActive(){saveLabels();if(!keeping())for(let i=0;i<mask.length;i++)if(!allowed[i]||manualKeep[i]||uncertain[i])mask[i]=0;state().runs=R.encode(mask);const added=R.autoClean(state(),grey);mask=R.decode(state().runs,grey.length);return added;}
 function changed(){cleanActive();invalidate(row());save();nav();}
 function remember(){history.push({store:clone(store),at,wholePage,inDetail,chosen:whole.selected,editing:whole.editing});if(history.length>50)history.shift();future=[];}
-function cancelPreview(){keepProposal=null;$('keepPreview').hidden=true;}
-function cancelPending(){finishPaint();cancelPreview();serial++;busy=false;drawing=false;$('edit').style.opacity=1;}
+function cancelPending(){finishPaint();serial++;busy=false;drawing=false;$('edit').style.opacity=1;}
 async function imageOf(pi){if(images.has(pi))return images.get(pi);const im=new Image();im.src=pack.pages[pi].image;await im.decode();images.set(pi,im);return im;}
 function cropData(pi,box){const im=images.get(pi),[l,t,r,b]=box,c=document.createElement('canvas');c.width=r-l;c.height=b-t;const cx=c.getContext('2d');cx.drawImage(im,l,t,r-l,b-t,0,0,r-l,b-t);return cx.getImageData(0,0,r-l,b-t);}
+function cropGrey(pi,box){const rgba=cropData(pi,box).data,pixels=new Uint8Array(rgba.length/4);for(let i=0;i<pixels.length;i++)pixels[i]=Math.round((rgba[4*i]+rgba[4*i+1]+rgba[4*i+2])/3);return pixels;}
 async function cleanStore(candidate){
   let removed=0;lastAutoCleaned=0;
   for(const base of [...pack.rows,...candidate.extra]){
@@ -72,28 +73,45 @@ async function show(index){
   Object.assign(s,R.clipRegion(s,s.region,R.cropBox(s.region,pack.pages[row().page].size)));allowed=R.regionPixels(s.region,s.box);
   original=cropData(row().page,s.box);R.whiteOutside(original.data,allowed);grey=new Uint8Array(original.width*original.height);
   for(let i=0;i<grey.length;i++)grey[i]=Math.round((original.data[4*i]+original.data[4*i+1]+original.data[4*i+2])/3);
-  manualKeep=R.keepPixels(s);uncertain=R.uncertainPixels(s);R.autoClean(s,grey);mask=R.decode(s.runs,grey.length);for(const id of ['edit','result']){$(id).width=original.width;$(id).height=original.height;}
+  manualKeep=R.keepPixels(s);uncertain=R.uncertainPixels(s);keepMarks=R.positivePixels(s);R.autoClean(s,grey);mask=R.decode(s.runs,grey.length);for(const id of ['edit','result']){$(id).width=original.width;$(id).height=original.height;}
   const n=rows.filter((r,i)=>r.page===row().page&&i<=at).length;
   $('title').textContent=`第 ${wholePage+1} 题 · 划线 ${n} · 多边形裁切 ${original.width} × ${original.height}`;$('notRevision').checked=s.not_revision;$('note').value=s.note;
   $('transcription').value=s.text||'';$('unreadable').checked=!!s.unreadable;$('textConfirmed').checked=!!s.text_confirmed;updateTextState();
   $('previous').disabled=at===0;$('next').disabled=at===rows.length-1;
-  paint();viewports.fit();nav();lastTime=Date.now();save();status(s.confirmed?'这处已确认。继续修改会取消确认。':'仅显示、编辑多边形内部；框外已遮白。');
+  updateModeControls();paint();viewports.fit();nav();lastTime=Date.now();save();status(s.confirmed?'这处已确认。继续修改会取消确认。':'仅显示、编辑多边形内部；框外已遮白。');
+}
+function updateModeControls(){
+  const keep=keeping();
+  for(const [id,active] of [['eraseMode',!keep],['keepMode',keep]]){$(id).classList.toggle('active',active);$(id).setAttribute('aria-pressed',String(active));}
+  $('detailPanel').dataset.annotationMode=keep?'keep':'erase';
+  $('modeHint').textContent=keep?'模式 2：画笔涂绿要保留的数字、文字和符号；橡皮撤掉绿色。框内未涂绿的墨迹全部擦白，下图实时更新。':'模式 1：画笔涂红要去除的划线；橡皮撤掉红色、恢复原图。未标红的墨迹保留，下图实时更新。';
+  $('editTitle').textContent=keep?'原图 · 只显示绿色保留标记':'原图 · 只显示红色删除标记';
+  for(const tool of ['add','keep'])document.querySelector('[data-mode="'+tool+'"]').hidden=!!pack.standalone||keep;
+  if(keep&&['add','keep'].includes(mode))document.querySelector('[data-mode="paint"]').click();
+}
+function chooseAnnotationMode(choice){
+  if(!original||busy||(state().annotationMode||'erase')===choice)return;
+  finishPaint();touch();remember();store.rows[row().id]=R.changeMode(state(),choice,grey);invalidate(row());
+  manualKeep=R.keepPixels(state());uncertain=R.uncertainPixels(state());keepMarks=R.positivePixels(state());
+  R.autoClean(state(),grey);mask=R.decode(state().runs,grey.length);
+  document.querySelector('[data-mode="paint"]').click();updateModeControls();paint();save();nav();
+  status(`已切换为模式 ${keeping()?2:1}；另一种模式的标记已单独保存。`);
 }
 function paint(){
   if(!original)return;
   const over=new ImageData(new Uint8ClampedArray(original.data),original.width,original.height),clean=new ImageData(new Uint8ClampedArray(original.data),original.width,original.height);
-  const displayed=keepProposal?R.decode(keepProposal.runs,mask.length):mask;let red=0,green=0,orange=0;
+  const keep=keeping();let marked=0,unknown=0;
   for(let i=0;i<mask.length;i++){
     if(!allowed[i]||grey[i]>=245||state().not_revision)continue;
-    let color=null;
-    if(uncertain[i]){orange++;color=[230,148,0];}
-    else if(manualKeep[i]){green++;color=[0,155,91];}
-    else if(displayed[i]){red++;color=[230,35,55];for(let c=0;c<3;c++)clean.data[4*i+c]=255;}
+    const selected=keep?keepMarks[i]:mask[i],color=selected?(keep?[0,155,91]:[230,35,55]):null;
+    if(selected)marked++;
+    if(!keep&&uncertain[i])unknown++;
+    if(mask[i])for(let c=0;c<3;c++)clean.data[4*i+c]=255;
     if(color&&!hidden)for(let c=0;c<3;c++)over.data[4*i+c]=Math.round(over.data[4*i+c]*.38+color[c]*.62);
   }
   $('edit').getContext('2d').putImageData(over,0,0);$('result').getContext('2d').putImageData(clean,0,0);
-  $('labelStats').textContent=`${keepProposal?'预览 · ':''}擦除 ${red} 像素 · 保护 ${green} 像素 · 不确定 ${orange} 像素（保留原图，单独导出）`;
-  $('resultTitle').textContent=keepProposal?'清理预览 · 尚未应用，请检查所有原字都已保护':'处理结果 · 检查原字，不确定区域保持原图';
+  $('labelStats').textContent=`模式 ${keep?2:1} · ${keep?'绿色保留':'红色删除'} ${marked} 像素${unknown?' · 旧不确定 '+unknown+' 像素仍保留，可用画笔或橡皮重新标注':''}`;
+  $('resultTitle').textContent=keep?'实时结果 · 只保留涂绿的笔画':'实时结果 · 擦除涂红的划线';
 }
 function point(e){const c=$('edit'),b=c.getBoundingClientRect();return [Math.max(0,Math.min(c.width-1,Math.round((e.clientX-b.left)*c.width/b.width))),Math.max(0,Math.min(c.height-1,Math.round((e.clientY-b.top)*c.height/b.height)))];}
 function dab(x,y,tool){
@@ -101,8 +119,12 @@ function dab(x,y,tool){
   const radius=Number($('radius').value),w=original.width,h=original.height;
   for(let yy=Math.max(0,y-radius);yy<=Math.min(h-1,y+radius);yy++)for(let xx=Math.max(0,x-radius);xx<=Math.min(w-1,x+radius);xx++)if(allowed[yy*w+xx]&&(xx-x)**2+(yy-y)**2<=radius**2){
     const i=yy*w+xx;
-    if(tool==='clear'){manualKeep[i]=0;uncertain[i]=0;continue;}
-    mask[i]=tool==='paint'&&grey[i]<245?1:0;manualKeep[i]=tool==='erase'?1:0;uncertain[i]=tool==='uncertain'&&grey[i]<245?1:0;
+    if(keeping()){
+      keepMarks[i]=tool==='paint'&&grey[i]<245?1:0;
+      mask[i]=grey[i]<245&&!keepMarks[i]?1:0;
+    }else{
+      mask[i]=tool==='paint'&&grey[i]<245?1:0;manualKeep[i]=tool==='erase'?1:0;uncertain[i]=0;
+    }
   }
 }
 async function suggest(x,y,add){
@@ -121,7 +143,7 @@ for(const id of ['editViewport','resultViewport']){
     if(!original||busy)return;
     if(id==='resultViewport'||mode==='pan'||space||e.button===2||e.button===1||e.shiftKey){touch();viewports.down(e,view);return;}
     if(e.target!==$('edit'))return;
-    e.preventDefault();touch();const [x,y]=point(e);if(!allowed[y*original.width+x])return;cancelPreview();
+    e.preventDefault();touch();const [x,y]=point(e);if(!allowed[y*original.width+x])return;
     if(mode==='add'||mode==='keep'){suggest(x,y,mode==='add');return;}
     remember();invalidate(row());drawing=true;lastPoint=[x,y];view.setPointerCapture(e.pointerId);dab(x,y,mode);paint();scheduleBrushSave();
   };
@@ -143,7 +165,7 @@ const whole=new PixelOverview($('whole'),{
   open:id=>show(rows.findIndex(r=>r.id===id)),
   reshape:(id,region)=>{
     const r=rows.find(r=>r.id===id);
-    try{const next=R.reshape(ensure(r),region,pack.pages[r.page].size);remember();store.rows[id]=next;invalidate(r);save();nav();whole.select(id);status('范围已调整，重叠部分的像素修正按原坐标保留。点“放大精修”处理新增范围。');}
+    try{const next=R.reshape(ensure(r),region,pack.pages[r.page].size);if(next.annotationMode==='keep')R.syncKeepResult(next,cropGrey(r.page,next.box));remember();store.rows[id]=next;invalidate(r);save();nav();whole.select(id);status('范围已调整，重叠部分的像素修正按原坐标保留。点“放大精修”处理新增范围。');}
     catch(e){status(e.message,true);}
   },
   create:region=>{
@@ -174,7 +196,7 @@ async function restore(from,to){
   for(const [id,s] of Object.entries(previous.store.rows)){
     const now=latest.rows[id];if(!now)continue;
     s.seconds=Math.max(s.seconds,now.seconds);
-    const different=JSON.stringify([s.box,s.region,s.runs,s.not_revision,s.manualKeep,s.uncertainMask])!==JSON.stringify([now.box,now.region,now.runs,now.not_revision,now.manualKeep,now.uncertainMask]);
+    const different=JSON.stringify([s.box,s.region,s.runs,s.not_revision,s.manualKeep,s.uncertainMask,s.annotationMode,s.keepMarks])!==JSON.stringify([now.box,now.region,now.runs,now.not_revision,now.manualKeep,now.uncertainMask,now.annotationMode,now.keepMarks]);
     s.ops=Math.max(s.ops,now.ops)+(different?1:0);
     // An explicit undo must survive reload instead of immediately being auto-cleaned again.
     s.autoCleanup=R.cleanupStamp(s);
@@ -193,17 +215,9 @@ $('wholeFit').onclick=()=>whole.fit();$('wholeMore').onclick=()=>whole.zoom(1.25
 $('wholeHide').onclick=()=>{whole.hidden=!whole.hidden;whole.draw();};
 $('prevPage').onclick=()=>overview(Math.max(0,wholePage-1));$('nextPage').onclick=()=>overview(Math.min(pack.pages.length-1,wholePage+1));
 document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{finishPaint();mode=b.dataset.mode;document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('active',x===b));});
-$('keepOnly').onclick=()=>{
-  if(!original||busy||state().not_revision)return;finishPaint();touch();
-  try{keepProposal=R.keepOnly(state(),grey);$('keepPreview').hidden=false;$('keepPreviewText').textContent=`预览擦除 ${keepProposal.removed} 个墨迹像素；绿色及不确定部分保留。尚未保存。`;paint();}
-  catch(e){status(e.message,true);}
-};
-$('cancelKeepOnly').onclick=()=>{cancelPreview();paint();status('已取消预览，标注未改变。');};
-$('applyKeepOnly').onclick=()=>{
-  if(!keepProposal)return;touch();remember();mask=R.decode(keepProposal.runs,mask.length);cancelPreview();changed();paint();status('已按保留笔画清理并保存；不确定部分仍保留。可撤销。');
-};
+$('eraseMode').onclick=()=>chooseAnnotationMode('erase');$('keepMode').onclick=()=>chooseAnnotationMode('keep');
 $('more').onclick=()=>viewports.zoom(zoom*1.4);$('less').onclick=()=>viewports.zoom(zoom/1.4);$('fitDetail').onclick=()=>viewports.fit();$('hide').onclick=()=>{hidden=!hidden;paint();};
-$('notRevision').onchange=()=>{finishPaint();cancelPreview();touch();remember();state().not_revision=$('notRevision').checked;changed();paint();};
+$('notRevision').onchange=()=>{finishPaint();touch();remember();state().not_revision=$('notRevision').checked;changed();paint();};
 $('note').oninput=()=>{touch();state().note=$('note').value;save();};
 function updateTextState(){$('textState').textContent=state().text_confirmed?'已校对 ✓':'未校对';$('transcription').disabled=!!state().unreadable;}
 function textChanged(){touch();state().text=$('transcription').value;state().unreadable=$('unreadable').checked;state().text_confirmed=false;$('textConfirmed').checked=false;updateTextState();save();nav();}
@@ -213,7 +227,7 @@ $('textConfirmed').onchange=()=>{
   touch();state().text_confirmed=$('textConfirmed').checked;updateTextState();save();nav();
 };
 $('previous').onclick=()=>show(at-1);$('next').onclick=()=>show(at+1);
-$('confirm').onclick=()=>{if(busy||!original)return;if(keepProposal){status('请先应用或取消清理预览，再确认这处。',true);return;}finishPaint();touch();state().runs=R.encode(mask);state().confirmed=true;state().needs_clean_review=false;save();nav();if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
+$('confirm').onclick=()=>{if(busy||!original)return;finishPaint();touch();state().runs=R.encode(mask);state().confirmed=true;state().needs_clean_review=false;save();nav();if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
 $('pageDone').onclick=()=>{
   const pi=inDetail?row().page:wholePage;
   if(!selectingRegions()&&rows.some(r=>r.page===pi&&!ensure(r).confirmed)){status('这题还有未确认的区域，请逐处复核后再确认整题。',true);return;}
@@ -221,7 +235,7 @@ $('pageDone').onclick=()=>{
 };
 function exported(source=store){
   const pages=R.exportPages(pack,source);
-  return {schema:'paper2-pixel-review-v1',annotation_version:2,label_semantics:{runs:'erase',manualKeep:'protect',uncertainMask:'unknown_not_ground_truth',text_confirmed:'independent_text_review'},pack:pack.id,exported_at:new Date().toISOString(),task:pack.task||'strike_only',image_revision:source.imageRevision||'original',image_source:source.imageRevision===pack.image_revision?pack.image_source:undefined,pages};
+  return {schema:'paper2-pixel-review-v1',annotation_version:3,label_semantics:{runs:'active_mode_erase_result',annotationMode:'erase_or_keep',keepMarks:'mode_2_retained_ink',eraseDraft:'inactive_mode_1_draft',manualKeep:'mode_1_eraser_protection',uncertainMask:'unknown_not_ground_truth',text_confirmed:'independent_text_review'},pack:pack.id,exported_at:new Date().toISOString(),task:pack.task||'strike_only',image_revision:source.imageRevision||'original',image_source:source.imageRevision===pack.image_revision?pack.image_source:undefined,pages};
 }
 function download(value,name){const blob=new Blob([JSON.stringify(value)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function deleteRegion(id){
@@ -260,7 +274,8 @@ $('import').onchange=async e=>{
 document.addEventListener('keydown',e=>{
   if(e.isComposing)return;
   const editingText=['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)||e.target.isContentEditable;
-  const brushes={b:'paint',e:'erase',u:'uncertain',x:'clear'};
+  if(inDetail&&!editingText&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&['1','2'].includes(e.key)){e.preventDefault();chooseAnnotationMode(e.key==='1'?'erase':'keep');return;}
+  const brushes={b:'paint',e:'erase'};
   if(inDetail&&!editingText&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&brushes[e.key.toLowerCase()]){e.preventDefault();document.querySelector('[data-mode="'+brushes[e.key.toLowerCase()]+'"]').click();return;}
   if(['INPUT','TEXTAREA','BUTTON','SELECT'].includes(e.target.tagName))return;const k=e.key.toLowerCase();
   if((e.ctrlKey||e.metaKey)&&k==='z'){e.preventDefault();restore(e.shiftKey?future:history,e.shiftKey?history:future);}

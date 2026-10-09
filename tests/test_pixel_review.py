@@ -180,3 +180,15 @@ def test_unknown_pixels_are_not_silently_converted_to_binary_training_labels():
     _,mask=M.reviewed_crop(page,row)
     assert mask.sum()==1 and mask[2,5]==1
     assert len(M.geometry({'done':False,'revisions':[row]})['strokes'])==1
+
+
+def test_keep_mode_exports_erase_pixels_and_inactive_mode_is_not_ground_truth():
+    page=Image.fromarray(np.full((10,10),20,np.uint8))
+    row={'id':'r','box':[0,0,10,10],'region':[[0,0],[10,0],[10,10],[0,10]],
+         'annotationMode':'keep','runs':[[0,22],[23,77]],'confirmed':True,
+         'keepMarks':{'box':[0,0,10,10],'runs':[[22,1]]},
+         'eraseDraft':{'box':[0,0,10,10],'runs':[[22,1]],
+                       'uncertainMask':{'box':[0,0,10,10],'runs':[[23,1]]}}}
+    _,mask=M.reviewed_crop(page,row)
+    assert mask.sum()==99 and mask[2,2]==0
+    assert M.geometry({'done':False,'revisions':[row]})['strokes'][0]['pixel_mask']['runs']==row['runs']

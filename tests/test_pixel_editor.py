@@ -133,12 +133,12 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
       function node(id=''){
         if(nodes.has(id))return nodes.get(id);
         const n={id,style:{},dataset:{},value:2,children:[],clientWidth:800,clientHeight:400,scrollTop:0,scrollLeft:0,
-          classList:{toggle(){},add(){},remove(){}},append(x){this.children.push(x);},replaceChildren(){this.children=[];},addEventListener(){},setPointerCapture(){},
+          setAttribute(){},classList:{toggle(){},add(){},remove(){}},append(x){this.children.push(x);},replaceChildren(){this.children=[];},addEventListener(){},setPointerCapture(){},
           click(){this.onclick?.();},getBoundingClientRect:()=>({left:0,top:0,width:10,height:10}),
-          getContext:()=>({drawImage(){},putImageData(){},getImageData:(x,y,w,h)=>({width:w,height:h,data:new Uint8ClampedArray(w*h*4).fill(20)})})};
+          getContext:()=>({drawImage(){},putImageData(im){n.lastImage=im;},getImageData:(x,y,w,h)=>({width:w,height:h,data:new Uint8ClampedArray(w*h*4).fill(20)})})};
         if(id)nodes.set(id,n);return n;
       }
-      const buttons=['add','keep','paint','erase','uncertain','clear','pan'].map(mode=>{const n=node(mode);n.dataset.mode=mode;return n;});
+      const buttons=['add','keep','paint','erase','pan'].map(mode=>{const n=node(mode);n.dataset.mode=mode;return n;});
       node('review-pack').textContent=JSON.stringify(pack);node('review-draft').textContent='null';
       const doc={visibilityState:'visible',getElementById:node,createElement:()=>node(),addEventListener:(name,fn)=>handlers[name]=fn,
         querySelectorAll:q=>q==='[data-mode]'?buttons:buttons.slice(0,2),querySelector:q=>buttons.find(b=>q.includes('\"'+b.dataset.mode+'\"'))};
@@ -187,30 +187,41 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         vm.runInContext('dab(8,8,true);changed()',ctx);
         const brushOutside=vm.runInContext('mask[88]',ctx);
 
-        vm.runInContext("state().region=[[0,0],[10,0],[10,10],[0,10]];state().runs=[];delete state().manualKeep;delete state().uncertainMask;",ctx);
+        vm.runInContext("state().region=[[0,0],[10,0],[10,10],[0,10]];state().runs=[[36,1]];delete state().manualKeep;state().uncertainMask={box:[0,0,10,10],runs:[[34,1]]};",ctx);
         await vm.runInContext('show(0)',ctx);
-        vm.runInContext("grey.fill(255);for(const i of [33,34,36,88])grey[i]=20;remember();drawing=true;dab(3,3,'erase');dab(4,3,'uncertain');finishPaint();",ctx);
-        handlers.keydown(keyEvent('U'));const uncertainKey=vm.runInContext('mode',ctx);
-        handlers.keydown(keyEvent('X'));const clearKey=vm.runInContext('mode',ctx);
-        const beforeProposal=vm.runInContext('JSON.stringify(state().runs)',ctx);
-        vm.runInContext("$('keepOnly').onclick();$('confirm').onclick();",ctx);
-        const previewOnly=vm.runInContext("!!keepProposal&&!state().confirmed&&JSON.stringify(state().runs)",ctx);
-        vm.runInContext("$('cancelKeepOnly').onclick();",ctx);
-        const cancelled=vm.runInContext('!keepProposal&&JSON.stringify(state().runs)',ctx);
-        vm.runInContext("$('keepOnly').onclick();$('applyKeepOnly').onclick();",ctx);
-        const appliedKeep=vm.runInContext('({runs:state().runs,protected:manualKeep[33],unknown:uncertain[34]})',ctx);
+        vm.runInContext("grey.fill(255);for(const i of [33,34,36,88])grey[i]=20;",ctx);
+        handlers.keydown(keyEvent('2','TEXTAREA'));const modeTextGuard=vm.runInContext('state().annotationMode',ctx);
+        handlers.keydown(keyEvent('2'));const keepMode=vm.runInContext('state().annotationMode',ctx);
+        const emptyKeep=vm.runInContext('[mask[33],mask[34],mask[36],mask[88]]',ctx);
+        vm.runInContext("remember();drawing=true;dab(3,3,'paint');dab(4,3,'paint');paint();",ctx);
+        const liveKeep=vm.runInContext('mask[33]===0&&mask[34]===0',ctx);
+        vm.runInContext('finishPaint()',ctx);
+        handlers.keydown(keyEvent('e'));
+        vm.runInContext("remember();drawing=true;dab(4,3,mode);paint();",ctx);
+        const liveErase=vm.runInContext('mask[34]===1&&keepMarks[34]===0',ctx);
+        vm.runInContext('finishPaint()',ctx);
+        const keepResult=vm.runInContext('state().runs',ctx);
+        const greenOnly=node('edit').lastImage.data[33*4+1]>node('edit').lastImage.data[33*4]&&node('edit').lastImage.data[36*4]===20;
+        const cleanResult=node('result').lastImage.data[33*4]===20&&node('result').lastImage.data[34*4]===255;
+        handlers.keydown(keyEvent('1'));
+        const restoredMode=vm.runInContext('({choice:state().annotationMode,runs:state().runs,unknown:uncertain[34]})',ctx);
+        const redOnly=node('edit').lastImage.data[36*4]>node('edit').lastImage.data[36*4+1]&&node('edit').lastImage.data[33*4]===20;
+        handlers.keydown(keyEvent('2'));
+        const retainedKeep=vm.runInContext('keepMarks[33]===1&&keepMarks[34]===0&&mask[34]===1',ctx);
+        vm.runInContext("remember();drawing=true;dab(3,3,'erase');finishPaint();",ctx);
+        const cleared=vm.runInContext('keepMarks[33]===0&&mask[33]===1',ctx);
         await vm.runInContext('restore(history,future)',ctx);
-        const undoneKeep=vm.runInContext('JSON.stringify(state().runs)',ctx);
-        await vm.runInContext('restore(future,history)',ctx);
+        const keepUndo=vm.runInContext("state().annotationMode==='keep'&&keepMarks[33]===1&&mask[33]===0",ctx);
         vm.runInContext("$('transcription').value='x + ?';$('transcription').oninput();$('textConfirmed').checked=true;$('textConfirmed').onchange();",ctx);
         const separateText=vm.runInContext('state().text_confirmed&&!state().confirmed',ctx);
         const labelled=vm.runInContext('exported()',ctx);
         node('review-draft').textContent=vm.runInContext('JSON.stringify(store)',ctx);disk.clear();await vm.runInContext('start()',ctx);
-        const labelReload=vm.runInContext("({text:state().text,checked:state().text_confirmed,protected:manualKeep[33],unknown:uncertain[34],erased:mask[34]})",ctx);
-        vm.runInContext("remember();drawing=true;dab(4,3,'clear');finishPaint();",ctx);
-        const cleared=vm.runInContext('uncertain[34]===0&&manualKeep[34]===0',ctx);
-        await vm.runInContext('restore(history,future)',ctx);
-        const unknownUndo=vm.runInContext('uncertain[34]===1&&mask[34]===0',ctx);
+        const labelReload=vm.runInContext("({text:state().text,checked:state().text_confirmed,choice:state().annotationMode,green:keepMarks[33],erased:mask[34]})",ctx);
+        await vm.runInContext('overview(0)',ctx);
+        vm.runInContext("whole.handlers.reshape('p#r',[[0,0],[10,0],[10,3],[3,3],[3,10],[0,10]]);",ctx);
+        const croppedExport=vm.runInContext('exported().pages.p.revisions[0].runs.reduce((n,r)=>n+r[1],0)',ctx);
+        vm.runInContext("whole.handlers.reshape('p#r',[[0,0],[10,0],[10,10],[0,10]]);",ctx);
+        const expandedExport=vm.runInContext('exported().pages.p.revisions[0].runs.reduce((n,r)=>n+r[1],0)',ctx);
 
         vm.runInContext("pack.task='region_selection';",ctx);await vm.runInContext('overview(0)',ctx);
         vm.runInContext('whole.handlers.create([[0,0],[3,0],[3,3],[0,3]]);',ctx);
@@ -219,7 +230,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         node('review-pack').textContent=JSON.stringify({...pack,id:'empty-frames',task:'region_selection',rows:[],initial_export:undefined});
         node('review-draft').textContent='null';disk.clear();await vm.runInContext('start()',ctx);
         const blankFrames=vm.runInContext("({rows:rows.length,detail:inDetail,task:pack.task})",ctx);
-        console.log(JSON.stringify({blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey,uncertainKey,clearKey,beforeProposal,previewOnly,cancelled,appliedKeep,undoneKeep,separateText,labelled,labelReload,cleared,unknownUndo}));
+        console.log(JSON.stringify({blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey,modeTextGuard,keepMode,emptyKeep,liveKeep,liveErase,keepResult,greenOnly,cleanResult,restoredMode,redOnly,retainedKeep,cleared,keepUndo,separateText,labelled,labelReload,croppedExport,expandedExport}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
@@ -237,35 +248,42 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
     assert got['applied']=={'runs':[[44,2]],'confirmed':False}
     assert got['outsideWhite'] and got['brushOutside']==0
     assert [got[k] for k in ['eraseKey','textKey','imeKey','paintKey']]==['erase','erase','erase','paint']
-    assert got['uncertainKey']=='uncertain' and got['clearKey']=='clear'
-    assert got['beforeProposal']==got['previewOnly']==got['cancelled']==got['undoneKeep']
-    assert got['appliedKeep']=={'runs':[[36,1],[88,1]],'protected':1,'unknown':1}
-    assert got['separateText'] and got['cleared'] and got['unknownUndo']
-    assert got['labelReload']=={'text':'x + ?','checked':True,'protected':1,'unknown':1,'erased':0}
-    assert got['labelled']['annotation_version']==2
-    assert got['labelled']['label_semantics']['uncertainMask']=='unknown_not_ground_truth'
+    assert got['modeTextGuard']=='erase' and got['keepMode']=='keep'
+    assert got['emptyKeep']==[1,1,1,1]
+    assert got['liveKeep'] and got['liveErase'] and got['greenOnly'] and got['redOnly'] and got['cleanResult']
+    assert got['keepResult']==[[34,1],[36,1],[88,1]]
+    assert got['restoredMode']=={'choice':'erase','runs':[[36,1]],'unknown':1}
+    assert got['retainedKeep'] and got['cleared'] and got['keepUndo'] and got['separateText']
+    assert got['labelReload']=={'text':'x + ?','checked':True,'choice':'keep','green':1,'erased':1}
+    assert got['labelled']['annotation_version']==3
+    assert got['labelled']['label_semantics']['runs']=='active_mode_erase_result'
+    assert got['croppedExport']==51 and got['expandedExport']==99
 
 
-def test_keep_only_requires_ink_protection_and_preserves_unknown_and_polygon():
+def test_exclusive_modes_roundtrip_crop_and_export_without_overwriting_each_other():
     got=js('''
-      const base={id:'p#r',page:0,box:[0,0,10,10],region:[[0,0],[10,0],[10,3],[3,3],[3,10],[0,10]],runs:[]};
-      const s=R.restoreRow(base),grey=new Uint8Array(100).fill(255),keep=new Uint8Array(100),unknown=new Uint8Array(100);
+      const base={id:'p#r',page:0,box:[0,0,10,10],region:[[0,0],[10,0],[10,3],[3,3],[3,10],[0,10]],runs:[[25,1]]};
+      const s=R.restoreRow(base),grey=new Uint8Array(100).fill(255),oldKeep=new Uint8Array(100);
       for(const i of [22,23,25,77])grey[i]=20;
-      keep[0]=1;R.saveKeep(s,keep);let refused=false;try{R.keepOnly(s,grey);}catch(e){refused=true;}
-      keep[22]=1;unknown[23]=1;R.saveKeep(s,keep);R.saveUncertain(s,unknown);
-      const before=JSON.stringify(s),proposal=R.keepOnly(s,grey),unchanged=before===JSON.stringify(s);
-      s.runs=[[22,4]];R.autoClean(s,grey);const clean=s.runs;
-      const small=R.reshape(s,[[0,0],[3,0],[3,3],[0,3]],[10,10]);R.saveUncertain(small,R.uncertainPixels(small));
-      const expanded=R.reshape(small,base.region,[10,10]);
+      oldKeep[22]=1;R.saveKeep(s,oldKeep);
+      let keep=R.changeMode(s,'keep',grey);const first=keep.runs;
+      const marks=R.positivePixels(keep);marks[23]=1;R.savePositive(keep,marks);R.autoClean(keep,grey);
+      const allKept=keep.runs;
+      const small=R.reshape(keep,[[0,0],[3,0],[3,3],[0,3]],[10,10]);R.savePositive(small,R.positivePixels(small));
+      const expanded=R.reshape(small,base.region,[10,10]);R.autoClean(expanded,grey);
       const pack={id:'fixture',pages:[{id:'p',size:[10,10]}],rows:[base]},store={rows:{'p#r':expanded},extra:[],done:{},pageSeconds:{}};
       const imported=R.importData(pack,{rows:{},extra:[],done:{},pageSeconds:{}},{schema:'paper2-pixel-review-v1',pack:pack.id,pages:R.exportPages(pack,store)});
       const reloaded=imported.rows['p#r'];
-      return {refused,unchanged,proposal,clean,protected:R.keepPixels(reloaded)[22],unknown:R.uncertainPixels(reloaded)[23]};
+      const erase=R.changeMode(reloaded,'erase',grey),again=R.changeMode(erase,'keep',grey);
+      const cropped=R.changeMode(s,'keep',grey);const newRegion=[[0,0],[3,0],[3,10],[0,10]];
+      const eraseSmall=R.changeMode(R.reshape(cropped,newRegion,[10,10]),'erase',new Uint8Array(30).fill(20));
+      const eraseExpanded=R.reshape(eraseSmall,base.region,[10,10]);
+      return {first,allKept,expanded:expanded.runs,green:R.positivePixels(reloaded)[23],erase:erase.runs,again:again.runs,original:s.runs,geometry:eraseSmall.region,restoredOutside:eraseExpanded.runs};
     ''')
-    assert got['refused'] and got['unchanged']
-    assert got['proposal']=={'runs':[[25,1]],'kept':1,'uncertain':1,'removed':1}
-    assert got['protected']==got['unknown']==1
-    assert got['clean']==[[24,2]]
+    assert got['first']==[[23,1],[25,1]]
+    assert got['allKept']==got['expanded']==got['again']==[[25,1]]
+    assert got['green']==1 and got['erase']==got['original']==got['restoredOutside']==[[25,1]]
+    assert got['geometry']==[[0,0],[3,0],[3,10],[0,10]]
 
 
 def test_legacy_cleaned_draft_is_upgraded_without_another_erase_pass():

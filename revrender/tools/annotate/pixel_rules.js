@@ -81,14 +81,32 @@
   }
   function saveKeep(state,active){saveLayer(state,'manualKeep',active);}
   function saveUncertain(state,active){saveLayer(state,'uncertainMask',active);}
-  function keepOnly(state,grey){
-    const keep=keepPixels(state),unknown=uncertainPixels(state),domain=regionPixels(state.region,state.box),mask=new Uint8Array(grey.length);
-    let kept=0,uncertain=0,removed=0;
-    for(let i=0;i<mask.length;i++)if(domain[i]&&grey[i]<245){
-      if(unknown[i])uncertain++;else if(keep[i])kept++;else{mask[i]=1;removed++;}
+  function positivePixels(state){return layerPixels(state,'keepMarks');}
+  function savePositive(state,active){saveLayer(state,'keepMarks',active);}
+  function syncKeepResult(state,grey){
+    const keep=positivePixels(state),domain=regionPixels(state.region,state.box),mask=new Uint8Array(grey.length);
+    for(let i=0;i<mask.length;i++)mask[i]=domain[i]&&grey[i]<245&&!keep[i]?1:0;
+    state.runs=encode(mask);
+  }
+  const ERASE_FIELDS=['box','region','runs','outsideMask','manualKeep','uncertainMask','autoCleanup'];
+  function changeMode(state,choice,grey){
+    if(!['erase','keep'].includes(choice))throw Error('未知标注模式');
+    const next=JSON.parse(JSON.stringify(state));
+    if((next.annotationMode||'erase')===choice)return next;
+    if(choice==='keep'){
+      next.eraseDraft=Object.fromEntries(ERASE_FIELDS.filter(k=>next[k]!==undefined).map(k=>[k,next[k]]));
+      // Preserve green strokes made in the earlier editor on first use of mode 2.
+      next.keepMarks ||= next.manualKeep?JSON.parse(JSON.stringify(next.manualKeep)):{box:next.box.slice(),runs:[]};
+      for(const k of ['manualKeep','uncertainMask','outsideMask','autoCleanup'])delete next[k];
+      syncKeepResult(next,grey);
+    }else{
+      if(!next.eraseDraft)throw Error('缺少模式 1 的保存记录');
+      const restored=clipRegion(next.eraseDraft,next.region,next.box);
+      for(const k of ERASE_FIELDS)delete next[k];
+      Object.assign(next,restored);
     }
-    if(!kept)throw Error('请先用绿色“保护原字”涂出要保留的笔画，再预览清理。');
-    return {runs:encode(mask),kept,uncertain,removed};
+    next.annotationMode=choice;next.confirmed=false;
+    return next;
   }
   function whiteOutside(rgba,allowed){
     for(let i=0;i<allowed.length;i++)if(!allowed[i])for(let c=0;c<3;c++)rgba[i*4+c]=255;
@@ -100,7 +118,7 @@
     return {runs:encode(mask), removed};
   }
   function restoreRow(base, saved) {
-    return {runs:base.runs,box:base.box,region:base.region,text:base.text||'',unreadable:false,text_confirmed:false,confirmed:false,not_revision:false,deleted:false,ops:0,seconds:0,note:'',...saved};
+    return {runs:base.runs,box:base.box,region:base.region,annotationMode:'erase',text:base.text||'',unreadable:false,text_confirmed:false,confirmed:false,not_revision:false,deleted:false,ops:0,seconds:0,note:'',...saved};
   }
   function importData(pack, current, value) {
     if(value.schema!=='paper2-pixel-review-v1'||value.pack!==pack.id)throw Error('文件不属于这批题');
@@ -114,10 +132,13 @@
         if(base&&base.page!==pi)throw Error('区域与题目不匹配');
         validBox(r.box,pack.pages[pi].size);validRegion(r.region,pack.pages[pi].size);
         decode(r.runs,(r.box[2]-r.box[0])*(r.box[3]-r.box[1]));
-        for(const name of ['manualKeep','uncertainMask'])if(r[name]){
-          validBox(r[name].box,pack.pages[pi].size);
-          decode(r[name].runs,(r[name].box[2]-r[name].box[0])*(r[name].box[3]-r[name].box[1]));
+        if(r.annotationMode&&!['erase','keep'].includes(r.annotationMode))throw Error('未知标注模式');
+        if(r.annotationMode==='keep'&&!r.eraseDraft)throw Error('缺少模式 1 的保存记录');
+        for(const layer of [r.manualKeep,r.uncertainMask,r.keepMarks,r.eraseDraft,r.eraseDraft?.outsideMask,r.eraseDraft?.manualKeep,r.eraseDraft?.uncertainMask].filter(Boolean)){
+          validBox(layer.box,pack.pages[pi].size);
+          decode(layer.runs,(layer.box[2]-layer.box[0])*(layer.box[3]-layer.box[1]));
         }
+        if(r.eraseDraft)validRegion(r.eraseDraft.region,pack.pages[pi].size);
         if(!pack.rows.some(b=>b.id===r.id))extra.set(r.id,{...r,page:pi});
         next.rows[r.id]=restoreRow(r,{...r,page:pi});
       }
@@ -140,6 +161,7 @@
   function cleanupStamp(state){return {policy:CLEANUP_POLICY,box:state.box.slice(),region:state.region?.map(p=>p.slice()),runs:state.runs.map(r=>r.slice()),labelVersion:1,manualKeep:state.manualKeep,uncertainMask:state.uncertainMask};}
   function autoClean(state,grey){
     if(state.deleted||state.not_revision)return 0;
+    if(state.annotationMode==='keep'){syncKeepResult(state,grey);return 0;}
     const stamp=cleanupStamp(state);
     if(JSON.stringify(state.autoCleanup)===JSON.stringify(stamp))return 0;
     // Upgrade a previously cleaned draft without expanding its erase mask again.
@@ -200,5 +222,5 @@
     }
     return {added,gray:countGray,dots:countDots,groups,total:countGray+countDots};
   }
-  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside,keepPixels,saveKeep,uncertainPixels,saveUncertain,keepOnly};
+  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside,keepPixels,saveKeep,uncertainPixels,saveUncertain,positivePixels,savePositive,syncKeepResult,changeMode};
 });
