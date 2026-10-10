@@ -635,3 +635,12 @@ COR 和 CycleGAN 最大 80,910 次 batch4 更新，相当于 30 轮的期望见�
 正式适配从随机初始化开始，与六基线共用 10,788 对 darken-only v4 gold_pixels、596 对合成验证及 16 处人工选版区域，不混入 50 处真实训练标注。使用作者两级输出 MSE + 0.2×(1−SSIM)、AdamW（2e-4，weight_decay=0.01）、缩短到任务预算的 cosine（终值 1e-6）；有效 batch4，由单图梯度累积实现，SSIM 每图计算与作者 batch1 配置一致。最大 80,000 步、40,000 步起连续 6 次验证不提升停止，每 5,000 步验证；选版按人工擦除 F1，与既有六基线相同。随机种子 42，灰度复制三通道，不旋转、不拉伸长行、不采用作者 MixUp／CutMix，不加专属清理。此为任务适配，不是原文 300 epoch／1024 测试协议的完整复现。
 
 `scripts/run_restoration_candidate.sh CARD MODEL DATA UPSTREAM WEIGHTS VALIDATION_INPUT OUT` 串联 100 步训练／重载检查、官方权重验证与离线报告、从头正式训练、冻结重载、既有 81 处可读划线测试和 7 题像素测试、最终报告。任一阶段失败即停并留 `FAILED`；输出目录只新建，禁止重复启动。`run_restoration_suite.sh` 可在第七个参数起指定补充模型；`eval_restoration_pilot.sh --runs` 只接受已经重载验证的训练结果，避免重跑六个已完成系统。GPU 限 0/2/3，3 号卡须空闲；额外 `torchmetrics==1.4.0.post0` 装到独立依赖目录，不改公用环境。已有标注预填模型不替换。
+
+
+### 灰度挖洞预标注试验（2026-10-10）
+
+`revrender.gray_holes` 仅使用扫描灰度、第一篇检测掩膜和用户框选范围，人工擦除答案只在报告中评分。固定四组：直接擦除、内缩 1 像素并交墨迹、局部灰度挖洞、额外要求两侧墨迹支持。参数为 19×19 局部墨迹直方图（8 灰度一级）、至少 12 个参考像素、更黑阈值为中位数−max(16, 0.5×IQR)、候选扩 1 像素；两侧支持在四个方向、12 像素范围内检查，允许 1 像素横向容差。灰度候选不是已确定的原字，不应直接覆盖人工标签。
+
+入口 `python3 -m revrender.tools.gray_holes_view --review-export work/pixel_finetune_inputs20261007/annotations_1.json --review-export work/pixel_finetune_inputs20261007/annotations_0.json --frames-export /Users/zhongsuhua/Downloads/划线精细标注_paper2-pixel-region-selection_2026-10-07.json --images work/pixel_finetune_inputs20261007/images --frame-pack work/pixel_region_prefill108_20261007 --detector work/pages_run_complete --count 100 --output-dir NEW`。全取 66 处已确认，种子 42 从另 108 个人工框中抽 34 处，包含 5 处无检测覆盖的区域，不挑效果好者。第一篇输入是原页推理的 complete 检测存档，扫描使用与人工标注同源、同尺寸的清洁图；没有拿框内恢复模型预填或人工擦除掩膜当算法输入。图像与输出保持原生坐标。
+
+输出 `对比.html` 是内嵌全部图像的独立静态页面，可切换处理前／后方法、查看绿色挖洞、上下放大对比及人工结果。`selection.json` 记录每处来源、范围和像素统计，`proposals.npz` 存候选擦除掩膜（按行 packbits，形状单独记录），`summary.json` 保存总体结果，manifest 记录输入哈希并在结束时复核原文件未变。只在 66 处计算按区域累计的像素指标，34 处只展示；66 处包含已有训练 50／验证 16，属于探索性结果，不能当独立测试。没有训练或 VLM 评估。产物 `work/gray_holes100_20261010/`，桌面 `灰度挖洞_100处前后对比.html`；原标注与 108 处编辑页未改变。
