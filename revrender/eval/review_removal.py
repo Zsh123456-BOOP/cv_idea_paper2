@@ -40,15 +40,21 @@ def metrics(rows):
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--dataset',type=Path,required=True);p.add_argument('--baseline',type=Path,required=True)
-    p.add_argument('--checkpoints',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True)
+    p.add_argument('--checkpoints',type=Path);p.add_argument('--output-dir',type=Path,required=True)
+    p.add_argument('--candidate',action='append',default=[],help='named frozen candidate NAME=CHECKPOINT')
     args=p.parse_args(argv)
     read_set(args.dataset)  # Validate the complete data manifest, including native crops.
     records=json.loads((args.dataset/'validation_native.json').read_text())
     archive=np.load(args.dataset/'validation_native.npz',allow_pickle=False)
     images=[archive[f'image_{i}'] for i in range(len(records))];gold=[archive[f'mask_{i}'] for i in range(len(records))]
-    candidates=sorted(args.checkpoints.glob('step_*.pt'),key=lambda p:int(p.stem.split('_')[-1]));require(candidates,'no checkpoints')
+    candidates=[(p.stem,p) for p in sorted(args.checkpoints.glob('step_*.pt'),key=lambda p:int(p.stem.split('_')[-1]))] if args.checkpoints else []
+    for item in args.candidate:
+        name,path=item.split('=',1)
+        require(name.replace('_','').isalnum() and name!='baseline','invalid candidate name')
+        candidates.append((name,Path(path)))
+    require(candidates and len({n for n,_ in candidates})==len(candidates),'missing or duplicate candidates')
     out=make_output_dir(args.output_dir);readings={};inputs={str(args.dataset/'run_manifest.json'):digest(args.dataset/'run_manifest.json')}
-    for name,path in [('baseline',args.baseline),*[(p.stem,p) for p in candidates]]:
+    for name,path in [('baseline',args.baseline),*candidates]:
         model,payload=infer.load_checkpoint(path);predictions=predict_crops(model,images)
         per_row=[{'id':r['id'],**counts(mask,g,image)} for r,mask,g,image in zip(records,predictions,gold,images)]
         readings[name]={'checkpoint':str(path),'step':payload.get('step'),'metrics':metrics(per_row),'regions':per_row}
