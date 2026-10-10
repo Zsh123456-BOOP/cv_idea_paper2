@@ -5,6 +5,7 @@ source crops; architecture-specific inference geometry remains as trained.
 """
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +38,7 @@ def freeze_specs(specs):
         require(spec['name'] != 'scan' and spec['name'].replace('-', '').replace('_', '').isalnum(), 'invalid model name')
         item = dict(spec)
         if spec['type'] == 'own':
-            files = [Path(spec['checkpoint'])]
+            files = [Path(spec['checkpoint']), *map(Path, spec.get('provenance_files', []))]
         else:
             require(spec['type'] == 'baseline', 'unsupported model type')
             run = Path(spec['run']); selection = json.loads((run/'selection.json').read_text())
@@ -52,6 +53,46 @@ def freeze_specs(specs):
 def verify_files(hashes):
     for path, expected in hashes.items():
         require(digest(path) == expected, f'frozen input changed: {path}')
+
+
+def extend_inputs(args):
+    """Append frozen candidates without regenerating or changing scored inputs."""
+    base=args.base; source=base/'inputs'
+    require((base/'COMPLETED').is_file(), 'base comparison is incomplete')
+    verify_files(json.loads((source/'prepared_sha256.json').read_text()))
+    prior=json.loads((source/'models.json').read_text())
+    added=freeze_specs(json.loads(args.models.read_text()))
+    require(not {s['name'] for s in prior}&{s['name'] for s in added}, 'candidate already evaluated')
+    for spec in prior: verify_files(spec['sha256'])
+    out=make_output_dir(args.output_dir); inputs=make_output_dir(out/'inputs'); runs=make_output_dir(out/'runs')
+    copied={}
+    for name in ('crops','protocol.json','pack.json','pixels.json','pixels.npz','counts.json'):
+        src=source/name; dst=inputs/name
+        if src.is_dir(): shutil.copytree(src,dst)
+        else: shutil.copyfile(src,dst)
+        files=sorted(src.rglob('*')) if src.is_dir() else [src]
+        for file in files:
+            if file.is_file():
+                dest=inputs/file.relative_to(source)
+                require(digest(dest)==digest(file), 'copied input differs')
+                copied[str(file)]=digest(file)
+    write_json(inputs/'models.json',prior+added)
+    for spec in prior:
+        src=base/'runs'/spec['name']; manifest=json.loads((src/'run_manifest.json').read_text())
+        require(manifest['model']==spec, 'cached inference used different model')
+        require(manifest['inputs'][str(source/'prepared_sha256.json')]==digest(source/'prepared_sha256.json'), 'cached inference used different inputs')
+        shutil.copytree(src,runs/spec['name'])
+        for file in sorted(src.rglob('*')):
+            if file.is_file():
+                expected=digest(file)
+                require(digest(runs/spec['name']/file.relative_to(src))==expected, 'copied inference differs')
+                copied[str(file)]=expected
+    write_json(out/'reused_sha256.json',copied)
+    generated=[p for p in inputs.rglob('*') if p.is_file()]
+    write_json(inputs/'prepared_sha256.json',{str(p):digest(p) for p in generated})
+    write_manifest(inputs, config=to_jsonable(args), inputs={str(source/'prepared_sha256.json'):digest(source/'prepared_sha256.json'),
+        str(args.models):digest(args.models),str(out/'reused_sha256.json'):digest(out/'reused_sha256.json')},
+        reused_models=[s['name'] for s in prior],new_models=[s['name'] for s in added],protocol=PROTOCOL)
 
 
 def prepare_inputs(args):
@@ -195,8 +236,10 @@ def main(argv=None):
     p.add_argument('--name',required=True)
     p = sub.add_parser('merge')
     for key in ('inputs','runs','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p = sub.add_parser('extend')
+    for key in ('base','models','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     args = parser.parse_args(argv)
-    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge}[args.command](args)
+    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs}[args.command](args)
 
 
 if __name__ == '__main__': main()

@@ -57,12 +57,15 @@ def build(args):
             image='data:image/png;base64,'+base64.b64encode(Path(r['images']['erased']).read_bytes()).decode())
     out = make_output_dir(args.output_dir); write_json(out/'summary.json',summary)
     payload = json.dumps(dict(summary=summary,samples=list(samples.values())),ensure_ascii=False).replace('<','\\u003c')
-    (out/'index.html').write_text(HTML.replace('__DATA__',payload),encoding='utf-8')
+    (out/'index.html').write_text(HTML.replace('__DATA__',payload).replace('__COUNT__',str(len(specs))),encoding='utf-8')
     lines = ['# 统一验证与测试评测','',
-             '权重在推理前冻结；原图与九个模型在同一次 Qwen3-VL-8B（TP2）中识别。无重新训练、无按测试成绩选版。',
+             f'权重在推理前冻结；原图与{len(specs)}个模型在同一次 Qwen3-VL-8B（TP2）中识别。无重新训练、无按测试成绩选版。',
              '','像素统一：原图灰度 <200；亮度增加 >0.2 计为擦除；人工目标同样限制到该墨迹范围。测试多边形重叠按页去重。',
              '','我们的旧模型是人工微调 step800，本轮是上一轮验证选出的 step400。七个 baseline 均为任务适配后选定版本。',
-             '','**评测相同，训练数据不相同。** 我们有真实精修监督及历史预训练；七基线使用同一批合成训练对。不能据此独立证明架构优劣。']
+             '','**评测相同，训练数据不相同。** 人工微调版含真实精修监督；七基线使用同一批合成训练对。不能据此独立证明架构优劣。']
+    if any(s['name']=='Ours-synthetic' for s in specs):
+        lines += ['', '**Ours-synthetic 是原始框内 step8000：** 从 ImageNet 骨干开始，用47,202条合成行训练，再用70,789个合成框训练；没有用真实精修区域训练。step8000历史上由真实OCR验证集选择，素材也使用第一篇金标，因此不是完全无人工标注。与七baseline的合成数据量及训练预算仍不同。',
+                  '', '旧九模型的恢复图及像素结果经过输入、权重和文件哈希核验后原样复用；本轮重新识别全部模型，未拼接历史OCR分数。']
     for split,title in [('val','验证集：16 处像素／41 处可读划线'),('test','测试集：7 题 28 处像素／81 处可读划线')]:
         lines += ['', '## '+title,'','|模型|擦除精度%|划线召回%|像素F1%|原字误擦%|字符读回%|严格全对|','|---|---:|---:|---:|---:|---:|---:|']
         base=summary['scan'][split]
@@ -79,14 +82,14 @@ def build(args):
 
 HTML='''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>统一验证与测试比较</title>
 <style>body{font:16px/1.6 system-ui;max-width:1200px;margin:24px auto;padding:0 16px;background:#f4f7fa;color:#17283a}table{border-collapse:collapse;background:white;width:100%;font-size:14px}td,th{padding:8px;border-bottom:1px solid #dce3eb;text-align:left}.card{background:white;padding:16px;border-radius:10px;margin:14px 0}img{display:block;max-width:100%;height:auto;margin:12px auto}select,button{font:inherit;padding:8px;margin:3px}.bar{position:sticky;top:0;background:#e7eef8;padding:8px}.text{white-space:pre-wrap;overflow-wrap:anywhere}small{color:#576879}</style>
-<h1>相同数据、相同指标：九个模型重新比较</h1><p>本轮仅评测，所有权重预先冻结。旧模型为人工微调 step800；新模型为本轮 step400。所有图像使用同一次 Qwen3-VL-8B 识别。</p>
-<p><b>训练数据仍不相同：</b>我们使用真实精修数据，七个 baseline 使用共同合成数据。这张表比较现有模型的实际表现，不能单独证明架构更好。区域来自人工框选，不是整页自动检测成绩。</p>
+<h1>相同数据、相同指标：__COUNT__ 个模型比较</h1><p>仅评测，权重预先冻结。人工微调旧版为 step800；本轮微调为 step400；若表中有纯合成版，则为原始框内 step8000，没有真实精修训练，但使用过真实验证集选版和第一篇标注素材。所有图像使用同一次 Qwen3-VL-8B 识别。</p>
+<p><b>训练数据仍不相同：</b>三个自有版本的数据来源、训练量与七个 baseline 不同。这张表比较现有模型的实际表现，不能单独证明架构更好。区域来自人工框选，不是整页自动检测成绩。</p>
 <div id="tables"></div><p id="notes"></p>
 <div class="bar"><select id="split"><option value="test">测试集</option><option value="val">验证集</option></select><select id="model"></select><button id="prev">上一处</button><select id="sample"></select><button id="next">下一处</button></div>
 <div class="card"><b>人工转写</b><div class="text" id="truth"></div><small id="id"></small></div>
 <div class="card"><b>原图</b><img id="raw"><div class="text" id="rawread"></div></div>
 <div class="card"><b id="title"></b><img id="restored"><div class="text" id="read"></div></div>
-<script>const D=__DATA__,$=id=>document.getElementById(id),pct=x=>(100*x).toFixed(2),names={'Ours-old':'我们的旧模型','Ours-round1':'本轮微调模型'};const name=n=>names[n]||n;
+<script>const D=__DATA__,$=id=>document.getElementById(id),pct=x=>(100*x).toFixed(2),names={'Ours-old':'真实50处微调','Ours-round1':'真实90处微调','Ours-synthetic':'纯合成训练 · 原始框内模型'};const name=n=>names[n]||n;
 for(const s of ['val','test']){const h=document.createElement('h2');h.textContent=s==='val'?'验证集：像素16处／识别41处':'测试集：像素7题28处／识别81处';$('tables').append(h);const t=document.createElement('table');let tr=t.insertRow();['模型','擦除精度%','划线召回%','像素F1%','原字误擦%','字符读回%','严格全对'].forEach(v=>{const e=document.createElement('th');e.textContent=v;tr.append(e)});const add=(n,p,o)=>{tr=t.insertRow();[name(n),...(p?['precision','recall','f1','valid_ink_damage'].map(k=>pct(p[k])):['—','0','0','0']),pct(o.held),Math.round(o.exact*o.exact_revisions)+'/'+o.exact_revisions].forEach(v=>tr.insertCell().textContent=v)};add('原图',null,D.summary.scan[s]);[...D.summary.models].sort((a,b)=>b.ocr[s].held-a.ocr[s].held).forEach(m=>add(m.name,m.pixels[s],m.ocr[s]));$('tables').append(t)}
 $('notes').textContent='像素：灰度 <200，亮度增加 >0.2 算擦除。所有模型范围与分母一致。读回率会容忍多余字符，须结合严格全对看。生成截断：'+D.summary.truncated_readings+'。';D.summary.models.forEach(m=>$('model').add(new Option(name(m.name),m.name)));let samples=[];
 function show(){const s=samples[Number($('sample').value)];if(!s)return;const n=$('model').value,a=s.variants.scan,b=s.variants[n];$('truth').textContent=s.truth;$('id').textContent=s.id;$('raw').src=a.image;$('restored').src=b.image;$('rawread').textContent='VLM：'+a.read;$('read').textContent='VLM：'+b.read;$('title').textContent=name(n)}
