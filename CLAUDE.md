@@ -110,8 +110,10 @@ python -m revrender.infer / .train / .eval.report / .eval.freeze ...            
 
 2026-10-09 用户授权新增 StainRestorer 补充基线：先三套作者权重验证，再同数据从随机初始化训练。沿 main、GPU0/2/3；配置在 restoration.toml，最大80,000步、最小40,000、每5,000步验证、6次不提升停，真实16区域擦除F1选版。官方权重读回选版与正式训练互不连接；不混入50个真实训练标注。新增 run_restoration_candidate.sh 串联冒烟、作者权重验证、正式训练与冻结测试，详细协议见 README 末节。其 COMPLETED 才表示全部完成；FAILED 即检查对应阶段日志，禁止覆盖目录或重启旧六模型队列。
 
-StainRestorer 当前运行：快照 `/home/zsh/hme/code_paper2_d47f248a`，主目录 `/home/zsh/hme/outputs/paper2_stainrestorer20261009`，资源 `paper2_stainrestorer_resources20261009`，父进程 PID1015908（核对根目录旁 .pid）。22 项检查和100步训练／重载通过。官方权重验证已完成，水印版47.24%、原图46.43%，三权重在16区域固定阈值下去除召回均0%；详见 RESULTS 末节。正式训练已于北京时间11:25在GPU3启动，预计约12–24小时但以实测为准；根目录尚未COMPLETED，勿误判为已跑完。独立依赖通过 PYTHONPATH=/home/zsh/hme/envs/paper2_stain_deps 提供；完整脚本自动衔接冻结测试与报告。本机官方验证页 work/stainrestorer20261009/released/report/index.html。
+StainRestorer 状态（2026-10-10 核验更新）：`/home/zsh/hme/outputs/paper2_stainrestorer20261009/COMPLETED` 已存在，正式训练50,000步，验证选择step20000；不是仍在训练。源码快照d47f248a，资源 `paper2_stainrestorer_resources20261009`，独立依赖 `/home/zsh/hme/envs/paper2_stain_deps`。作者发布权重的验证与此正式训练分开记录；统一九模型重评使用正式step20000，详见RESULTS最新节，不要恢复旧任务。
 
 2026-10-10 全量页重复框与布局修复：自动框按同页近似范围保守合并，原始行记录不删除；未人工处理的组共可折叠 3,418 个重复候选。浏览器迁移先备份草稿，已修改组不覆盖；重复归档不入训练。精修翻处按钮放顶部、上下图占剩余高度、按空间位置浏览。原 URL／包 ID／IndexedDB 键保持不变。
 
 2026-10-10 全量首组已尝试微调：新增40处训练，12处测试未用；累积90处人工训练，旧合成回放不变，原16处验证逐字节保留。`paper2_pixel_round_group20261010` 已 COMPLETE；规则选400步，F1 63.23→64.25，但误擦5.97→6.60；600步F1 63.91、误擦5.94。仅小幅改善，尚未替换全量预标或人工进度；标注页仍是上一轮人工微调step800。后续不要误把本轮800步或规则选出的400步当成已经部署的预标模型。
+
+2026-10-10 用户要求九模型统一重评，已完成：`paper2_unified_restoration20261010/COMPLETED`；本机 `work/unified_restoration20261010/report/`。旧模型step800、本轮step400及七个任务适配baseline，所有权重先冻结。统一灰度<200、亮度增量>0.2，16处验证、7题28处像素测试；OCR41验证／81测试划线，与原图一起完成同一Qwen3-VL-8B TP2运行。测试读回：本轮58.14、旧56.88、COR54.52；测试像素F1本轮61.07、旧60.44；但本轮误擦14.86高于旧13.39、严格全对6/81低于旧8/81，验证读回60.78与60.85持平。不能说本轮全面更好；预填保持旧模型。历史63.23等自有F1使用不同墨迹域，不再与baseline旧表混排。评测已统一但训练仍不等价（自有有真实标注，七基线为合成训练）；下一轮若要求只用新组训练，需另立实验，不能误称本轮已经做了。
