@@ -1,6 +1,12 @@
 'use strict';
 const L=window.REVIEW_LIBRARY,S=window.ReviewLibraryStore,$=id=>document.getElementById(id);
 let saved=new Map();
+function openPart(file){const frame=$('editor');frame.src=file;frame.hidden=false;document.body.classList.add('reviewing');}
+window.addEventListener('message',e=>{
+  if(e.source!==$('editor').contentWindow)return;
+  if(e.data?.type==='review-library-part'&&Number.isInteger(e.data.part)&&L.parts[e.data.part])S.put('pixel-review-'+L.id+'-cursor',{file:L.parts[e.data.part].file}).catch(()=>{});
+  if(e.data?.type==='review-library-home'){$('editor').hidden=true;$('editor').removeAttribute('src');document.body.classList.remove('reviewing');refresh();}
+});
 const key=p=>'pixel-review-'+p.id+'-offline-review-clean-v1';
 const copied=x=>JSON.parse(JSON.stringify(x));
 function count(pages){let confirmed=0,total=0;for(const p of Object.values(pages||{}))for(const r of p.revisions||[]){total++;if(r.confirmed)confirmed++;}return {confirmed,total};}
@@ -19,10 +25,10 @@ async function refresh(){
   for(const p of L.parts){const v=saved.get(p.id),n=v?count(v.export.pages).confirmed:p.confirmed;
     if($('filter').value==='pending'&&n>=p.regions||$('filter').value==='started'&&!v)continue;
     const a=document.createElement('article'),h=document.createElement('strong'),t=document.createElement('p'),bar=document.createElement('progress'),link=document.createElement('a');
-    h.textContent=`第 ${L.parts.indexOf(p)+1} 组 · ${p.pages} 题`;t.textContent=`确认 ${n} / ${p.regions} 处 · `+Object.entries(p.splits).map(([s,n])=>`${({train:'训练',val:'验证',test:'测试'})[s]} ${n} 题`).join(' / ');bar.max=p.regions;bar.value=n;link.href=p.file;link.textContent=v?'继续这组 →':'打开这组 →';a.append(h,t,bar,link);cards.append(a);
+    h.textContent=`第 ${L.parts.indexOf(p)+1} 组 · ${p.pages} 题`;t.textContent=`确认 ${n} / ${p.regions} 处 · `+Object.entries(p.splits).map(([s,n])=>`${({train:'训练',val:'验证',test:'测试'})[s]} ${n} 题`).join(' / ');bar.max=p.regions;bar.value=n;link.href=p.file;link.onclick=e=>{e.preventDefault();openPart(p.file);};link.textContent=v?'继续这组 →':'打开这组 →';a.append(h,t,bar,link);cards.append(a);
   }
 }
-$('resume').onclick=()=>{const p=L.parts.find(p=>{const v=saved.get(p.id);return (v?count(v.export.pages).confirmed:p.confirmed)<p.regions;})||L.parts[0];location.href=p.file;};
+$('resume').onclick=async()=>{const cursor=await S.get('pixel-review-'+L.id+'-cursor');const p=L.parts.find(p=>p.file===cursor?.file)||L.parts.find(p=>{const v=saved.get(p.id);return (v?count(v.export.pages).confirmed:p.confirmed)<p.regions;})||L.parts[0];openPart(p.file);};
 $('filter').onchange=refresh;
 $('export').onclick=async()=>{await refresh();download(output(),'全量划线标注_'+new Date().toISOString().slice(0,10));};
 $('train').onclick=async()=>{await refresh();const value=output(true);download(value,'已确认训练划线_'+new Date().toISOString().slice(0,10));$('status').textContent=`导出 ${count(value.pages).confirmed} 处训练标签，验证、测试和未确认区域已排除。`;};
@@ -50,5 +56,6 @@ $('file').onchange=async e=>{
     await refresh();$('status').textContent='导入完成；已有人工确认或修改的同编号区域优先保留。';
   }catch(error){$('status').textContent='导入失败：'+error.message;$('status').className='error';}e.target.value='';
 };
-const table=document.createElement('p');table.textContent=Object.entries(L.validation.models).map(([n,m])=>`${n}${n===L.validation.selected?'（本轮选定）':''}：F1 ${(m.metrics.f1*100).toFixed(2)}%，误擦 ${(m.metrics.valid_ink_erased*100).toFixed(2)}%`).join('；');$('models').append(table);
+const names={baseline:'原框内模型',manual:'人工微调版',traced:'重绘素材版',pasted:'抠图素材版',gan_a:'GAN 数据 A',gan_b:'GAN 数据 B'};
+const table=document.createElement('p');table.textContent=Object.entries(L.validation.models).map(([n,m])=>`${names[n]||n}${n===L.validation.selected?'（本轮选定）':''}：F1 ${(m.metrics.f1*100).toFixed(2)}%，误擦 ${(m.metrics.valid_ink_erased*100).toFixed(2)}%`).join('；');$('models').append(table);
 refresh().catch(e=>{$('status').textContent='无法读取自动保存：'+e.message+'。请保留并导出标注备份。';$('status').className='error';});

@@ -133,7 +133,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
       function node(id=''){
         if(nodes.has(id))return nodes.get(id);
         const n={id,style:{},dataset:{},value:2,children:[],clientWidth:800,clientHeight:400,scrollTop:0,scrollLeft:0,
-          setAttribute(){},classList:{toggle(){},add(){},remove(){}},append(x){this.children.push(x);},replaceChildren(){this.children=[];},addEventListener(){},setPointerCapture(){},
+          after(){},setAttribute(){},classList:{toggle(){},add(){},remove(){}},append(x){this.children.push(x);},replaceChildren(){this.children=[];},addEventListener(){},setPointerCapture(){},
           click(){this.onclick?.();},getBoundingClientRect:()=>({left:0,top:0,width:10,height:10}),
           getContext:()=>({drawImage(){},putImageData(im){n.lastImage=im;},getImageData:(x,y,w,h)=>({width:w,height:h,data:new Uint8ClampedArray(w*h*4).fill(20)})})};
         if(id)nodes.set(id,n);return n;
@@ -141,14 +141,14 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
       const buttons=['add','keep','paint','erase','pan'].map(mode=>{const n=node(mode);n.dataset.mode=mode;return n;});
       node('review-pack').textContent=JSON.stringify(pack);node('review-draft').textContent='null';
       const doc={visibilityState:'visible',getElementById:node,createElement:()=>node(),addEventListener:(name,fn)=>handlers[name]=fn,
-        querySelectorAll:q=>q==='[data-mode]'?buttons:buttons.slice(0,2),querySelector:q=>buttons.find(b=>q.includes('\"'+b.dataset.mode+'\"'))};
+        querySelectorAll:q=>q==='[data-mode]'?buttons:buttons.slice(0,2),querySelector:q=>q==='header'?node('header'):buttons.find(b=>q.includes('\"'+b.dataset.mode+'\"'))};
       const ctx={document:doc,PixelReview:R,PixelViewports:Viewports,console,Uint8Array,Uint8ClampedArray,Map,Date,Math,JSON,Promise,setTimeout,clearTimeout,
         localStorage:{getItem:k=>disk.get(k)||null,setItem:(k,v)=>disk.set(k,v)},
         Image:class{async decode(){}},ImageData:class{constructor(data,width,height){Object.assign(this,{data,width,height});}},
         PixelOverview:class{constructor(c,handlers){this.handlers=handlers;}setImage(im,id,editing){this.selected=id;this.editing=editing;}draw(){}current(){return null;}fit(){}select(id){this.selected=id;}},
         fetch(){throw Error('Offline editor must not fetch');}};
       ctx.window={addEventListener(){}};vm.createContext(ctx);
-      const code=fs.readFileSync(EDITOR,'utf8');vm.runInContext(code.slice(0,code.lastIndexOf('start().catch')),ctx);
+      const code=fs.readFileSync(EDITOR,'utf8');vm.runInContext(code.slice(0,code.lastIndexOf('start().then')),ctx);
       async function run(){
         await vm.runInContext('start()',ctx);
         const loaded=vm.runInContext('({count:rows.length,note:state().note,confirmed:state().confirmed,mode})',ctx);
@@ -230,11 +230,32 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         node('review-pack').textContent=JSON.stringify({...pack,id:'empty-frames',task:'region_selection',rows:[],initial_export:undefined});
         node('review-draft').textContent='null';disk.clear();await vm.runInContext('start()',ctx);
         const blankFrames=vm.runInContext("({rows:rows.length,detail:inDetail,task:pack.task})",ctx);
-        console.log(JSON.stringify({blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey,modeTextGuard,keepMode,emptyKeep,liveKeep,liveErase,keepResult,greenOnly,cleanResult,restoredMode,redOnly,retainedKeep,cleared,keepUndo,separateText,labelled,labelReload,croppedExport,expandedExport}));
+        const libraryDisk=new Map(),libraryKey='pixel-review-library-fixture-offline-clean';
+        ctx.ReviewLibraryStore={async get(k){return libraryDisk.get(k);},async put(k,v){libraryDisk.set(k,JSON.parse(JSON.stringify(v)));},async flush(){}};
+        const auto={...base,id:'p#auto',detector_index:0,runs:[[3,1]]};
+        const human=R.restoreRow(base,{confirmed:true,note:'protected human',runs:[[4,1]]});
+        libraryDisk.set(libraryKey,{draft:{rows:{'p#r':human,'p#auto':R.restoreRow(auto,{runs:[[7,1]]})},extra:[],done:{},pageSeconds:{},imageRevision:'clean',modelRevision:'old'}});
+        node('review-pack').textContent=JSON.stringify({...pack,id:'library-fixture',model_revision:'new',library:{id:'library',part:0,parts:1},rows:[base,auto]});
+        node('review-draft').textContent='null';await vm.runInContext('start()',ctx);
+        const library=vm.runInContext("({note:store.rows['p#r'].note,human:store.rows['p#r'].runs,automatic:store.rows['p#auto'].runs,model:store.modelRevision})",ctx);
+        const librarySaved=libraryDisk.get(libraryKey).export.pages.p.revisions.length===2;
+        const messages=[],windowHandlers={};ctx.window.parent={postMessage:m=>messages.push(m)};
+        ctx.window.addEventListener=(name,fn)=>windowHandlers[name]=fn;ctx.location={hash:'#import=fixture'};ctx.URLSearchParams=URLSearchParams;
+        await vm.runInContext('libraryImportSetup()',ctx);
+        const imported={...base,id:'p#manual',ops:2,confirmed:false,runs:[[8,1]],note:'new correction'};
+        await windowHandlers.message({source:ctx.window.parent,data:{type:'review-library-import',token:'fixture',pages:{p:{revisions:[{...base,confirmed:true,note:'must not replace'},imported]}}}});
+        const libraryImport=vm.runInContext("({human:store.rows['p#r'].note,added:store.rows['p#manual'].note,suppressed:store.rows['p#auto'].deleted})",ctx);
+        await windowHandlers.message({source:ctx.window.parent,data:{type:'review-library-import',token:'fixture',pages:{p:{revisions:[{...imported,id:'bad',box:[-1,0,10,10]}]}}}});
+        const rejectedImport=!!messages.at(-1).error;
+        console.log(JSON.stringify({libraryImport,rejectedImport,library,librarySaved,blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey,modeTextGuard,keepMode,emptyKeep,liveKeep,liveErase,keepResult,greenOnly,cleanResult,restoredMode,redOnly,retainedKeep,cleared,keepUndo,separateText,labelled,labelReload,croppedExport,expandedExport}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
     got=json.loads(subprocess.check_output([NODE,'-e',command],text=True))
+    assert got['libraryImport']=={'human':'protected human','added':'new correction','suppressed':True}
+    assert got['rejectedImport']
+    assert got['library']=={'note':'protected human','human':[[4,1]],'automatic':[[3,1]],'model':'new'}
+    assert got['librarySaved']
     assert got['blankFrames']=={'rows':0,'detail':False,'task':'region_selection'}
     assert got['frameMode']=={'detail':False,'task':'region_selection','done':True,'confirmed':False,'empty':True}
     assert got['erased'] and got['protectedAgain']

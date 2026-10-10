@@ -312,7 +312,7 @@ async function start(){
   if(previous&&cached?.imageRevision!==(pack.image_revision||'original')){try{if(!localStorage.getItem(backupKey))localStorage.setItem(backupKey,previous);}catch(e){}}
   if(pack.library){
     const bar=document.createElement('div');bar.className='toolbar';
-    const go=async url=>{finishPaint();touch();save();try{await ReviewLibraryStore.flush();location.href=url;}catch(e){status('保存失败，请先导出当前进度。',true);}};
+    const go=async url=>{finishPaint();touch();save();try{await ReviewLibraryStore.flush();if(url==='../index.html'&&window.parent!==window)window.parent.postMessage({type:'review-library-home'},'*');else location.href=url;}catch(e){status('保存失败，请先导出当前进度。',true);}};
     const button=(text,url)=>{const b=document.createElement('button');b.textContent=text;b.onclick=()=>go(url);bar.append(b);};
     button('← 全量进度 / 导出所有已筛选结果','../index.html');
     const part=pack.library.part;
@@ -350,6 +350,7 @@ async function libraryImportSetup(){
   $('snapshotBtn').hidden=true;
   $('saveHelp').textContent='本组修改自动保存至 IndexedDB；回全量入口可一次导出所有已查看进度。清理浏览器数据前请导出备份。';
   const token=new URLSearchParams(location.hash.slice(1)).get('import');
+  if(!token&&window.parent!==window)window.parent.postMessage({type:'review-library-part',part:pack.library.part},'*');
   if(!token||window.parent===window)return;
   const overlap=(a,b)=>Math.max(0,Math.min(a[2],b[2])-Math.max(a[0],b[0]))*Math.max(0,Math.min(a[3],b[3])-Math.max(a[1],b[1]))/Math.max(1,Math.min((a[2]-a[0])*(a[3]-a[1]),(b[2]-b[0])*(b[3]-b[1])));
   window.addEventListener('message',async ev=>{
