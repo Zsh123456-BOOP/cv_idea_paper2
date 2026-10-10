@@ -8,6 +8,26 @@ main{height:calc(100vh - 80px);min-height:560px}.content{display:flex;flex-direc
 @media(max-width:850px){main{grid-template-columns:140px minmax(0,1fr)}aside{padding:7px}.content{padding:10px}.views{grid-template-columns:1fr}.canvaswrap{min-height:140px;max-height:35vh}header{padding:10px}.toolbar{gap:5px}.toolbar button{padding:6px}}
 .toolbar{position:sticky;top:0;z-index:2}.view strong{padding:5px 12px}.save-state{display:block;font-size:12px;color:var(--green)}header>div:last-child{text-align:right}aside details{margin-top:20px}aside summary{cursor:pointer;font-size:13px}#result{cursor:grab}button.danger{color:#a02c2c}
 #eraseMode.active{background:#be3540;border-color:#be3540;color:white}#keepMode.active{background:#137660;border-color:#137660;color:white}#detailPanel[data-annotation-mode="erase"] button[data-mode="paint"].active{background:#be3540;border-color:#be3540}#detailPanel[data-annotation-mode="keep"] button[data-mode="paint"].active{background:#137660;border-color:#137660}button[data-mode="erase"].active{background:#49556b;border-color:#49556b}.mode-selector{background:white;padding:12px;border:1px solid var(--line);border-radius:9px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.mode-selector button{font-weight:650}.mode-selector p{flex-basis:100%;margin:0;font-size:14px}#labelStats{padding:7px 12px;background:white;font-size:13px}.transcription{background:white;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0}.transcription summary{cursor:pointer;font-weight:600}.transcription textarea{display:block;width:100%;min-height:65px;margin:8px 0;padding:8px;border:1px solid var(--line);border-radius:6px;font:inherit}.transcription label{margin-right:15px}button[data-mode]{white-space:nowrap}
+/* The library bar participates in the viewport height; neither view pushes
+   navigation below the fold. Keep both images stacked and independently pannable. */
+body{height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+header{padding:8px 14px;flex-shrink:0}header h1{font-size:17px}
+main{flex:1;height:auto;min-height:0;overflow:hidden}aside{min-height:0;max-height:none}
+.content{padding:10px;gap:5px}.titlebar{margin:0}.titlebar h2{font-size:15px}
+.library-bar{position:static;padding:5px 12px;border-radius:0;font-size:12px;flex-shrink:0}
+.library-bar button{font-size:13px;padding:5px 8px}
+#detailPanel{display:flex;flex:1;flex-direction:column;min-height:300px;gap:5px}
+.detail-navigation{position:sticky;top:0;z-index:4;background:var(--bg);margin:0;padding:5px 0;border-bottom:1px solid var(--line)}
+.mode-selector{margin:0;padding:6px 8px;gap:6px}.mode-selector p{font-size:12px}
+#detailPanel>.toolbar{position:static;padding:6px;gap:5px;border-radius:7px}
+#detailPanel button{padding:5px 9px}#labelStats{padding:2px 8px;font-size:12px}
+.views{flex:1;min-height:160px;grid-template-rows:repeat(2,minmax(0,1fr));gap:6px;border:0;background:transparent}
+.view{display:flex;flex-direction:column;min-height:0;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.view strong{flex-shrink:0;padding:3px 9px}.canvaswrap{flex:1;height:auto;min-height:0;max-height:none}
+.extra-details{font-size:12px;flex-shrink:0;max-height:130px;overflow:auto}.extra-details>summary{cursor:pointer;color:var(--muted)}
+.extra-details .hint,.extra-details .notes,.extra-details .transcription{margin:4px 0;padding:6px}
+.status{margin:0;min-height:18px;font-size:12px}#saveHelp{font-size:11px}
+@media(max-width:850px){header{align-items:flex-start}header button{padding:4px 6px;font-size:12px}#appSubtitle{display:none}.content{padding:6px}.mode-selector p{font-size:11px}#detailPanel button{padding:4px 6px}.views{min-height:140px}}
 </style></head><body>
 <header><div><h1 id="appTitle">划线精细复核</h1><small id="appSubtitle">先检查整题，点一处涂改放大修正。</small> <span id="cleanBadge" class="badge" hidden>已清理杂点</span></div><div><span id="progress"></span> <button id="backupBtn" class="quiet" hidden>导出更新前备份</button> <button id="importBtn">导入</button> <button id="exportBtn">导出标注</button> <button id="snapshotBtn" hidden>保存可续标副本</button> <button id="bindBackup" class="quiet" hidden>绑定自动备份文件</button><span id="saveState" class="save-state" aria-live="polite">正在读取草稿…</span><input id="import" type="file" accept="application/json"></div></header>
 <main><aside id="nav" aria-label="题目与涂改区域"></aside><section class="content">
@@ -19,14 +39,16 @@ main{height:calc(100vh - 80px);min-height:560px}.content{display:flex;flex-direc
 <div class="footer"><button id="prevPage">上一题</button><span id="wholeSelection" class="muted">在完整答题图上检查有没有遗漏。</span><button id="nextPage">下一题</button></div>
 </section>
 <section id="detailPanel" hidden>
-<div class="hint" id="detailHint">1 / 2 选择标注模式；B 画笔，E 橡皮擦，H 隐藏标记。上图标注、下图实时看结果，两图同步拖动缩放；空格 / 右键平移，⌘ / Ctrl + 滚轮缩放。</div>
+<div class="footer detail-navigation"><div><button id="previous">上一处 <kbd>P</kbd></button> <button id="next">下一处 <kbd>N</kbd></button></div><button class="primary" id="confirm">确认这处并继续 <kbd>Enter</kbd></button></div>
 <div class="mode-selector" role="group" aria-label="标注模式二选一"><button id="eraseMode" aria-pressed="true">① 擦划线 <kbd>1</kbd></button><button id="keepMode" aria-pressed="false">② 保原字 <kbd>2</kbd></button><p id="modeHint">模式 1：涂红的删除，未涂的保留。</p></div>
 <div class="toolbar"><button id="regionBtn">调整区域范围</button><button id="deleteRegion" class="danger">删除此框</button><span class="separator"></span><button data-mode="add" class="active">点击补擦</button><button data-mode="keep">点击保字</button><button data-mode="paint">画笔 <kbd>B</kbd></button><button data-mode="erase">橡皮擦 <kbd>E</kbd></button><button data-mode="pan">拖动</button><label><small>笔宽</small> <input id="radius" type="range" min="1" max="16" value="2" style="width:65px"></label><button id="undo">撤销 <kbd>⌘Z</kbd></button><button id="redo">重做</button><button id="fitDetail">显示完整裁切</button><button id="less">−</button><span id="zoomLabel">3×</span><button id="more">＋</button><button id="hide">隐藏标记 <kbd>H</kbd></button></div>
 <div id="labelStats" aria-live="polite">模式 1 · 红色标记删除划线</div>
 <div class="views"><div class="view"><strong id="editTitle">原图 · 只显示红色删除标记</strong><div class="canvaswrap" id="editViewport"><canvas id="edit" aria-label="涂改像素编辑画布"></canvas></div></div><div class="view"><strong id="resultTitle">实时结果 · 擦除涂红的划线</strong><div class="canvaswrap" id="resultViewport"><canvas id="result" aria-label="擦除后的文字预览"></canvas></div></div></div>
+<details class="extra-details"><summary>备注、文字答案和操作说明（可选）</summary>
+<div class="hint" id="detailHint">1 / 2 选择标注模式；B 画笔，E 橡皮擦，H 隐藏标记。上图标注、下图实时看结果，两图同步拖动缩放；空格 / 右键平移，⌘ / Ctrl + 滚轮缩放。</div>
 <details class="transcription"><summary>文字答案（可选，独立于像素确认） <span id="textState" class="muted">未校对</span></summary><small>写被划掉的原文字／公式，学生写错也照录；局部看不清写 ?。不填写也能完成像素标注。</small><textarea id="transcription" aria-label="被划内容的文字答案" placeholder="例如：$2+3=6$；局部看不清写 ?"></textarea><label><input type="checkbox" id="unreadable"> 整处无法辨认</label><label><input type="checkbox" id="textConfirmed"> 文字答案已校对</label></details>
 <div class="notes"><span class="badge">自动清理：灰度 ≥100 · 4 像素 · 碎点 ≤12</span><label><input type="checkbox" id="notRevision"> 这处不是划线涂改</label><label>备注 <input id="note" type="text" placeholder="例如：这里交叉，暂时拿不准"></label></div>
-<div class="footer"><div><button id="previous">上一处 <kbd>P</kbd></button> <button id="next">下一处 <kbd>N</kbd></button></div><button class="primary" id="confirm">确认这处并继续 <kbd>Enter</kbd></button></div>
+</details>
 </section>
 <div id="status" class="status" aria-live="polite"></div><small><span id="saveHelp">每次修改自动保存在本浏览器。离线版可“保存可续标副本”，把图像与进度一起保存；请保留备份，清理浏览器数据会删除本地草稿。</span></small>
 </section></main>

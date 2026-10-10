@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from ...data.clean_pages import review_clean
-from ...data.pixel_masks import SCHEMA, encode
+from ...data.pixel_masks import SCHEMA, decode, encode
 from ...data.prior_annotations import twins, writer_splits
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 from .page_prefill import corners, region_of
@@ -35,6 +35,40 @@ def overlap(a,b):
     l,t,r,z=max(a[0],b[0]),max(a[1],b[1]),min(a[2],b[2]),min(a[3],b[3])
     area=max(0,r-l)*max(0,z-t)
     return area/max(1,min((a[2]-a[0])*(a[3]-a[1]),(b[2]-b[0])*(b[3]-b[1])))
+
+
+def duplicate_groups(rows):
+    """Merge near-identical automatic crops, never neighbouring lines or human rows.
+
+    Complete-link grouping avoids joining a chain of different regions. Original
+    rows remain in the pack; the editor archives aliases only if nobody edited them.
+    """
+    def matches(a,b):
+        x,y=a['box'],b['box']
+        height=max(x[3]-x[1],y[3]-y[1])
+        return (a['page']==b['page'] and overlap(x,y)>=.9
+                and max(abs(x[1]-y[1]),abs(x[3]-y[3]))<=.2*height)
+    by_page={}
+    for row in rows:
+        if not row.get('preserved_manual') and row.get('detector_index') is not None:
+            by_page.setdefault(row['page'],[]).append(row)
+    result=[]
+    for candidates in by_page.values():
+        groups=[]
+        for row in candidates:
+            group=next((g for g in groups if all(matches(row,r) for r in g)),None)
+            if group is None:groups.append([row])
+            else:group.append(row)
+        for group in groups:
+            if len(group)<2:continue
+            box=[min(r['box'][0] for r in group),min(r['box'][1] for r in group),
+                 max(r['box'][2] for r in group),max(r['box'][3] for r in group)]
+            l,t,r,b=box;mask=np.zeros((b-t,r-l),bool)
+            for row in group:
+                a,c,z,d=row['box']
+                mask[c-t:d-t,a-l:z-l] |= decode(row['runs'],(d-c,z-a))
+            result.append({'ids':[r['id'] for r in group],'box':box,'region':corners(box),'runs':encode(mask)})
+    return result
 
 
 def infer_all(args):
@@ -98,12 +132,13 @@ def infer_all(args):
 
 
 def bundle(args):
-    from .pixel_review import HERE
+    from .pixel_review import HERE, ASSETS
     source=json.loads((args.pack/'pack.json').read_text());out=make_output_dir(args.output_dir)
     (out/'parts').mkdir();parts=[];initial={};lookup={}
     for start in range(0,len(source['pages']),args.pages_per_part):
         batch=source['pages'][start:start+args.pages_per_part];number=len(parts);identity=source['id']+'-'+hashlib.sha256('|'.join(p['id'] for p in batch).encode()).hexdigest()[:12]
         rows=[{**r,'page':r['page']-start} for r in source['rows'] if start<=r['page']<start+len(batch)]
+        duplicates=duplicate_groups(rows)
         pages=copy.deepcopy(batch)
         for page in pages:
             page['image']='data:image/png;base64,'+base64.b64encode((args.pack/page['image']).read_bytes()).decode()
@@ -116,11 +151,12 @@ def bundle(args):
                 initial[p['id']]=originals[p['id']]
         payload={k:source[k] for k in ('schema','task','model_revision','image_revision','image_source')}
         payload.update(id=identity,pages=pages,rows=rows,standalone=True,
+                       duplicate_groups=duplicates,
                        library={'id':source['id'],'part':number,'parts':(len(source['pages'])+args.pages_per_part-1)//args.pages_per_part},
                        initial_export={'schema':SCHEMA,'pack':identity,'pages':originals})
         html=render_html(payload).replace('<script id="review-pack"','<script src="../library_store.js"></script><script id="review-pack"',1)
         (out/'parts'/f'{number:03d}.html').write_text(html)
-        parts.append({'id':identity,'file':f'parts/{number:03d}.html','pages':len(pages),'regions':sum(not r.get('deleted') for r in rows),'confirmed':sum(bool(r.get('confirmed')) for r in rows),'splits':dict(Counter(p['split'] for p in pages))})
+        parts.append({'id':identity,'file':f'parts/{number:03d}.html','pages':len(pages),'regions':sum(not r.get('deleted') for r in rows)-sum(len(g['ids'])-1 for g in duplicates),'confirmed':sum(bool(r.get('confirmed')) for r in rows),'splits':dict(Counter(p['split'] for p in pages))})
     meta={'id':source['id'],'parts':parts,'page_to_part':lookup,'initial_pages':initial,
           'page_splits':{p['id']:p['split'] for p in source['pages']},'image_source':source['image_source'],
           'selected_checkpoint':source['selected_checkpoint'],'validation':source['selection'],
@@ -128,7 +164,8 @@ def bundle(args):
     (out/'library_data.js').write_text('window.REVIEW_LIBRARY='+script_json(meta)+';')
     for name in ('library_store.js','pixel_library.html','pixel_library.js'):
         (out/('index.html' if name.endswith('.html') else name)).write_text((HERE/name).read_text())
-    write_manifest(out,config=to_jsonable(args),inputs={str(args.pack/'pack.json'):digest(args.pack/'pack.json')},parts=len(parts),pages=len(source['pages']),regions=len(source['rows']))
+    inputs=[args.pack/'pack.json',Path(__file__),*(HERE/n for n in (*ASSETS,'pixel_library.js','pixel_library.html','library_store.js'))]
+    write_manifest(out,config=to_jsonable(args),inputs={str(p):digest(p) for p in inputs},parts=len(parts),pages=len(source['pages']),regions=len(source['rows']),visible_regions=sum(p['regions'] for p in parts))
     print(json.dumps({'parts':len(parts),'pages':len(source['pages']),'regions':len(source['rows']),'entry':str(out/'index.html')}))
 
 

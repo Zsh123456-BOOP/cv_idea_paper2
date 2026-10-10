@@ -13,19 +13,21 @@ function count(pages){let confirmed=0,total=0;for(const p of Object.values(pages
 function combined(){const pages=copied(L.initial_pages);for(const x of saved.values())Object.assign(pages,x.export?.pages||{});for(const [id,p] of Object.entries(pages))p.split=L.page_splits[id];return pages;}
 function output(training=false){const pages=combined();if(training)for(const [id,p] of Object.entries(pages)){
   if(p.split!=='train'){delete pages[id];continue;}
-  p.revisions=(p.revisions||[]).filter(r=>r.confirmed&&!r.deleted&&!r.uncertainMask?.runs?.length);p.deleted_revisions=[];
+  p.revisions=(p.revisions||[]).filter(r=>r.confirmed&&!r.deleted&&!r.uncertainMask?.runs?.length);p.deleted_revisions=[];p.duplicate_revisions=[];
   if(!p.revisions.length)delete pages[id];
 }
 return {schema:'paper2-pixel-review-v1',annotation_version:3,pack:L.id,task:'strike_only',exported_at:new Date().toISOString(),image_source:L.image_source,image_revision:'review-clean-v1',selected_checkpoint:L.selected_checkpoint,protected_validation_writers:L.protected_validation_writers,training_only:training,pages};}
 function download(value,name){const url=URL.createObjectURL(new Blob([JSON.stringify(value)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=name+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 async function refresh(){
   saved=new Map();for(const p of L.parts){const v=await S.get(key(p));if(v)saved.set(p.id,v);}
-  const c=count(combined()),total=L.parts.reduce((n,p)=>n+p.regions,0);$('summary').textContent=`${Object.keys(L.page_to_part).length} 题 · ${total} 处 · 已确认 ${c.confirmed} 处 · ${L.parts.length} 组分页`;
+  const totalFor=p=>saved.has(p.id)?count(saved.get(p.id).export.pages).total:p.regions;
+  const c=count(combined()),total=L.parts.reduce((n,p)=>n+totalFor(p),0);$('summary').textContent=`${Object.keys(L.page_to_part).length} 题 · ${total} 处 · 已确认 ${c.confirmed} 处 · ${L.parts.length} 组分页`;
   const cards=$('cards');cards.replaceChildren();
   for(const p of L.parts){const v=saved.get(p.id),n=v?count(v.export.pages).confirmed:p.confirmed;
-    if($('filter').value==='pending'&&n>=p.regions||$('filter').value==='started'&&!v)continue;
+    const size=totalFor(p);
+    if($('filter').value==='pending'&&n>=size||$('filter').value==='started'&&!v)continue;
     const a=document.createElement('article'),h=document.createElement('strong'),t=document.createElement('p'),bar=document.createElement('progress'),link=document.createElement('a');
-    h.textContent=`第 ${L.parts.indexOf(p)+1} 组 · ${p.pages} 题`;t.textContent=`确认 ${n} / ${p.regions} 处 · `+Object.entries(p.splits).map(([s,n])=>`${({train:'训练',val:'验证',test:'测试'})[s]} ${n} 题`).join(' / ');bar.max=p.regions;bar.value=n;link.href=p.file;link.onclick=e=>{e.preventDefault();openPart(p.file);};link.textContent=v?'继续这组 →':'打开这组 →';a.append(h,t,bar,link);cards.append(a);
+    h.textContent=`第 ${L.parts.indexOf(p)+1} 组 · ${p.pages} 题`;t.textContent=`确认 ${n} / ${size} 处 · `+Object.entries(p.splits).map(([s,n])=>`${({train:'训练',val:'验证',test:'测试'})[s]} ${n} 题`).join(' / ');bar.max=size;bar.value=n;link.href=p.file;link.onclick=e=>{e.preventDefault();openPart(p.file);};link.textContent=v?'继续这组 →':'打开这组 →';a.append(h,t,bar,link);cards.append(a);
   }
 }
 $('resume').onclick=async()=>{const cursor=await S.get('pixel-review-'+L.id+'-cursor');const p=L.parts.find(p=>p.file===cursor?.file)||L.parts.find(p=>{const v=saved.get(p.id);return (v?count(v.export.pages).confirmed:p.confirmed)<p.regions;})||L.parts[0];openPart(p.file);};

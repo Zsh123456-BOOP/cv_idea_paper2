@@ -9,7 +9,14 @@ const row=()=>rows[at], state=()=>ensure(row());
 const selectingRegions=()=>pack?.task==='region_selection';
 const keeping=()=>state().annotationMode==='keep';
 function ensure(r){return store.rows[r.id]||(store.rows[r.id]=R.restoreRow(r));}
-function syncRows(){const all=[...pack.rows,...store.extra];all.forEach(r=>store.rows[r.id]=R.restoreRow(r,store.rows[r.id]));rows=all.filter(r=>!store.rows[r.id].deleted);at=Math.min(at,Math.max(0,rows.length-1));}
+function syncRows(){
+  const focused=rows?.[at]?.id,all=[...pack.rows,...store.extra];
+  all.forEach(r=>store.rows[r.id]=R.restoreRow(r,store.rows[r.id]));
+  rows=all.filter(r=>!store.rows[r.id].deleted&&!store.rows[r.id].duplicate_of);
+  if(pack.library)rows.sort((a,b)=>a.page-b.page||ensure(a).box[1]-ensure(b).box[1]||ensure(a).box[0]-ensure(b).box[0]);
+  const position=rows.findIndex(r=>r.id===focused);
+  at=position>=0?position:Math.min(at,Math.max(0,rows.length-1));
+}
 function merged(r){return {...r,...ensure(r),page:r.page};}
 function save(){
   if(!store)return;
@@ -46,6 +53,7 @@ function cropGrey(pi,box){const rgba=cropData(pi,box).data,pixels=new Uint8Array
 async function cleanStore(candidate){
   let removed=0;lastAutoCleaned=0;
   for(const base of [...pack.rows,...candidate.extra]){
+    if(candidate.rows[base.id]?.duplicate_of)continue;
     let s=candidate.rows[base.id]=R.restoreRow(base,candidate.rows[base.id]);
     R.validBox(s.box,pack.pages[base.page].size);R.validRegion(s.region,pack.pages[base.page].size);
     s=candidate.rows[base.id]=R.clipRegion(s,s.region,R.cropBox(s.region,pack.pages[base.page].size));
@@ -65,7 +73,7 @@ function nav(){
     let number=0;
     rows.forEach((r,k)=>{if(r.page!==i)return;number++;const b=document.createElement('button');b.textContent=`${ensure(r).confirmed?'✓':'○'} 划线 ${number}${ensure(r).needs_clean_review?' · 清洁后复核':''}`;if(inDetail&&k===at)b.className='active';b.onclick=()=>show(k);nav.append(b);});
   });
-  const deleted=[...pack.rows,...store.extra].filter(r=>ensure(r).deleted);
+  const deleted=[...pack.rows,...store.extra].filter(r=>ensure(r).deleted&&!ensure(r).duplicate_of);
   if(deleted.length){const group=document.createElement('details'),summary=document.createElement('summary');summary.textContent=`已删除 ${deleted.length} 处（可恢复）`;group.append(summary);
     deleted.forEach(r=>{const b=document.createElement('button');b.textContent=`恢复第 ${r.page+1} 题 · ${r.id.split('#').pop()}`;b.onclick=()=>restoreDeleted(r);group.append(b);});nav.append(group);}
   const pi=inDetail?row()?.page:wholePage;
@@ -306,12 +314,21 @@ async function start(){
   if(!store){store={rows:{},done:{},extra:[],pageSeconds:{}};if(pack.initial_export)store=R.importData(pack,store,pack.initial_export);}
   store.pageSeconds||={};
   if(pack.library&&store.modelRevision!==pack.model_revision){
-    for(const base of pack.rows){const old=store.rows[base.id];if(old&&!old.confirmed&&!old.ops&&!old.deleted)store.rows[base.id]=R.restoreRow(base);}
+    for(const base of pack.rows){const old=store.rows[base.id];if(old&&!old.confirmed&&!old.ops&&!old.deleted&&!old.duplicate_of)store.rows[base.id]=R.restoreRow(base);}
     store.modelRevision=pack.model_revision;
+  }
+  if(pack.library&&pack.duplicate_groups?.length){
+    const next=clone(store),merged=R.mergeDuplicates(pack,next);
+    if(merged){
+      // Save the exact pre-migration draft before altering the visible candidates.
+      await ReviewLibraryStore.put(key+'-before-dedup-'+Date.now(),{draft:store,export:exported()});
+      store=next;
+      if(store.cursor?.id&&store.rows[store.cursor.id]?.duplicate_of)store.cursor.id=store.rows[store.cursor.id].duplicate_of;
+    }
   }
   if(previous&&cached?.imageRevision!==(pack.image_revision||'original')){try{if(!localStorage.getItem(backupKey))localStorage.setItem(backupKey,previous);}catch(e){}}
   if(pack.library){
-    const bar=document.createElement('div');bar.className='toolbar';
+    const bar=document.createElement('div');bar.className='toolbar library-bar';
     const go=async url=>{finishPaint();touch();save();try{await ReviewLibraryStore.flush();if(url==='../index.html'&&window.parent!==window)window.parent.postMessage({type:'review-library-home'},'*');else location.href=url;}catch(e){status('保存失败，请先导出当前进度。',true);}};
     const button=(text,url)=>{const b=document.createElement('button');b.textContent=text;b.onclick=()=>go(url);bar.append(b);};
     button('← 全量进度 / 导出所有已筛选结果','../index.html');

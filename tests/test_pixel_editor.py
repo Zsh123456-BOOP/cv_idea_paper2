@@ -247,11 +247,24 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         const libraryImport=vm.runInContext("({human:store.rows['p#r'].note,added:store.rows['p#manual'].note,suppressed:store.rows['p#auto'].deleted})",ctx);
         await windowHandlers.message({source:ctx.window.parent,data:{type:'review-library-import',token:'fixture',pages:{p:{revisions:[{...imported,id:'bad',box:[-1,0,10,10]}]}}}});
         const rejectedImport=!!messages.at(-1).error;
-        console.log(JSON.stringify({libraryImport,rejectedImport,library,librarySaved,blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey,modeTextGuard,keepMode,emptyKeep,liveKeep,liveErase,keepResult,greenOnly,cleanResult,restoredMode,redOnly,retainedKeep,cleared,keepUndo,separateText,labelled,labelReload,croppedExport,expandedExport}));
+        const duplicate={...auto,id:'p#duplicate',runs:[[8,1]]};
+        const oldDraft={rows:{[auto.id]:R.restoreRow(auto),[duplicate.id]:R.restoreRow(duplicate)},extra:[],done:{},pageSeconds:{},imageRevision:'clean',modelRevision:'new',cursor:{page:0,id:duplicate.id}};
+        libraryDisk.set(libraryKey,{draft:oldDraft});
+        node('review-pack').textContent=JSON.stringify({...pack,id:'library-fixture',initial_export:undefined,model_revision:'new',library:{id:'library',part:0,parts:1},rows:[auto,duplicate],duplicate_groups:[{ids:[auto.id,duplicate.id],box:auto.box,region:auto.region,runs:[[3,1],[8,1]]}]});
+        await vm.runInContext('start()',ctx);
+        const dedup=vm.runInContext("({visible:rows.length,cursor:row().id,active:exported().pages.p.revisions.length,archive:exported().pages.p.duplicate_revisions.length})",ctx);
+        const dedupBackup=[...libraryDisk].some(([k,v])=>k.includes('-before-dedup-')&&JSON.stringify(v.draft)===JSON.stringify(oldDraft));
+        await vm.runInContext('start()',ctx);
+        const dedupReload=vm.runInContext('rows.length===1',ctx);
+        const readingOrder=vm.runInContext("pack.rows=[{...pack.rows[0],id:'lower',box:[0,20,10,30]},{...pack.rows[0],id:'upper',box:[0,0,10,10]}];store.extra=[];syncRows();rows.map(r=>r.id)",ctx);
+        console.log(JSON.stringify({readingOrder,dedup,dedupBackup,dedupReload,libraryImport,rejectedImport,library,librarySaved,blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey,modeTextGuard,keepMode,emptyKeep,liveKeep,liveErase,keepResult,greenOnly,cleanResult,restoredMode,redOnly,retainedKeep,cleared,keepUndo,separateText,labelled,labelReload,croppedExport,expandedExport}));
       }run().catch(e=>{console.error(e);process.exit(1);});
     '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
     command=f'const R=require({json.dumps(str(RULES))});'+script
     got=json.loads(subprocess.check_output([NODE,'-e',command],text=True))
+    assert got['dedup']=={'visible':1,'cursor':'p#auto','active':1,'archive':1}
+    assert got['dedupBackup'] and got['dedupReload']
+    assert got['readingOrder']==['upper','lower']
     assert got['libraryImport']=={'human':'protected human','added':'new correction','suppressed':True}
     assert got['rejectedImport']
     assert got['library']=={'note':'protected human','human':[[4,1]],'automatic':[[3,1]],'model':'new'}

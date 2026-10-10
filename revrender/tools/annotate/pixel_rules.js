@@ -120,12 +120,30 @@
   function restoreRow(base, saved) {
     return {runs:base.runs,box:base.box,region:base.region,annotationMode:'erase',text:base.text||'',unreadable:false,text_confirmed:false,confirmed:false,not_revision:false,deleted:false,ops:0,seconds:0,note:'',...saved};
   }
+  function mergeDuplicates(pack, source) {
+    const bases=new Map(pack.rows.map(r=>[r.id,r]));let count=0;
+    for(const group of pack.duplicate_groups||[]){
+      const ids=group.ids,first=ids[0],old=source.rows[first];
+      if(old?.merged_detection_ids)continue;
+      const protectedRow=id=>{
+        const r=bases.get(id),s=source.rows[id];
+        return r.preserved_manual||s&&(s.confirmed||s.ops||s.deleted||s.text_confirmed||s.unreadable||s.note||s.text||s.not_revision||s.annotationMode==='keep'||s.manualKeep?.runs?.length||s.uncertainMask?.runs?.length||s.keepMarks?.runs?.length||JSON.stringify(s.box)!==JSON.stringify(r.box)||JSON.stringify(s.region)!==JSON.stringify(r.region));
+      };
+      // A human-edited group is kept intact, including its original IDs and masks.
+      if(ids.some(protectedRow))continue;
+      source.rows[first]={...restoreRow(bases.get(first)),box:group.box,region:group.region,runs:group.runs,
+        merged_detection_ids:ids,seconds:ids.reduce((n,id)=>n+(source.rows[id]?.seconds||0),0)};
+      for(const id of ids.slice(1))source.rows[id]={...restoreRow(bases.get(id),source.rows[id]),duplicate_of:first,seconds:0};
+      count+=ids.length-1;
+    }
+    return count;
+  }
   function importData(pack, current, value) {
     if(value.schema!=='paper2-pixel-review-v1'||value.pack!==pack.id)throw Error('文件不属于这批题');
     const next=JSON.parse(JSON.stringify(current));const extra=new Map(next.extra.map(r=>[r.id,r]));const seen=new Set();
     for(const [id,page] of Object.entries(value.pages)) {
       const pi=pack.pages.findIndex(q=>q.id===id);if(pi<0)throw Error('题目不匹配');
-      const records=[...(page.revisions||[]).map(r=>({...r,deleted:false})),...(page.deleted_revisions||[]).map(r=>({...r,deleted:true}))];
+      const records=[...(page.revisions||[]).map(r=>({...r,deleted:false})),...(page.deleted_revisions||[]).map(r=>({...r,deleted:true})),...(page.duplicate_revisions||[])];
       for(const r of records) {
         if(seen.has(r.id))throw Error('重复的区域编号');seen.add(r.id);
         const base=pack.rows.find(b=>b.id===r.id)||extra.get(r.id);
@@ -145,7 +163,7 @@
       next.done[pi]=!!page.done;next.pageSeconds[pi]=page.overview_seconds||0;
     }
     next.extra=[...extra.values()];
-    for(let pi=0;pi<pack.pages.length;pi++)if(pack.task!=='region_selection'&&[...pack.rows,...next.extra].some(r=>r.page===pi&&!next.rows[r.id]?.deleted&&!next.rows[r.id]?.confirmed))next.done[pi]=false;
+    for(let pi=0;pi<pack.pages.length;pi++)if(pack.task!=='region_selection'&&[...pack.rows,...next.extra].some(r=>r.page===pi&&!next.rows[r.id]?.deleted&&!next.rows[r.id]?.duplicate_of&&!next.rows[r.id]?.confirmed))next.done[pi]=false;
     return next;
   }
   function exportPages(pack, source) {
@@ -153,7 +171,7 @@
       const selected=[...pack.rows,...source.extra].filter(r=>r.page===pi).map(r=>({...r,...restoreRow(r,source.rows[r.id]),page:pi}));
       pages[p.id]={done:!!source.done[pi],overview_seconds:source.pageSeconds?.[pi]||0,
         seconds:(source.pageSeconds?.[pi]||0)+selected.reduce((s,r)=>s+r.seconds,0),
-        revisions:selected.filter(r=>!r.deleted),deleted_revisions:selected.filter(r=>r.deleted)};
+        revisions:selected.filter(r=>!r.deleted&&!r.duplicate_of),deleted_revisions:selected.filter(r=>r.deleted&&!r.duplicate_of),duplicate_revisions:selected.filter(r=>r.duplicate_of)};
     });return pages;
   }
   const AUTO_CLEANUP=Object.freeze({threshold:100,radius:4,maxArea:12,gray:true,dots:true});
@@ -222,5 +240,5 @@
     }
     return {added,gray:countGray,dots:countDots,groups,total:countGray+countDots};
   }
-  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside,keepPixels,saveKeep,uncertainPixels,saveUncertain,positivePixels,savePositive,syncKeepResult,changeMode};
+  return {decode,encode,validBox,validRegion,cropBox,remap,reshape,filterInk,restoreRow,mergeDuplicates,importData,exportPages,residueCandidates,AUTO_CLEANUP,cleanupStamp,autoClean,regionPixels,clipRegion,whiteOutside,keepPixels,saveKeep,uncertainPixels,saveUncertain,positivePixels,savePositive,syncKeepResult,changeMode};
 });

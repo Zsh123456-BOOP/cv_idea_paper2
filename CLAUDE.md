@@ -111,3 +111,5 @@ python -m revrender.infer / .train / .eval.report / .eval.freeze ...            
 2026-10-09 用户授权新增 StainRestorer 补充基线：先三套作者权重验证，再同数据从随机初始化训练。沿 main、GPU0/2/3；配置在 restoration.toml，最大80,000步、最小40,000、每5,000步验证、6次不提升停，真实16区域擦除F1选版。官方权重读回选版与正式训练互不连接；不混入50个真实训练标注。新增 run_restoration_candidate.sh 串联冒烟、作者权重验证、正式训练与冻结测试，详细协议见 README 末节。其 COMPLETED 才表示全部完成；FAILED 即检查对应阶段日志，禁止覆盖目录或重启旧六模型队列。
 
 StainRestorer 当前运行：快照 `/home/zsh/hme/code_paper2_d47f248a`，主目录 `/home/zsh/hme/outputs/paper2_stainrestorer20261009`，资源 `paper2_stainrestorer_resources20261009`，父进程 PID1015908（核对根目录旁 .pid）。22 项检查和100步训练／重载通过。官方权重验证已完成，水印版47.24%、原图46.43%，三权重在16区域固定阈值下去除召回均0%；详见 RESULTS 末节。正式训练已于北京时间11:25在GPU3启动，预计约12–24小时但以实测为准；根目录尚未COMPLETED，勿误判为已跑完。独立依赖通过 PYTHONPATH=/home/zsh/hme/envs/paper2_stain_deps 提供；完整脚本自动衔接冻结测试与报告。本机官方验证页 work/stainrestorer20261009/released/report/index.html。
+
+2026-10-10 全量页重复框与布局修复：自动框按同页近似范围保守合并，原始行记录不删除；未人工处理的组共可折叠 3,418 个重复候选。浏览器迁移先备份草稿，已修改组不覆盖；重复归档不入训练。精修翻处按钮放顶部、上下图占剩余高度、按空间位置浏览。原 URL／包 ID／IndexedDB 键保持不变。

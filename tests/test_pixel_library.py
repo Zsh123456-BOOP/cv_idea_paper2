@@ -8,10 +8,77 @@ import subprocess
 import pytest
 from PIL import Image
 
-from revrender.tools.annotate.pixel_library import manual_records, overlap, bundle
+from revrender.tools.annotate.pixel_library import manual_records, overlap, bundle, duplicate_groups
 from revrender.tools.annotate.pixel_offline import EmbeddedReview
 
 HERE=Path(__file__).parents[1]/'revrender/tools/annotate'
+
+
+def test_duplicate_crops_keep_mask_union_and_separate_neighbouring_lines():
+    from revrender.data.pixel_masks import on_page
+    import numpy as np
+    def row(name,box,page=0,**extra):
+        l,t,r,b=box
+        return {'id':name,'page':page,'detector_index':0,'box':box,
+                'region':[[l,t],[r,t],[r,b],[l,b]],'runs':[[0,1]],**extra}
+    rows=[row('a',[0,0,40,10]),row('b',[0,0,38,10]),row('c',[1,0,40,10]),
+          row('next-line',[0,8,40,18]),row('other-page',[0,0,40,10],1),
+          row('human',[0,0,40,10],preserved_manual=True),row('distant',[50,0,60,10])]
+    before=json.dumps(rows);groups=duplicate_groups(rows)
+    assert len(groups)==1 and groups[0]['ids']==['a','b','c']
+    expected=np.logical_or.reduce([on_page(r,[80,30]) for r in rows[:3]])
+    assert np.array_equal(on_page(groups[0],[80,30]),expected)
+    assert json.dumps(rows)==before
+    # Do not transitively merge a long chain based only on consecutive overlap.
+    chain=[row(str(i),[i*3,0,40+i*3,10]) for i in range(3)]
+    assert duplicate_groups(chain)[0]['ids']==['0','1']
+
+
+def test_dedup_migration_archives_aliases_and_preserves_human_edits():
+    code='''
+    const R=require(RULES);
+    const a={id:'a',page:0,box:[0,0,10,10],region:[[0,0],[10,0],[10,10],[0,10]],runs:[[0,1]],detector_index:0};
+    const b={...a,id:'b',runs:[[5,1]],detector_index:1};
+    const pack={id:'x',pages:[{id:'p',size:[20,20]}],rows:[a,b],duplicate_groups:[{ids:['a','b'],box:a.box,region:a.region,runs:[[0,1],[5,1]]}]};
+    const fresh=()=>({rows:{a:R.restoreRow(a),b:R.restoreRow(b)},extra:[],done:{},pageSeconds:{}});
+    const store=fresh();store.rows.a.seconds=3;store.rows.b.seconds=5;
+    const count=R.mergeDuplicates(pack,store);store.rows.a.confirmed=true;store.done[0]=true;
+    const before=JSON.stringify(store),again=R.mergeDuplicates(pack,store);
+    const pages=R.exportPages(pack,store);
+    const imported=R.importData(pack,fresh(),{schema:'paper2-pixel-review-v1',pack:'x',pages});
+    const cases=[];
+    for(const edit of [{confirmed:true},{ops:1,runs:[]},{deleted:true},{note:'human'},{text_confirmed:true},{annotationMode:'keep'},{box:[1,0,10,10]}]){
+      const s=fresh();Object.assign(s.rows.b,edit);const before=JSON.stringify(s);const n=R.mergeDuplicates(pack,s);cases.push(n===0&&before===JSON.stringify(s));
+    }
+    console.log(JSON.stringify({count,again,unchanged:before===JSON.stringify(store),pages,imported,cases}));
+    '''.replace('RULES',json.dumps(str(HERE/'pixel_rules.js')))
+    got=node(code)
+    assert got['count']==1 and got['again']==0 and got['unchanged']
+    page=got['pages']['p']
+    assert len(page['revisions'])==1 and len(page['duplicate_revisions'])==1
+    assert page['revisions'][0]['runs']==[[0,1],[5,1]]
+    assert page['seconds']==8 and page['deleted_revisions']==[]
+    assert got['imported']['rows']['b']['duplicate_of']=='a'
+    assert got['imported']['rows']['a']['confirmed'] and got['imported']['done']['0']
+    assert all(got['cases'])
+
+
+def test_navigation_is_above_images_and_optional_fields_collapsed():
+    from html.parser import HTMLParser
+    class Tags(HTMLParser):
+        def __init__(self):super().__init__();self.ids=[];self.stack=[];self.parents={}
+        def handle_starttag(self,tag,attrs):
+            attrs=dict(attrs)
+            if 'id' in attrs:self.ids.append(attrs['id']);self.parents[attrs['id']]=list(self.stack)
+            if tag not in ('input','meta','br'):self.stack.append((tag,attrs))
+        def handle_endtag(self,tag):
+            for i in range(len(self.stack)-1,-1,-1):
+                if self.stack[i][0]==tag:self.stack=self.stack[:i];break
+    tree=Tags();tree.feed((HERE/'pixel_editor.html').read_text())
+    assert len(tree.ids)==len(set(tree.ids))
+    assert tree.ids.index('next')<tree.ids.index('edit')
+    assert tree.ids.index('confirm')<tree.ids.index('edit')
+    assert any(t=='details' and a.get('class')=='extra-details' and 'open' not in a for t,a in tree.parents['note'])
 
 
 def test_only_human_actions_are_preserved_and_latest_export_wins(tmp_path):
