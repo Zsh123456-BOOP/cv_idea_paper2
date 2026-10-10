@@ -87,11 +87,14 @@ def test_viewer_navigation_filters_and_human_reference_are_independent():
     element('filter').value='confirmed';element('filter').onchange();const reviewed=element('pick').options.length===1&&!element('humanPanel').hidden;
     element('showHoles').checked=true;element('showHoles').onchange();const overlay=element('afterImage').src==='structure_overlay';
     element('after').value='linked';element('after').onchange();const linked=element('afterImage').src==='linked_overlay';
+    element('after').value='global';element('after').onchange();const globalOverlay=element('afterImage').src==='global_overlay';
+    element('after').value='joint';element('after').onchange();const jointOverlay=element('afterImage').src==='joint_overlay';
+    element('after').value='direct';element('after').onchange();const noHoles=element('showHoles').disabled&&element('afterImage').src==='direct';
     element('filter').value='framed';element('filter').onchange();const framed=element('pick').options.length===1&&element('humanPanel').hidden;
-    console.log(JSON.stringify({initial,unconfirmed,reviewed,overlay,linked,framed,small,shrink,preserve,native,sync,large,reset,narrow,equal,fit}));
+    console.log(JSON.stringify({initial,unconfirmed,reviewed,overlay,linked,framed,small,shrink,preserve,native,sync,large,reset,narrow,equal,fit,globalOverlay,jointOverlay,noHoles}));
     '''.replace('DATA',json.dumps(data)).replace('SCRIPT',json.dumps(script))
     got=json.loads(subprocess.check_output([node,'-e',harness],text=True))
-    assert got==dict(initial=True,unconfirmed=True,reviewed=True,overlay=True,linked=True,framed=True,small=True,shrink=True,preserve=True,native=True,sync=True,large=True,reset=True,narrow=True,equal=True,fit=True)
+    assert got==dict(initial=True,unconfirmed=True,reviewed=True,overlay=True,linked=True,framed=True,small=True,shrink=True,preserve=True,native=True,sync=True,large=True,reset=True,narrow=True,equal=True,fit=True,globalOverlay=True,jointOverlay=True,noHoles=True)
 
 
 def test_region_statistics_ignore_white_pale_and_isolated_noise():
