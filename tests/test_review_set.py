@@ -38,3 +38,41 @@ def test_human_validation_writers_and_twins_are_excluded_from_replay(tmp_path,mo
     train={r['group_uuid'] for r in result if r['split']=='train'};val={r['group_uuid'] for r in result if r['split']=='val'}
     assert not train&val
     assert sum(r['source']=='human_confirmed' for r in result)==5
+
+
+def test_incremental_tuning_keeps_fixed_validation_and_previous_replay(tmp_path,monkeypatch):
+    base=tmp_path/'base';base.mkdir()
+    (base/'validation_native.json').write_text(json.dumps([{'group_uuid':'held','id':'v'}]))
+    np.savez(base/'validation_native.npz',image_0=np.full((4,4),20,np.uint8),mask_0=np.ones((4,4),np.uint8))
+    (base/'run_manifest.json').write_text('{}')
+    records=[{'id':'old','group_uuid':'oldwriter','split':'train','source':'human_confirmed','revisions':1},
+             {'id':'replay','group_uuid':'synthetic','split':'train','source':'synthetic_replay','revisions':0},
+             {'id':'v','group_uuid':'held','split':'val','source':'human_confirmed','revisions':1}]
+    x=np.full((3,96,768),200,np.uint8);y=np.zeros_like(x);y[0,2,2]=1;y[2,3,3]=1
+    monkeypatch.setattr(R,'read_set',lambda p:([dict(r) for r in records],x,y))
+    monkeypatch.setattr(R,'twins',lambda *a:{'held':'heldTwin','heldTwin':'held'})
+    rows=[{'id':'new','group_uuid':'newwriter','image':np.full((10,10),20,np.uint8),'mask':np.eye(10,dtype=np.uint8)}]
+    monkeypatch.setattr(R,'confirmed',lambda *a,**kw:(rows,{},0))
+    args=SimpleNamespace(base_set=base,review_export=[],pages=[],mapping=None,same_student=None,output_dir=tmp_path/'out')
+    R.extend(args)
+    result=json.loads((args.output_dir/'records.json').read_text())
+    assert result[:3]==records and result[3]['split']=='train'
+    assert np.array_equal(np.load(args.output_dir/'images.npy')[:3],x)
+    assert np.array_equal(np.load(args.output_dir/'labels.npy')[:3],y)
+    for name in ('validation_native.json','validation_native.npz'):
+        assert (base/name).read_bytes()==(args.output_dir/name).read_bytes()
+    rows[0]['group_uuid']='held'
+    with pytest.raises(RefusedError,match='fixed validation'):R.extend(args)
+
+
+def test_unused_training_writer_is_explicitly_allowed_but_test_twin_is_not(tmp_path,monkeypatch):
+    mapping=tmp_path/'mapping';mapping.write_text('{}')
+    Image.new('L',(10,10),20).save(tmp_path/'new_1.png')
+    row={'id':'r','confirmed':True,'box':[0,0,10,10],'region':[[0,0],[10,0],[10,10],[0,10]],'runs':[[0,1]]}
+    export=tmp_path/'export.json';export.write_text(json.dumps({'schema':R.SCHEMA,'pages':{'new_1':{'revisions':[row]}}}))
+    monkeypatch.setattr(R,'writer_splits',lambda *a:{})
+    monkeypatch.setattr(R,'twins',lambda *a:{})
+    assert len(R.confirmed([export],[tmp_path],mapping,mapping,allow_unused=True)[0])==1
+    monkeypatch.setattr(R,'writer_splits',lambda *a:{'twin':'test'})
+    monkeypatch.setattr(R,'twins',lambda *a:{'new':'twin','twin':'new'})
+    with pytest.raises(RefusedError,match='held-out'):R.confirmed([export],[tmp_path],mapping,mapping,allow_unused=True)

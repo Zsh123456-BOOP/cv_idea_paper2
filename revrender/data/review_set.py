@@ -2,6 +2,7 @@
 import argparse
 import json
 import random
+import shutil
 from collections import Counter
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from .synthetic_set import read_set, strip
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 
-def confirmed(paths, folders, mapping, same_student):
+def confirmed(paths, folders, mapping, same_student, allow_unused=False):
     """Explicit region confirmations are sufficient; whole-question completion is not invented."""
     splits=writer_splits(mapping,same_student);other=twins(same_student)
     rows=[];inputs={str(p):digest(p) for p in [*paths,mapping,same_student]};seen=set();skipped=0
@@ -25,7 +26,8 @@ def confirmed(paths, folders, mapping, same_student):
             skipped+=len(page.get('revisions',[]))-len(chosen)
             if not chosen:continue
             writer=key.split('_')[0];group=min(writer,other.get(writer,writer))
-            require(splits.get(writer)=='train' and splits.get(other.get(writer,writer),'train')=='train','held-out or unknown writer in review')
+            allowed=('train','unused') if allow_unused else ('train',)
+            require(splits.get(writer,'unused') in allowed and splits.get(other.get(writer,writer),'train') in allowed,'held-out or unknown writer in review')
             candidates=[p/(key+'.png') for p in folders if (p/(key+'.png')).exists()]
             require(len(candidates)==1,'need exactly one cleaned scan per confirmed question')
             scan=candidates[0];inputs[str(scan)]=digest(scan)
@@ -97,16 +99,58 @@ def build(args):
     print(json.dumps(summary),flush=True)
 
 
+def extend(args):
+    """Add confirmed training crops without resampling validation or synthetic replay."""
+    records,images,labels=read_set(args.base_set)
+    other=twins(args.same_student);canonical=lambda w:min(w,other.get(w,w))
+    native=json.loads((args.base_set/'validation_native.json').read_text())
+    held={canonical(r['group_uuid']) for r in records if r['split']=='val'}|{canonical(r['group_uuid']) for r in native}
+    rows,inputs,skipped=confirmed(args.review_export,args.pages,args.mapping,args.same_student,allow_unused=True)
+    require(not held&{r['group_uuid'] for r in rows},'fixed validation writer in new training data')
+    positions={r['id']:i for i,r in enumerate(records)}
+    out_images=[np.asarray(im) for im in images];out_labels=[np.asarray(m) for m in labels]
+    updated=0
+    for row in rows:
+        im,mask=strip(Image.fromarray(row['image']),row['mask'])
+        record={'id':row['id'],'line_id':row['id'],'group_uuid':row['group_uuid'],'split':'train',
+                'revisions':int(mask.any()),'source':'human_confirmed'}
+        if row['id'] in positions:
+            i=positions[row['id']]
+            require(records[i]['split']=='train' and records[i]['source']=='human_confirmed','new annotation conflicts with frozen data')
+            records[i]=record;out_images[i]=im;out_labels[i]=mask;updated+=1
+        else:
+            records.append(record);out_images.append(im);out_labels.append(mask)
+    train={canonical(r['group_uuid']) for r in records if r['split']=='train'}
+    require(not train&held,'writer leakage into fixed validation')
+    out=make_output_dir(args.output_dir)
+    np.save(out/'images.npy',np.stack(out_images));np.save(out/'labels.npy',np.stack(out_labels))
+    write_json(out/'records.json',records)
+    for name in ('validation_native.json','validation_native.npz'):
+        shutil.copyfile(args.base_set/name,out/name)
+        require(digest(out/name)==digest(args.base_set/name),'fixed validation changed')
+    inputs[str(args.base_set/'run_manifest.json')]=digest(args.base_set/'run_manifest.json')
+    summary={'new_confirmed':len(rows),'updated_existing':updated,'added':len(rows)-updated,'skipped_unconfirmed':skipped,
+             'human_validation':len(native),'validation_preserved_byte_for_byte':True,
+             'counts':dict(Counter(r['source']+'/'+r['split']+('/positive' if r['revisions'] else '/clean') for r in records))}
+    write_json(out/'summary.json',summary)
+    files={name:digest(out/name) for name in ('images.npy','labels.npy','records.json','validation_native.npz','validation_native.json')}
+    write_manifest(out,config=to_jsonable(args),inputs=inputs,files=files,**summary)
+    print(json.dumps(summary),flush=True)
+
+
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--review-export',type=Path,action='append',required=True)
     p.add_argument('--pages',type=Path,action='append',required=True)
     p.add_argument('--mapping',type=Path,required=True);p.add_argument('--same-student',type=Path,required=True)
-    p.add_argument('--replay',type=Path,required=True)
+    source=p.add_mutually_exclusive_group(required=True)
+    source.add_argument('--replay',type=Path)
+    source.add_argument('--base-set',type=Path,help='extend an existing set; keep its validation and replay unchanged')
     p.add_argument('--validation-writers',type=int,default=3)
     p.add_argument('--replay-clean',type=int,default=96);p.add_argument('--validation-clean',type=int,default=16)
     p.add_argument('--output-dir',type=Path,required=True)
-    build(p.parse_args(argv))
+    args=p.parse_args(argv)
+    extend(args) if args.base_set else build(args)
 
 
 if __name__=='__main__':main()
