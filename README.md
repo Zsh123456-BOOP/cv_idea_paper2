@@ -664,3 +664,5 @@ COR 和 CycleGAN 最大 80,910 次 batch4 更新，相当于 30 轮的期望见�
 划分由第一篇书写者映射、关联编号与固定 16 处验证书写者共同确定；验证／测试标注可查看，但训练导出排除它们，并排除未确认、删除和不确定区域。后续微调必须继续使用已冻结的验证区域，不得重新随机划验证集，也不能直接把全量草稿交给训练。此次只完成预标与页面，不启动下一轮训练。
 
 全量页重复框修复：离线打包时将同页、上下边位置接近且覆盖较小框至少九成的自动框做保守合并；要求组内两两满足，避免串联误并相邻行。预填掩膜按原坐标取并集，所有原记录仍保留。首次载入先备份浏览器草稿，再仅合并整组未被人工处理的候选；人工修改、确认、删除、改框均优先保留。重复记录放入 `duplicate_revisions` 归档，不重复显示、不进入训练导出。原包 ID、图像版本和存储键不变。浏览顺序按题目、从上到下排列；精修的上一处／下一处／确认固定在双图上方，双图按剩余高度上下排列，备注与说明折叠。
+
+增量复核微调：`python -m revrender.data.review_set --base-set PREVIOUS_SET --review-export TRAIN_ONLY_EXPORT --pages MATCHED_IMAGES --mapping MAPPING --same-student PAIRS --output-dir NEW_SET` 保留旧训练与合成回放、逐字节复制固定原生验证。输入先按可信书写者划分筛掉测试和验证；入口再次拒绝其关联编号及固定验证书写者。第一篇未使用的书写者可进训练池。`scripts/run_review_round.sh DATASET INIT GPU_UUID NUMA OUT` 跑原配方的学习检查、正式微调和相同原生验证；不自动替换标注页。`python -m revrender.tools.review_removal_view --dataset SET --evaluation EVAL --output-dir NEW_VIEW` 生成可切换各保存版本的离线同图对比。首组结果及小验证集的取舍见 RESULTS。

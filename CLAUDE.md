@@ -113,3 +113,5 @@ python -m revrender.infer / .train / .eval.report / .eval.freeze ...            
 StainRestorer 当前运行：快照 `/home/zsh/hme/code_paper2_d47f248a`，主目录 `/home/zsh/hme/outputs/paper2_stainrestorer20261009`，资源 `paper2_stainrestorer_resources20261009`，父进程 PID1015908（核对根目录旁 .pid）。22 项检查和100步训练／重载通过。官方权重验证已完成，水印版47.24%、原图46.43%，三权重在16区域固定阈值下去除召回均0%；详见 RESULTS 末节。正式训练已于北京时间11:25在GPU3启动，预计约12–24小时但以实测为准；根目录尚未COMPLETED，勿误判为已跑完。独立依赖通过 PYTHONPATH=/home/zsh/hme/envs/paper2_stain_deps 提供；完整脚本自动衔接冻结测试与报告。本机官方验证页 work/stainrestorer20261009/released/report/index.html。
 
 2026-10-10 全量页重复框与布局修复：自动框按同页近似范围保守合并，原始行记录不删除；未人工处理的组共可折叠 3,418 个重复候选。浏览器迁移先备份草稿，已修改组不覆盖；重复归档不入训练。精修翻处按钮放顶部、上下图占剩余高度、按空间位置浏览。原 URL／包 ID／IndexedDB 键保持不变。
+
+2026-10-10 全量首组已尝试微调：新增40处训练，12处测试未用；累积90处人工训练，旧合成回放不变，原16处验证逐字节保留。`paper2_pixel_round_group20261010` 已 COMPLETE；规则选400步，F1 63.23→64.25，但误擦5.97→6.60；600步F1 63.91、误擦5.94。仅小幅改善，尚未替换全量预标或人工进度；标注页仍是上一轮人工微调step800。后续不要误把本轮800步或规则选出的400步当成已经部署的预标模型。
