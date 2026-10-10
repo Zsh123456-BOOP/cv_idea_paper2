@@ -1,5 +1,11 @@
 # revrender
 
+## 2026-10-11：补入未做真实精修训练的框内模型
+
+入口 `scripts/eval_synthetic_box.sh BASE_COMPLETED NEW_OUT`；新增候选在 `configs/synthetic_box_evaluation.json`。固定 `paper2_strokes_boxes/formal/step_8000.pt`，不重训、不重新挑权重。其训练链为 ImageNet 骨干 → 47,202 条合成训练行 → 70,789 个合成训练框，训练 manifest 的 real_rows、extra_rows 均为空；step8000 历史上按真实验证集 OCR 选定，合成素材取自第一篇标注，所以“无真实精修训练”不等于“完全无人工标注”。
+
+`unified_restoration extend` 在新目录复制已冻结的像素/OCR输入、原九模型恢复输出，核对逐文件哈希、权重和原推理所用输入，再仅推理新增模型。全部十模型和原图重新执行同一次 Qwen3-VL-8B TP2（1,375 次请求），不拼接上一轮 OCR 分数。旧目录和标注预填保持不变。输出 `paper2_synthetic_comparison20261011`，完整表格及离线页在其 `report/`，后续结果见 RESULTS。
+
 ## 2026-10-10：九模型统一重评
 
 入口 `scripts/eval_unified_restoration.sh NEW_OUT`，候选列表在 `configs/unified_restoration.json`。旧模型为人工微调 step800，本轮模型固定为先前验证选中的 step400，另有七个已完成任务适配的 baseline；不重训、不按本轮测试结果选版。开始时冻结权重与选择文件的哈希，所有模型读取同一份准备好的像素与 OCR 输入。
