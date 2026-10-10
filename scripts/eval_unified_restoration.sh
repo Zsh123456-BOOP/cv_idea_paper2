@@ -42,13 +42,4 @@ done
 unset LD_LIBRARY_PATH
 export PYTHONPATH="$ROOT"
 "$PY" -m revrender.eval.unified_restoration merge --inputs "$OUT/inputs" --runs "$OUT/runs" --output-dir "$OUT/pack"
-# Split one reader across the two authorized cards to fit alongside existing jobs.
-# All candidates, including raw scans, use this same TP2 engine and request order.
-wait_for_gpu_memory "$GPU0" 14500
-wait_for_gpu_memory "$GPU2" 14500
-bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU0,$GPU2" 0 "$OUT/qwen8b" -- env CUDA_VISIBLE_DEVICES=0,2 \
-  "$PY" -m revrender.recognize_lines --pack "$OUT/pack" --model /home/zsh/hme/models/Qwen3-VL-8B-Instruct \
-  --conditions erased_neutral --tp 2 --gpu-memory .55 --output-dir "$OUT/qwen8b" > "$OUT/qwen8b.log" 2>&1
-"$PY" -m revrender.eval.revision_boxes read --pack "$OUT/pack" --readings "$OUT/qwen8b/predictions.jsonl" --output "$OUT/read_qwen8b.json"
-"$PY" -m revrender.tools.unified_restoration_report --evaluation "$OUT" --output-dir "$OUT/report"
-touch "$OUT/COMPLETED"
+bash "$ROOT/scripts/finish_unified_restoration.sh" "$OUT"
