@@ -644,3 +644,5 @@ COR 和 CycleGAN 最大 80,910 次 batch4 更新，相当于 30 轮的期望见�
 入口 `python3 -m revrender.tools.gray_holes_view --review-export work/pixel_finetune_inputs20261007/annotations_1.json --review-export work/pixel_finetune_inputs20261007/annotations_0.json --frames-export /Users/zhongsuhua/Downloads/划线精细标注_paper2-pixel-region-selection_2026-10-07.json --images work/pixel_finetune_inputs20261007/images --frame-pack work/pixel_region_prefill108_20261007 --detector work/pages_run_complete --count 100 --output-dir NEW`。全取 66 处已确认，种子 42 从另 108 个人工框中抽 34 处，包含 5 处无检测覆盖的区域，不挑效果好者。第一篇输入是原页推理的 complete 检测存档，扫描使用与人工标注同源、同尺寸的清洁图；没有拿框内恢复模型预填或人工擦除掩膜当算法输入。图像与输出保持原生坐标。
 
 输出 `对比.html` 是内嵌全部图像的独立静态页面，可切换处理前／后方法、查看绿色挖洞、上下放大对比及人工结果。`selection.json` 记录每处来源、范围和像素统计，`proposals.npz` 存候选擦除掩膜（按行 packbits，形状单独记录），`summary.json` 保存总体结果，manifest 记录输入哈希并在结束时复核原文件未变。只在 66 处计算按区域累计的像素指标，34 处只展示；66 处包含已有训练 50／验证 16，属于探索性结果，不能当独立测试。没有训练或 VLM 评估。产物 `work/gray_holes100_20261010/`，桌面 `灰度挖洞_100处前后对比.html`；原标注与 108 处编辑页未改变。
+
+对比页缩放以原生像素为准：默认同时适配宽高，小图最多放大 2 倍；提供缩小、原始大小和完整显示，四图同步横纵滚动。切换样本重新适配，切换方法保留倍率。显示修复不重算试验或覆盖原标注。

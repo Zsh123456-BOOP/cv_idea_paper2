@@ -1,29 +1,38 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>100处 · 灰度挖洞对比</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#243247;background:#f2f5f8}*{box-sizing:border-box}body{margin:0}header{padding:20px 24px 12px;background:white;border-bottom:1px solid #dce3ed}h1{margin:0 0 8px;font-size:23px}p{line-height:1.65;margin:8px 0;color:#56647a}.wrap{max-width:1350px;margin:auto;padding:16px 24px}button,select,input{font:inherit}button,select{border:1px solid #cbd6e5;border-radius:7px;padding:8px 12px;background:white;color:#243247}button{cursor:pointer}button:disabled{opacity:.4;cursor:default}.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;padding:12px;border:1px solid #dce3ed;border-radius:10px;position:sticky;top:0;z-index:2}.controls label{font-size:14px}#pick{max-width:380px}.tag{padding:4px 9px;border-radius:5px;font-size:13px;background:#e2f4ed;color:#17644e}.unconfirmed{background:#fff0d4;color:#835508}h2{font-size:18px}figure{margin:14px 0;background:white;border:1px solid #d7e0ea;border-radius:9px;overflow:hidden}figcaption{padding:10px 14px;background:#f9fbfd;font-weight:600;border-bottom:1px solid #e5eaf0}.imagewrap{overflow:auto;max-height:48vh;background:white}.imagewrap img{display:block;height:auto;max-width:none;image-rendering:pixelated}details{background:white;padding:12px;border:1px solid #dce3ed;border-radius:8px;margin:12px 0}summary{cursor:pointer;font-weight:600}table{border-collapse:collapse;width:100%;font-size:14px;margin-top:10px}td,th{text-align:left;padding:8px;border-bottom:1px solid #e6eaf0}th{color:#59677d}#rowMetrics{font-size:14px}#rowNote{font-size:14px}small{color:#65728a}.legend{color:#147050}.muted{color:#69778b}#id{word-break:break-all;font-size:12px}.error{color:#ac3030}@media(max-width:700px){.wrap{padding:12px}header{padding:16px}table{font-size:12px}.controls{gap:6px}#pick{max-width:230px}}
+:root{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#243247;background:#f2f5f8}*{box-sizing:border-box}body{margin:0}header{padding:20px 24px 12px;background:white;border-bottom:1px solid #dce3ed}h1{margin:0 0 8px;font-size:23px}p{line-height:1.65;margin:8px 0;color:#56647a}.wrap{max-width:1350px;margin:auto;padding:16px 24px}button,select,input{font:inherit}button,select{border:1px solid #cbd6e5;border-radius:7px;padding:8px 12px;background:white;color:#243247}button{cursor:pointer}button:disabled{opacity:.4;cursor:default}.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;padding:12px;border:1px solid #dce3ed;border-radius:10px;position:sticky;top:0;z-index:2}.controls label{font-size:14px}#pick{max-width:380px}.tag{padding:4px 9px;border-radius:5px;font-size:13px;background:#e2f4ed;color:#17644e}.unconfirmed{background:#fff0d4;color:#835508}h2{font-size:18px}figure{margin:14px 0;background:white;border:1px solid #d7e0ea;border-radius:9px;overflow:hidden}figcaption{padding:10px 14px;background:#f9fbfd;font-weight:600;border-bottom:1px solid #e5eaf0}.imagewrap{overflow:auto;max-height:36vh;background:white}.imagewrap img{display:block;height:auto;max-width:none;margin:0 auto;image-rendering:pixelated}details{background:white;padding:12px;border:1px solid #dce3ed;border-radius:8px;margin:12px 0}summary{cursor:pointer;font-weight:600}table{border-collapse:collapse;width:100%;font-size:14px;margin-top:10px}td,th{text-align:left;padding:8px;border-bottom:1px solid #e6eaf0}th{color:#59677d}#rowMetrics{font-size:14px}#rowNote{font-size:14px}small{color:#65728a}.legend{color:#147050}.muted{color:#69778b}#id{word-break:break-all;font-size:12px}.error{color:#ac3030}@media(max-width:700px){.wrap{padding:12px}header{padding:16px}table{font-size:12px}.controls{gap:6px}#pick{max-width:230px}}
 </style></head><body>
 <header><h1>第一篇掩膜 → 收紧 → 灰度挖洞</h1><p id="summary"></p><p>上图保留原扫描墨迹，下面逐步对比擦除效果。这个页面只看结果，不修改你的标注。灰度挖洞是试验规则，绿色候选不等于已经认准原字。</p></header>
 <main class="wrap">
 <details><summary>看 66 处人工参考上的像素统计与方法说明</summary><p>数值只来自已确认的 66 处（已有训练标注 50 处、验证标注 16 处），这是探索性比较，不是独立测试成绩。后 34 处未精修，不计算准确率；本轮没有运行 VLM，也没有训练模型。</p><div id="metrics"></div><p>收紧：检测掩膜向内收 1 像素，完全被收掉的细连通块保留；取灰度 &lt;200 的墨迹及相连两像素、灰度 &lt;240 的软边。灰度挖洞：19×19 邻域，仅统计掩膜内墨迹，以中位数减去 max(16, 0.5×四分位间距) 找更黑的像素，至少 12 个参考像素，候选周围补 1 像素。附加对照要求候选两侧 12 像素内有通向检测掩膜外的墨迹支持。参数固定，未用人工答案挑参数。</p><p>灰度 0 是黑、255 是白。浅灰噪声在收紧阶段排除；挖洞阶段保留的是异常更黑的候选。背景和浅灰分布变化也会影响结果。</p></details>
-<div class="controls"><button id="prev">← 上一处</button><select id="pick" aria-label="选择对比区域"></select><button id="next">下一处 →</button><label>范围 <select id="filter"><option value="all">全部 100 处</option><option value="confirmed">已确认 66 处</option><option value="framed">仅框选 34 处</option><option value="changed">有灰度挖洞</option></select></label><label>放大 <input id="zoom" type="range" min="1" max="4" step=".25" value="1"></label><button id="fit">适配宽度</button></div>
+<div class="controls"><button id="prev">← 上一处</button><select id="pick" aria-label="选择对比区域"></select><button id="next">下一处 →</button><label>范围 <select id="filter"><option value="all">全部 100 处</option><option value="confirmed">已确认 66 处</option><option value="framed">仅框选 34 处</option><option value="changed">有灰度挖洞</option></select></label><label>缩放 <input id="zoom" type="range" min=".1" max="8" step=".01" value="1"> <output id="zoomLabel"></output></label><button id="fit">完整显示</button><button id="native">原始大小</button></div>
 <h2 id="title"></h2><span id="badge" class="tag"></span><p id="rowNote"></p><div id="id" class="muted"></div>
 <figure><figcaption>原图 <label><input id="showPrior" type="checkbox"> 显示第一篇检测掩膜</label></figcaption><div class="imagewrap"><img id="original" alt="原图与可选检测掩膜"></div></figure>
 <figure><figcaption>处理前 <select id="before" aria-label="处理前方法"></select></figcaption><div class="imagewrap"><img id="beforeImage" alt="处理前擦除结果"></div></figure>
 <figure><figcaption>处理后 <select id="after" aria-label="处理后方法"></select> <label><input id="showHoles" type="checkbox"> 显示掩膜和挖洞</label><small class="legend"> 红＝擦除，绿＝挖洞保留</small></figcaption><div class="imagewrap"><img id="afterImage" alt="处理后擦除结果或挖洞位置"></div></figure>
 <p id="rowMetrics"></p>
 <figure id="humanPanel"><figcaption>你的人工精修结果 · 仅供对比，未参与规则计算</figcaption><div class="imagewrap"><img id="human" alt="人工精修参考"></div></figure>
-<p><small>可用键盘 ← / → 换图。放大后的图片同步横向滚动。全部图像内嵌，直接打开，无需服务器。每张图保留 12 像素上下文，处理仅限原人工多边形内部。</small></p>
+<p><small>可用键盘 ← / → 换图。默认完整显示，小图最多放大 2 倍；可手动缩小或放大，四图同步横纵滚动。全部图像内嵌，直接打开，无需服务器。每张图保留 12 像素上下文，处理仅限原人工多边形内部。</small></p>
 </main><script type="application/json" id="data">__DATA__</script><script>
 'use strict';
-const data=JSON.parse(document.getElementById('data').textContent),$=id=>document.getElementById(id);let shown=data.cards,at=0,syncing=false;
+const data=JSON.parse(document.getElementById('data').textContent),$=id=>document.getElementById(id);let shown=data.cards,at=0,syncing=false,autoFit=true,scale=1;
 const percent=x=>x===null?'—':(100*x).toFixed(1)+'%';
 $('summary').textContent=`${data.summary.count} 处：${data.summary.confirmed} 处人工像素已确认＋${data.summary.framed_only} 处只框选。第一篇掩膜在其中 ${data.summary.zero_detection} 处没有覆盖墨迹。`;
 for(const id of ['before','after'])for(const [value,label] of Object.entries(data.arms)){$(id).add(new Option(label,value));}
 $('before').value='direct';$('after').value='gray';
 const table=document.createElement('table');table.innerHTML='<thead><tr><th>方法</th><th>擦除精确率↑</th><th>划线擦除召回↑</th><th>擦除 F1↑</th><th>保留墨迹误擦率↓</th></tr></thead>';
 const tbody=document.createElement('tbody');for(const [name,m] of Object.entries(data.summary.arms)){const tr=document.createElement('tr');for(const value of [data.arms[name],percent(m.precision),percent(m.recall),percent(m.f1),percent(m.valid_damage)]){const td=document.createElement('td');td.textContent=value;tr.append(td);}tbody.append(tr);}table.append(tbody);$('metrics').append(table);
-function resize(){for(const img of document.querySelectorAll('.imagewrap img'))img.style.width=(100*Number($('zoom').value))+'%';}
-function render(){
+function resize(){
+  const [l,t,r,b]=shown[at].box,w=r-l,h=b-t;
+  if(autoFit){
+    const view=document.querySelectorAll('.imagewrap')[0];
+    scale=Math.min(2,(view.clientWidth-2)/w,(window.innerHeight*.36-2)/h);
+  }
+  $('zoom').value=String(scale);$('zoomLabel').textContent=Math.round(scale*100)+'%';
+  for(const img of document.querySelectorAll('.imagewrap img'))img.style.width=(w*scale)+'px';
+}
+function fit(){autoFit=true;resize();for(const view of document.querySelectorAll('.imagewrap')){view.scrollLeft=0;view.scrollTop=0;}}
+function render(reset=false){
   const c=shown[at];$('prev').disabled=at===0;$('next').disabled=at===shown.length-1;
   $('pick').value=String(at);$('title').textContent=`第 ${c.n} / ${data.cards.length} 处 · 当前筛选 ${at+1} / ${shown.length}`;
   $('badge').textContent=c.confirmed?'人工像素已确认':'仅人工框选 · 无像素参考';$('badge').className='tag'+(c.confirmed?'':' unconfirmed');
@@ -35,12 +44,15 @@ function render(){
   $('humanPanel').hidden=!c.confirmed;if(c.confirmed)$('human').src=c.images.human;else $('human').removeAttribute('src');
   if(c.confirmed){const a=c.metrics[$('before').value],b=c.metrics[after];$('rowMetrics').textContent=`本处：划线召回 ${percent(a.recall)} → ${percent(b.recall)}；保留墨迹误擦 ${percent(a.valid_damage)} → ${percent(b.valid_damage)}。两项一起看，不能只看图变白多少。`;}
   else $('rowMetrics').textContent='这处没有人工像素答案，只展示效果，不报告准确率。';
-  resize();
+  if(reset)fit();else resize();
 }
-function selectRows(){const f=$('filter').value;shown=data.cards.filter(c=>f==='all'||f==='confirmed'&&c.confirmed||f==='framed'&&!c.confirmed||f==='changed'&&c.statistics.holes>0);if(!shown.length){$('filter').value='all';shown=data.cards;}at=0;$('pick').replaceChildren();shown.forEach((c,i)=>$('pick').add(new Option(`${c.n}. ${c.confirmed?'已确认':'仅框选'} · 挖洞 ${c.statistics.holes} 像素`,i)));render();}
-$('filter').onchange=selectRows;$('pick').onchange=()=>{at=Number($('pick').value);render();};$('prev').onclick=()=>{if(at>0){at--;render();}};$('next').onclick=()=>{if(at<shown.length-1){at++;render();}};
-for(const id of ['before','after','showPrior','showHoles'])$(id).onchange=render;$('zoom').oninput=resize;$('fit').onclick=()=>{$('zoom').value=1;resize();};
-for(const view of document.querySelectorAll('.imagewrap'))view.onscroll=()=>{if(syncing)return;syncing=true;for(const other of document.querySelectorAll('.imagewrap'))if(other!==view&&other.scrollLeft!==view.scrollLeft)other.scrollLeft=view.scrollLeft;syncing=false;};
+function selectRows(){const f=$('filter').value;shown=data.cards.filter(c=>f==='all'||f==='confirmed'&&c.confirmed||f==='framed'&&!c.confirmed||f==='changed'&&c.statistics.holes>0);if(!shown.length){$('filter').value='all';shown=data.cards;}at=0;$('pick').replaceChildren();shown.forEach((c,i)=>$('pick').add(new Option(`${c.n}. ${c.confirmed?'已确认':'仅框选'} · 挖洞 ${c.statistics.holes} 像素`,i)));render(true);}
+$('filter').onchange=selectRows;$('pick').onchange=()=>{at=Number($('pick').value);render(true);};$('prev').onclick=()=>{if(at>0){at--;render(true);}};$('next').onclick=()=>{if(at<shown.length-1){at++;render(true);}};
+for(const id of ['before','after','showPrior','showHoles'])$(id).onchange=()=>render();
+$('zoom').oninput=()=>{autoFit=false;scale=Number($('zoom').value);resize();};$('fit').onclick=fit;
+$('native').onclick=()=>{autoFit=false;scale=1;resize();};
+window.addEventListener('resize',resize);
+for(const view of document.querySelectorAll('.imagewrap'))view.onscroll=()=>{if(syncing)return;syncing=true;for(const other of document.querySelectorAll('.imagewrap'))if(other!==view){if(other.scrollLeft!==view.scrollLeft)other.scrollLeft=view.scrollLeft;if(other.scrollTop!==view.scrollTop)other.scrollTop=view.scrollTop;}syncing=false;};
 document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA','BUTTON'].includes(e.target.tagName))return;if(e.key==='ArrowLeft'){$('prev').click();e.preventDefault();}if(e.key==='ArrowRight'){$('next').click();e.preventDefault();}});
 selectRows();
 </script></body></html>
