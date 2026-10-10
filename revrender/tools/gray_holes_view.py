@@ -16,7 +16,10 @@ from ..gray_holes import Settings, process
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 from .tighten_view import window
 
-ARMS={'direct':'第一篇掩膜直接擦除','tight':'收缩 1 像素＋去浅灰','gray':'局部灰度挖洞','linked':'灰度＋两侧笔画支持'}
+ARMS={'direct':'第一篇掩膜直接擦除','global':'① 整体墨迹深浅','joint':'② 整体＋局部深浅',
+      'structure':'③ 深浅＋交叉结构','tight':'旧：收缩 1 像素＋去浅灰',
+      'gray':'旧：局部灰度挖洞','linked':'旧：灰度＋两侧支持'}
+HOLE_BASES={'global':'direct','joint':'direct','structure':'direct','gray':'tight','linked':'tight'}
 TEMPLATE=Path(__file__).with_suffix('.html')
 
 
@@ -77,7 +80,7 @@ def run(args):
                                        args.detector/'run_manifest.json',Path(__file__),TEMPLATE,
                                        Path(__file__).parents[1]/'gray_holes.py']}
     cache={};cards=[];native={};totals={a:dict(tp=0,fp=0,fn=0,valid=0) for a in ARMS}
-    useful={a:dict(saved_valid=0,retained_strike=0) for a in ('gray','linked')}
+    useful={a:dict(base=base,saved_valid=0,retained_strike=0) for a,base in HOLE_BASES.items()}
     ink_groups={'erase':[],'keep':[]};thumbs=[]
     for n,item in enumerate(selected):
         page=item['page'];r=item['row']
@@ -100,8 +103,12 @@ def run(args):
         for arm in ARMS:
             card['images'][arm]=png(erase(crop,result[arm]))
             native[f'{n}_{arm}']=np.packbits(result[arm],axis=-1)
-        card['images']['holes']=png(overlay(crop,result['gray'],result['holes']))
-        card['images']['linked_holes']=png(overlay(crop,result['linked'],result['linked_holes']))
+        card['protected']={}
+        for arm,base in HOLE_BASES.items():
+            holes=result[base]&~result[arm]
+            card['protected'][arm]=int(holes.sum())
+            card['images'][arm+'_overlay']=png(overlay(crop,result[arm],holes))
+            native[f'{n}_{arm}_holes']=np.packbits(holes,axis=-1)
         if item['confirmed']:
             gold=window({'box':r['box'],'mask':decode(r['runs'],(b-t,rr-l))},box)&domain&(crop<245)
             if r.get('not_revision'):gold[:]=False
@@ -111,8 +118,8 @@ def run(args):
             for arm in ARMS:
                 c=confusion(result[arm],gold,known);card['metrics'][arm]=metrics(c)
                 for key in c:totals[arm][key]+=c[key]
-            for arm in ('gray','linked'):
-                holes=result['tight']&~result[arm]
+            for arm,base in HOLE_BASES.items():
+                holes=result[base]&~result[arm]
                 useful[arm]['saved_valid']+=int((holes&~gold&known).sum())
                 useful[arm]['retained_strike']+=int((holes&gold&known).sum())
             ink_groups['erase'].append(crop[result['direct']&gold])
@@ -120,13 +127,14 @@ def run(args):
         native[f'{n}_shape']=np.array(crop.shape)
         cards.append(card)
         if n<12:
-            samples=[crop,erase(crop,result['direct']),erase(crop,result['gray']),erase(crop,gold)]
+            samples=[crop,erase(crop,result['direct']),erase(crop,result['structure']),
+                     erase(crop,gold) if item['confirmed'] else crop]
             strips=[]
             for a in samples:
                 im=Image.fromarray(a).convert('RGB');im.thumbnail((350,125));canvas=Image.new('RGB',(350,145),'white');canvas.paste(im,(0,18));strips.append(canvas)
             sheet=Image.new('RGB',(1400,145),'#ddd')
             for col,im in enumerate(strips):sheet.paste(im,(col*350,0))
-            ImageDraw.Draw(sheet).text((4,2),f'{n+1}: original | direct | gray holes | human',fill='black');thumbs.append(sheet)
+            ImageDraw.Draw(sheet).text((4,2),f'{n+1}: original | direct | structure | human',fill='black');thumbs.append(sheet)
         print(f'{n+1}/{len(selected)}',flush=True)
     distributions={}
     for name,arrays in ink_groups.items():
@@ -140,7 +148,7 @@ def run(args):
     out=make_output_dir(args.output_dir)
     write_json(out/'summary.json',summary);write_json(out/'selection.json',[{k:v for k,v in c.items() if k!='images'} for c in cards])
     np.savez_compressed(out/'proposals.npz',**native)
-    payload=json.dumps({'summary':summary,'arms':ARMS,'cards':cards},ensure_ascii=False).replace('<','\\u003c')
+    payload=json.dumps({'summary':summary,'arms':ARMS,'hole_bases':HOLE_BASES,'cards':cards},ensure_ascii=False).replace('<','\\u003c')
     (out/'对比.html').write_text(TEMPLATE.read_text().replace('__DATA__',payload))
     sheet=Image.new('RGB',(1400,145*len(thumbs)),'white')
     for i,im in enumerate(thumbs):sheet.paste(im,(0,i*145))

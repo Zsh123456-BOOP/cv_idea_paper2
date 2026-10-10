@@ -48,14 +48,14 @@ def test_viewer_navigation_filters_and_human_reference_are_independent():
     import shutil
     import subprocess
     import pytest
-    from revrender.tools.gray_holes_view import TEMPLATE, ARMS
+    from revrender.tools.gray_holes_view import TEMPLATE, ARMS, HOLE_BASES
     node=shutil.which('node')
     if not node:pytest.skip('needs node')
     score=metrics(dict(tp=1,fp=1,fn=1,valid=2))
-    card={'n':1,'id':'reviewed','box':[10,20,70,60],'confirmed':True,'statistics':dict(prior_ink=2,tight_ink=2,holes=1,linked_holes=1),
-          'metrics':{arm:score for arm in ARMS},'images':{key:key for key in [*ARMS,'original','prior','holes','linked_holes','human']}}
+    card={'n':1,'id':'reviewed','box':[10,20,70,60],'confirmed':True,'statistics':dict(prior_ink=2,tight_ink=2,holes=1,linked_holes=1,region=dict(analysis_ink=12,mean_gray=90)),
+          'protected':{arm:1 for arm in HOLE_BASES},'metrics':{arm:score for arm in ARMS},'images':{key:key for key in [*ARMS,*[a+'_overlay' for a in HOLE_BASES],'original','prior','human']}}
     second={**card,'n':2,'id':'framed','box':[0,0,1200,800],'confirmed':False,'metrics':{},'statistics':{**card['statistics'],'holes':0}}
-    data={'cards':[card,second],'arms':ARMS,'summary':dict(count=2,confirmed=1,framed_only=1,zero_detection=0,arms={a:score for a in ARMS})}
+    data={'cards':[card,second],'arms':ARMS,'hole_bases':HOLE_BASES,'summary':dict(count=2,confirmed=1,framed_only=1,zero_detection=0,arms={a:score for a in ARMS})}
     script=TEMPLATE.read_text().rsplit('<script>',1)[1].split('</script>')[0]
     harness=r'''
     const vm=require('vm'),nodes=new Map(),handlers={};
@@ -65,7 +65,7 @@ def test_viewer_navigation_filters_and_human_reference_are_independent():
     const views=['view0','view1','view2','view3'].map(element);
     const context={window:{innerHeight:900,addEventListener:(k,f)=>handlers['window:'+k]=f},document:{getElementById:element,createElement:()=>element(Symbol()),querySelectorAll:q=>q.endsWith('img')?['original','beforeImage','afterImage','human'].map(element):views,addEventListener:(k,f)=>handlers[k]=f},Option:class{constructor(text,value){this.text=text;this.value=value;}}};
     vm.createContext(context);vm.runInContext(SCRIPT,context);
-    const initial=element('humanPanel').hidden===false&&element('afterImage').src==='gray';
+    const initial=element('humanPanel').hidden===false&&element('afterImage').src==='structure';
     const small=element('original').style.width==='120px'&&element('zoomLabel').textContent==='200%';
     element('zoom').value='.5';element('zoom').oninput();
     const shrink=element('original').style.width==='30px';
@@ -85,10 +85,53 @@ def test_viewer_navigation_filters_and_human_reference_are_independent():
     const fit=parseFloat(element('original').style.width)<=180;
     const unconfirmed=element('humanPanel').hidden&&element('rowMetrics').textContent.includes('不报告准确率');
     element('filter').value='confirmed';element('filter').onchange();const reviewed=element('pick').options.length===1&&!element('humanPanel').hidden;
-    element('showHoles').checked=true;element('showHoles').onchange();const overlay=element('afterImage').src==='holes';
-    element('after').value='linked';element('after').onchange();const linked=element('afterImage').src==='linked_holes';
+    element('showHoles').checked=true;element('showHoles').onchange();const overlay=element('afterImage').src==='structure_overlay';
+    element('after').value='linked';element('after').onchange();const linked=element('afterImage').src==='linked_overlay';
     element('filter').value='framed';element('filter').onchange();const framed=element('pick').options.length===1&&element('humanPanel').hidden;
     console.log(JSON.stringify({initial,unconfirmed,reviewed,overlay,linked,framed,small,shrink,preserve,native,sync,large,reset,narrow,equal,fit}));
     '''.replace('DATA',json.dumps(data)).replace('SCRIPT',json.dumps(script))
     got=json.loads(subprocess.check_output([node,'-e',harness],text=True))
     assert got==dict(initial=True,unconfirmed=True,reviewed=True,overlay=True,linked=True,framed=True,small=True,shrink=True,preserve=True,native=True,sync=True,large=True,reset=True,narrow=True,equal=True,fit=True)
+
+
+def test_region_statistics_ignore_white_pale_and_isolated_noise():
+    grey=np.full((45,65),255,np.uint8);prior=np.zeros_like(grey,bool)
+    grey[20:25,5:60]=110;prior[18:27,4:61]=True
+    grey[5:40,30:33]=25
+    r=process(grey,prior)
+    noisy=grey.copy();noisy[:3]=220;noisy[40,60]=30
+    other=process(noisy,prior)
+    assert r['statistics']['region']==other['statistics']['region']
+    assert r['global_holes'][22,31] and r['structure_holes'][22,31]
+    for arm in ('global','joint','structure'):
+        np.testing.assert_array_equal(r[arm],other[arm])
+        assert not (r[arm]&~r['direct']).any()
+        assert r[arm][22,15]  # ordinary strike remains erased
+    assert not (r['structure_holes']&~r['joint_holes']).any()
+    assert not (r['joint_holes']&~r['global_holes']).any()
+
+
+def test_crossing_requires_two_sided_ink_not_just_a_dark_blob():
+    from revrender.gray_holes import crossing_support
+    ink=np.zeros((45,65),bool);prior=np.zeros_like(ink);domain=np.ones_like(ink)
+    ink[20:25,5:60]=True;ink[5:40,30:33]=True;prior[18:27,4:61]=True
+    assert crossing_support(ink,prior,domain,12)[22,31]
+    ink[27:,30:33]=False
+    assert not crossing_support(ink,prior,domain,12)[22,31]
+    domain[:18]=False
+    assert not crossing_support(ink&domain,prior,domain,12)[22,31]
+
+
+def test_uniform_black_and_empty_regions_do_not_create_new_holes():
+    for value in (0,255):
+        grey=np.full((20,30),value,np.uint8);prior=np.ones_like(grey,bool)
+        r=process(grey,prior)
+        for arm in ('global','joint','structure'):
+            assert not r[arm+'_holes'].any()
+            np.testing.assert_array_equal(r[arm],r['direct'])
+    grey=np.full((25,35),110,np.uint8);grey[:,20:]=0
+    domain=np.zeros_like(grey,bool);domain[:,:20]=True
+    r=process(grey,np.ones_like(domain),domain)
+    assert r['statistics']['region']['mean_gray']==110
+    assert not r['global_holes'].any()
+    assert not r['structure'][:,20:].any()

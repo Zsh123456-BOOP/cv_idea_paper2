@@ -21,6 +21,9 @@ class Settings:
     iqr_factor: float = .5
     hole_margin: int = 1
     anchor_reach: int = 12
+    ink_ceiling: int = 200
+    minimum_component: int = 3
+    global_std_factor: float = .5
 
 
 def quantiles(grey, pool, settings):
@@ -69,6 +72,66 @@ def opposite_anchors(grey, prior, reach):
     return result
 
 
+def crossing_support(ink, prior, domain, reach):
+    """Eight straight directions with two-pixel outside anchors on both ends.
+
+    Also require transverse ink inside the prior. This is a crossing proxy,
+    not recognition of the original letter; curved or fully enclosed letters
+    can lack support. No pixels outside the selected polygon contribute.
+    """
+    path=ndi.binary_dilation(ink,np.ones((3,3),bool))&domain
+    outside=ink&~prior;inside=ink&prior
+    result=np.zeros_like(prior)
+    for dy,dx in ((1,0),(0,1),(1,1),(1,-1),(2,1),(2,-1),(1,2),(1,-2)):
+        norm=np.hypot(dy,dx)
+        offsets=list(dict.fromkeys((int(round(d*dy/norm)),int(round(d*dx/norm)))
+                                   for d in range(1,reach+1)))
+        sides=[]
+        for sign in (-1,1):
+            alive=path.copy();supported=np.zeros_like(prior);previous=np.zeros_like(prior)
+            for y,x in offsets:
+                alive &= shifted(path,sign*y,sign*x)
+                anchor=shifted(outside,sign*y,sign*x)
+                supported |= alive&anchor&previous
+                previous=anchor
+            sides.append(supported)
+        ty,tx=int(round(2*dx/norm)),int(round(-2*dy/norm))
+        transverse=shifted(inside,ty,tx)&shifted(inside,-ty,-tx)
+        result |= sides[0]&sides[1]&transverse
+    return result&ink
+
+
+def region_holes(grey, prior, domain, baseline, settings):
+    """Exclude pale/dust pixels from statistics; keep direct erasure as base.
+
+    Each polygon is one statistical region. No white padding or gold mask
+    influences its mean. Joint and structure arms are nested restrictions of
+    the global candidate, with the same one-pixel margin for all three arms.
+    """
+    pool=(grey<settings.ink_ceiling)&domain
+    labels,_=ndi.label(pool,np.ones((3,3),bool))
+    sizes=np.bincount(labels.ravel());sizes[0]=0
+    pool &= sizes[labels]>=settings.minimum_component
+    values=grey[pool].astype(float)
+    mean=float(values.mean()) if len(values) else None
+    std=float(values.std()) if len(values) else None
+    threshold=mean-max(settings.minimum_drop,settings.global_std_factor*std) if len(values) else None
+    global_candidate=np.zeros_like(prior)
+    if len(values)>=settings.minimum_ink:
+        global_candidate=baseline&pool&(grey<threshold)
+    q25,median,q75,count=quantiles(grey,pool,settings)
+    local_threshold=median-np.maximum(settings.minimum_drop,settings.iqr_factor*(q75-q25))
+    joint=global_candidate&(count>=settings.minimum_ink)&(grey<local_threshold)
+    structure=joint&crossing_support(pool,prior,domain,settings.anchor_reach)
+    holes={}
+    for name,candidate in (('global',global_candidate),('joint',joint),('structure',structure)):
+        expanded=ndi.binary_dilation(candidate,iterations=settings.hole_margin) if settings.hole_margin else candidate
+        holes[name]=expanded&baseline&pool
+    return holes,{'analysis_ink':int(pool.sum()),'mean_gray':mean,'std_gray':std,
+                  'global_gray_threshold':threshold,
+                  'protected':{name:int(mask.sum()) for name,mask in holes.items()}}
+
+
 def process(grey, prior, domain=None, settings=Settings()):
     grey=np.asarray(grey,np.uint8);prior=np.asarray(prior,bool)
     assert grey.shape==prior.shape
@@ -88,10 +151,14 @@ def process(grey, prior, domain=None, settings=Settings()):
     supported=candidate&opposite_anchors(grey,prior,settings.anchor_reach)
     expand=lambda m: (ndi.binary_dilation(m,iterations=settings.hole_margin) if settings.hole_margin else m)&tight
     holes=expand(candidate);linked_holes=expand(supported)
-    return {'direct':baseline,'tight':tight,'gray':tight&~holes,'linked':tight&~linked_holes,
+    region,statistics=region_holes(grey,prior,domain,baseline,settings)
+    return {**{name:baseline&~mask for name,mask in region.items()},
+            **{name+'_holes':mask for name,mask in region.items()},
+            'direct':baseline,'tight':tight,'gray':tight&~holes,'linked':tight&~linked_holes,
             'holes':holes,'linked_holes':linked_holes,'candidate':candidate,
             'statistics':{'prior_ink':int(baseline.sum()),'tight_ink':int(tight.sum()),
                           'dark_candidates':int(candidate.sum()),'holes':int(holes.sum()),
                           'linked_holes':int(linked_holes.sum()),
+                          'region':statistics,
                           'near_black_fraction':float((grey[baseline]<=10).mean()) if baseline.any() else None},
             'settings':asdict(settings)}
