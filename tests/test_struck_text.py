@@ -134,8 +134,22 @@ def test_redraft_keeps_the_page_identity_and_remembers_the_starting_texts(made, 
     readings = tmp_path/'erased.jsonl'
     readings.write_text('\n'.join(json.dumps({'condition': 'erased_neutral', 'id': r['id'], 'text': t})
                                   for r, t in zip(before['rows'], ['x=5', '[空]', '12'])))
-    S.main(['redraft', '--source', str(source), '--readings', str(readings), '--output-dir', str(tmp_path/'new')])
+    S.main(['update', '--source', str(source), '--readings', str(readings), '--output-dir', str(tmp_path/'new')])
     after = json.loads(EmbeddedReview((tmp_path/'new'/'标注.html').read_text()).values['review-pack'])
     assert (after['id'], after['image_revision']) == (before['id'], before['image_revision'])
     assert [r['prefill'] for r in after['rows']] == ['x=5', '', '12']
     assert [r.get('previous_prefill') for r in after['rows']] == [None, ['?2'], ['???']]
+
+
+def test_update_carries_judgment_drafts_and_keeps_the_page(made, tmp_path):
+    from revrender.tools.annotate.pixel_offline import EmbeddedReview
+    test_the_page_is_a_text_mode_review_pack_with_the_annotators_pixels(made)
+    source = made/'page'/'site'/'标注.html'
+    before = json.loads(EmbeddedReview(source.read_text()).values['review-pack'])
+    draft = {'schema': S.JUDGMENT_SCHEMA, 'values': {'struck': ['对', '错'], 'after': ['对', '错'], 'type': ['纠错']},
+             'judgments': {before['rows'][0]['id']: {'struck': '错', 'after': '对', 'type': '纠错', 'reason': 'r'}}}
+    (tmp_path/'j.json').write_text(json.dumps(draft, ensure_ascii=False))
+    S.main(['update', '--source', str(source), '--judgments', str(tmp_path/'j.json'), '--output-dir', str(tmp_path/'new')])
+    after = json.loads(EmbeddedReview((tmp_path/'new'/'标注.html').read_text()).values['review-pack'])
+    assert (after['id'], after['image_revision'], after['rows']) == (before['id'], before['image_revision'], before['rows'])
+    assert after['judgment_drafts'] == draft['judgments'] and after['judgment_values']['type'] == ['纠错']

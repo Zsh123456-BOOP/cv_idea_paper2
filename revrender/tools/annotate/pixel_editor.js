@@ -71,13 +71,13 @@ async function cleanStore(candidate){
   candidate.imageRevision=pack.image_revision||'original';return removed;
 }
 function nav(){
-  $('progress').textContent=TextMode.on()?`已完成 ${rows.filter(r=>TextMode.done(ensure(r))).length} / ${rows.length} · 像素 ${rows.filter(r=>ensure(r).confirmed).length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length}`:selectingRegions()?`已框选 ${rows.length} 处 · ${Object.values(store.done).filter(Boolean).length} 题完成`:`像素 ${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length} / ${rows.length}`;
+  $('progress').textContent=TextMode.on()?`已完成 ${rows.filter(r=>TextMode.done(ensure(r),r)).length} / ${rows.length} · 像素 ${rows.filter(r=>ensure(r).confirmed).length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length}${TextMode.judging()?' · 对错 '+rows.filter(TextMode.judged).length:''}`:selectingRegions()?`已框选 ${rows.length} 处 · ${Object.values(store.done).filter(Boolean).length} 题完成`:`像素 ${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length} / ${rows.length}`;
   const nav=$('nav');nav.replaceChildren();
   pack.pages.forEach((p,i)=>{
     const h=document.createElement('button');h.className='question'+(!inDetail&&i===wholePage?' active':'');
     h.textContent=`第 ${i+1} 题 · 题号 ${p.question}${p.split?' · '+({train:'训练',val:'验证（不训练）',test:'测试（不训练）'}[p.split]||p.split):''}${store.done[i]?' ✓':''}`;h.onclick=()=>overview(i);nav.append(h);
     let number=0;
-    rows.forEach((r,k)=>{if(r.page!==i)return;number++;const b=document.createElement('button');b.textContent=`${TextMode.done(ensure(r))?'✓':'○'} 划线 ${number}${ensure(r).needs_clean_review?' · 清洁后复核':''}`;if(inDetail&&k===at)b.className='active';b.onclick=()=>show(k);nav.append(b);});
+    rows.forEach((r,k)=>{if(r.page!==i)return;number++;const b=document.createElement('button');b.textContent=`${TextMode.done(ensure(r),r)?'✓':'○'} 划线 ${number}${ensure(r).needs_clean_review?' · 清洁后复核':''}`;if(inDetail&&k===at)b.className='active';b.onclick=()=>show(k);nav.append(b);});
   });
   const deleted=[...pack.rows,...store.extra].filter(r=>ensure(r).deleted&&!ensure(r).duplicate_of);
   if(deleted.length){const group=document.createElement('details'),summary=document.createElement('summary');summary.textContent=`已删除 ${deleted.length} 处（可恢复）`;group.append(summary);
@@ -369,8 +369,9 @@ async function start(){
   }
   $('bindBackup').hidden=!window.showSaveFilePicker;
   await TextMode.setup();
-  const first=rows.find(r=>!TextMode.done(ensure(r))),pi=cursor?.page??first?.page??0;
-  const target=cursor?.id?rows.findIndex(r=>r.id===cursor.id):TextMode.on()&&first?rows.indexOf(first):-1;
+  const first=rows.find(r=>!TextMode.done(ensure(r),r)),pi=cursor?.page??first?.page??0;
+  // Text mode opens at the first region not yet done (pixels, text and, with drafts, the judgment); otherwise where the annotator left off.
+  const target=TextMode.on()&&first?rows.indexOf(first):cursor?.id?rows.findIndex(r=>r.id===cursor.id):-1;
   if(target>=0)await show(target);else await overview(pi);
   const toReview=rows.filter(r=>ensure(r).needs_clean_review).length;
   if(toReview)status(`已载入 ${rows.length} 个区域。${toReview} 处原已确认标注去除了浅灰噪点，请看一眼后重新确认，已有修正仍保留。`);

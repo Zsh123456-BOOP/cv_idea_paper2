@@ -41,6 +41,9 @@ body.text-mode main{grid-template-columns:170px minmax(0,1fr) 400px}
 .ac-item{display:grid;grid-template-columns:140px 64px 1fr;gap:8px;align-items:center;padding:4px 9px;cursor:pointer;font-size:13px}.ac-item.on{background:var(--blue);color:white}.ac-item code{font:12px ui-monospace,Menlo,monospace}.ac-sym{font-size:16px;text-align:center}
 .text-preview{min-height:44px;padding:8px 10px;border-radius:6px;background:var(--bg);font-size:26px;line-height:1.6;overflow-x:auto;overflow-y:hidden}.text-preview .katex{font-size:1.15em}.text-preview .none{color:var(--muted);font-size:13px}
 .prefill-line{font-size:12px;color:var(--muted)}.prefill-line code{color:var(--ink)}
+.judge{border:2px solid #d9a441;border-radius:8px;padding:8px 10px;background:#fffaf0}.judge-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.judge.ok{border-color:var(--green);background:#f1faf5}
+.judge-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.judge-grid label{display:flex;flex-direction:column;font-size:12px;color:var(--muted)}.judge-grid select{font-size:15px;padding:3px}
+#judgeReason{display:block;width:100%;margin-top:6px;font:14px/1.4 -apple-system,"PingFang SC",sans-serif;padding:5px 7px;border:1px solid var(--line);border-radius:6px}.judge-help{font-size:12px;color:var(--muted)}.judge-help p{margin:4px 0}
 .exam{border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13px}.exam summary{cursor:pointer;color:var(--muted)}.exam .answer{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}.exam-body{overflow-x:auto}
 </style></head><body>
 <header><div><h1 id="appTitle">划线精细复核</h1><small id="appSubtitle">先检查整题，点一处涂改放大修正。</small> <span id="cleanBadge" class="badge" hidden>已清理杂点</span></div><div><span id="progress"></span> <button id="backupBtn" class="quiet" hidden>导出更新前备份</button> <button id="importBtn">导入</button> <button id="exportBtn">导出标注</button> <button id="snapshotBtn" hidden>保存可续标副本</button> <button id="bindBackup" class="quiet" hidden>绑定自动备份文件</button><span id="saveState" class="save-state" aria-live="polite">正在读取草稿…</span><input id="import" type="file" accept="application/json"></div></header>
@@ -67,6 +70,12 @@ body.text-mode main{grid-template-columns:170px minmax(0,1fr) 400px}
 <div id="status" class="status" aria-live="polite"></div><small><span id="saveHelp">每次修改自动保存在本浏览器。离线版可“保存可续标副本”，把图像与进度一起保存；请保留备份，清理浏览器数据会删除本地草稿。</span></small>
 </section>
 <aside id="textSide" hidden>
+<section class="judge" id="judgeSlot" hidden>
+<div class="judge-head"><b>修改对错</b><span class="muted" id="judgeState">模型初判，请核对</span></div>
+<div class="judge-grid"><label>被划内容<select id="judgeStruck"></select></label><label>改后<select id="judgeAfter"></select></label><label>类型<select id="judgeType"></select></label></div>
+<textarea id="judgeReason" rows="2" placeholder="理由"></textarea>
+<details class="judge-help"><summary>类型说明</summary><p>纠错：原来错，改后对 · 改错：原来对，改后错 · 错改错：前后都错 · 抵消：相消的项划掉，是演算记号 · 笔误重写：字写错或写一半，重写同样内容 · 等价改写：换个写法，意思相同 · 换思路：放弃这步、调顺序或换方法 · 删除多余：多写的删掉 · 放弃：划掉后没有再写 · 不确定。"对／错"按标准答案和上下文判断，被划的不是数学内容或不完整时选"不适用"。</p></details>
+</section>
 <div id="textSlot"></div>
 <div class="symbol-field"><div class="symbol-bar" id="symbolBar"></div><div class="ac" id="symbolList" hidden></div></div>
 <div class="prefill-line" id="prefillLine"></div>

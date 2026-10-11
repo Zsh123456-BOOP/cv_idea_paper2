@@ -5,6 +5,25 @@
 const TextMode = (() => {
   let picker = null, notice = '';
   const on = () => pack?.task === 'strike_text';
+  const judging = () => on() && !!pack.judgment_drafts;
+  const FIELDS = [['judgeStruck', 'struck'], ['judgeAfter', 'after'], ['judgeType', 'type']];
+  function draftOf(id) { return pack.judgment_drafts?.[id] || null; }
+  function judgment(s, id) { return s.judgment || draftOf(id); }
+  function showJudgment() {
+    // The region's judgment as the annotator left it, or the draft; a region without a draft hides the panel.
+    const s = state(), j = judgment(s, row().id);
+    $('judgeSlot').hidden = !j;
+    if (!j) return;
+    for (const [id, key] of FIELDS) $(id).value = j[key] || '';
+    $('judgeReason').value = j.reason || '';
+    $('judgeState').textContent = s.judgment_confirmed ? '已确认 ✓' : s.judgment ? '已修改，未确认' : '模型初判，请核对';
+    $('judgeSlot').classList.toggle('ok', !!s.judgment_confirmed);
+  }
+  function judgmentChanged() {
+    touch(); const s = state();
+    s.judgment = { ...(judgment(s, row().id) || {}), ...Object.fromEntries(FIELDS.map(([id, key]) => [key, $(id).value])), reason: $('judgeReason').value };
+    s.judgment_confirmed = false; save(); nav(); showJudgment();
+  }
   const escape = text => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   function markdown(text) {
     // The question's markdown: $$ $$ and $ $ formulas, headings and bold, line breaks; an image link shown as a link.
@@ -77,6 +96,15 @@ const TextMode = (() => {
       if (picker.keys(ev)) return;
       if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('confirm').click(); }
     });
+    if (judging()) {
+      for (const [id, key] of FIELDS) {
+        $(id).replaceChildren(...(pack.judgment_values?.[key] || []).map(v => { const o = document.createElement('option'); o.value = o.textContent = v; return o; }));
+        $(id).onchange = judgmentChanged;
+      }
+      $('judgeReason').oninput = judgmentChanged;
+      $('judgeReason').addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('confirm').click(); } });
+      $('confirm').innerHTML = '确认像素、文字和对错，下一处 <kbd>Enter</kbd>';
+    }
     window.katexLoaded = () => { picker.paintBar(); preview(); if (row()) question(); };
     if (window.katex) window.katexLoaded();
     // A new starting text reaches a region the annotator has neither confirmed nor changed (its text is still an earlier starting text).
@@ -98,7 +126,7 @@ const TextMode = (() => {
     if (!on()) return;
     const r = row();
     $('prefillLine').innerHTML = r.prefill ? '模型初稿：<code>' + escape(r.prefill) + '</code>' : '模型初稿：（空）';
-    preview(); question();
+    preview(); question(); if (judging()) showJudgment();
     const area = $('transcription'); area.focus(); area.setSelectionRange(area.value.length, area.value.length);
     if (notice) { const text = notice; notice = ''; setTimeout(() => status(text), 1200); }
   }
@@ -108,8 +136,12 @@ const TextMode = (() => {
     const s = state();
     if (!s.text?.trim() && !s.unreadable && !s.not_revision) { status('请先写被划掉的字，或勾选“整处无法辨认”。', true); $('transcription').focus(); return false; }
     s.text_confirmed = true;
+    const j = judging() && judgment(s, row().id);
+    if (j) { s.judgment = { ...j }; s.judgment_confirmed = true; }
     return true;
   }
-  const done = s => on() ? s.confirmed && s.text_confirmed : s.confirmed;
-  return { on, setup, onShow, confirmText, preview, done };
+  // Done: pixels confirmed; in text mode the text too; with judgment drafts, the judgment of a region that has one.
+  const done = (s, r) => !on() ? s.confirmed : s.confirmed && s.text_confirmed && (!judging() || !r || !judgment(s, r.id) || !!s.judgment_confirmed);
+  const judged = r => { const s = ensure(r); return !!(judging() && judgment(s, r.id) && s.judgment_confirmed); };
+  return { on, setup, onShow, confirmText, preview, done, judging, judged };
 })();
