@@ -70,6 +70,7 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
 <div class="bar">
   <b>补被划文字</b>
   <span class="pill" id="progress"></span>
+  <span class="meta" id="saved">进度会自动保存在这个浏览器里</span>
   <button id="filter" aria-pressed="false" title="只在没确认的之间跳">只看未完成</button>
   <span class="grow"></span>
   <button id="prev">上一处<kbd>Alt←</kbd></button>
@@ -115,19 +116,25 @@ const $ = id => document.getElementById(id);
 let store = { regions: {} };
 try { store = JSON.parse(localStorage.getItem(KEY) || "") || store; } catch (e) { store = { regions: {} }; }
 if (!store.regions) store.regions = {};
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { toast("浏览器存不下了：请先导出"); } };
+// Only what the annotator did is stored; a region nobody touched shows the pack's starting text, so a rebuilt page's new text reaches it.
+for (const [id, e] of Object.entries(store.regions)) if (!e.done && !e.edited) delete store.regions[id];
+const save = () => {
+  try { localStorage.setItem(KEY, JSON.stringify(store)); $("saved").textContent = "已自动保存 " + new Date().toLocaleTimeString(); $("saved").style.color = ""; }
+  catch (e) { $("saved").textContent = "自动保存失败：请先导出"; $("saved").style.color = "var(--warn)"; }
+};
 let current = 0, onlyOpen = false, lastAction = null;
 
 function entry(r) {
-  if (!store.regions[r.id]) store.regions[r.id] = { text: r.prefill || "", unreadable: !!r.unreadable, not_strike: false, note: "", done: false, seconds: 0 };
-  return store.regions[r.id];
+  // The stored record of a region, or (not stored) its starting state.
+  return store.regions[r.id] || { text: r.prefill || "", unreadable: !!r.unreadable, not_strike: false, note: "", done: false, seconds: 0 };
 }
+function stored(r) { if (!store.regions[r.id]) store.regions[r.id] = { ...entry(r), edited: true }; return store.regions[r.id]; }
 function flagged(e) { return e.unreadable || e.not_strike; }
 function toast(text) { const t = $("toast"); t.textContent = text; t.style.display = "block"; clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", 1800); }
 
 // Time on a region: the gaps between the annotator's actions on it, each counted up to IDLE seconds (page_rules.js).
 function touch() {
-  const now = Date.now() / 1000, e = entry(REGIONS[current]);
+  const now = Date.now() / 1000, e = stored(REGIONS[current]);
   if (lastAction && lastAction.region === current) e.seconds = Math.round((e.seconds + activeSeconds([now - lastAction.at])) * 10) / 10;
   lastAction = { region: current, at: now };
 }
@@ -211,9 +218,9 @@ function step(direction) {
   }
   toast("全部确认完了");
 }
-function edit(field, value) { touch(); const e = entry(REGIONS[current]); e[field] = value; save(); if (field === "text") $("preview").innerHTML = rendered(value); renderChips(); }
+function edit(field, value) { touch(); const e = stored(REGIONS[current]); e[field] = value; save(); if (field === "text") $("preview").innerHTML = rendered(value); renderChips(); }
 function confirmRegion() {
-  touch(); const e = entry(REGIONS[current]);
+  touch(); const e = stored(REGIONS[current]);
   e.done = true; e.confirmed_at = new Date().toISOString(); save(); renderProgress(); step(1);
 }
 
@@ -269,7 +276,7 @@ $("file").onchange = async ev => {
     for (const r of REGIONS) {
       const v = value.regions[r.id]; if (!v) continue;
       store.regions[r.id] = { text: v.text || "", unreadable: !!v.unreadable, not_strike: !!v.not_strike, note: v.note || "", done: !!v.done,
-                              seconds: v.seconds || 0, confirmed_at: v.confirmed_at || null };
+                              seconds: v.seconds || 0, confirmed_at: v.confirmed_at || null, edited: true };
       n++;
     }
     save(); show(current); toast(`导入了 ${n} 处`);

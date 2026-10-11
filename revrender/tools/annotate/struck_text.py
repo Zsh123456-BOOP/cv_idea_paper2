@@ -22,6 +22,7 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +37,7 @@ HERE = Path(__file__).parent
 EDITOR = HERE/'struck_text.html'
 CROP = (30, 12)        # a crop is the region's box and this margin (x, y), as page_prefill cuts the box annotation's crops
 PAGE_WIDTH = 1400      # pages wider than this are shown scaled down (the crops keep the scan's pixels)
+UNKNOWN_RUN = re.compile(r'\?{4,}')   # a reader that loops on unreadable characters starts as three of them
 
 
 def confirmed_regions(export):
@@ -138,7 +140,7 @@ def page(args):
             pages[r['page']] = {'image': data_url(args.crops/r['images']['page']), 'size': r['page_size'], 'question': of[r['page']]}
             used.add(of[r['page']])
     regions = [{**{k: r[k] for k in ('id', 'page', 'split', 'box', 'region', 'crop', 'mode')},
-                'prefill': texts.get(r['id'], ''), 'unreadable': r['unreadable'],
+                'prefill': UNKNOWN_RUN.sub('???', texts.get(r['id'], '')), 'unreadable': r['unreadable'],
                 'clean': data_url(args.crops/r['images']['clean']), 'erased': data_url(args.crops/r['images']['erased'])} for r in records]
     exam = {q: {k: questions[q][k] for k in ('question_global_id', 'printed_problem_no', 'source_exam_title', 'problem_statement_markdown',
                                              'standard_solution_markdown', 'final_answer')} for q in sorted(used)}

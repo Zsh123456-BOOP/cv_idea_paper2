@@ -79,7 +79,7 @@ def test_the_page_carries_regions_starting_texts_and_questions(made):
     records = run_crops(made)
     readings = made/'predictions.jsonl'
     readings.write_text('\n'.join(json.dumps({'condition': 'raw_struck', 'id': r['id'], 'text': text})
-                                  for r, text in zip(records, ['$\\cancel{x=5}$', '□2', ''])))
+                                  for r, text in zip(records, ['$\\cancel{x=5}$', '□2', '□□□□□□□□'])))
     (made/'questions.jsonl').write_text('\n'.join(json.dumps({
         'question_global_id': q, 'printed_problem_no': n, 'source_exam_title': 'exam', 'problem_statement_markdown': 'solve $x$',
         'standard_solution_markdown': '$$x=4$$', 'final_answer': '$4$'}) for q, n in (('m_p18', 18), ('m_p19', 19))))
@@ -89,7 +89,7 @@ def test_the_page_carries_regions_starting_texts_and_questions(made):
             '--answer-groups', str(made/'groups.jsonl'), '--output-dir', str(made/'page')])
     html = (made/'page'/'补文字.html').read_text(encoding='utf-8')
     pack = json.loads(re.search(r'window\.PACK = (\{.*?\});</script>', html, re.S).group(1))
-    assert [r['prefill'] for r in pack['regions']] == ['x=5', '?2', '']
+    assert [r['prefill'] for r in pack['regions']] == ['x=5', '?2', '???']
     assert pack['pages']['w2_3_1']['question'] == 'm_p19' and set(pack['questions']) == {'m_p18', 'm_p19'}
     assert pack['regions'][0]['erased'].startswith('data:image/png;base64,')
     assert '<!--PACK-->' not in html and 'function mathParts' in html
