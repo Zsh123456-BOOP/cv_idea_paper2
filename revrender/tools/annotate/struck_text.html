@@ -40,7 +40,7 @@ button.primary kbd { color:#dfe9f7; }
 .page-frame { cursor:zoom-in; }
 .side { width:440px; flex:none; border-left:1px solid var(--rule); background:var(--panel); overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:12px; }
 .meta { color:var(--muted); font-size:12px; }
-.question { border:1px solid var(--rule); border-radius:8px; padding:8px 10px; font-size:13px; }
+.question { border:1px solid var(--rule); border-radius:8px; padding:8px 10px; font-size:13px; max-height:45vh; overflow:auto; }
 .question summary { cursor:pointer; color:var(--muted); font-size:12.5px; }
 .question .md { margin-top:6px; overflow-x:auto; }
 .answer { margin-top:6px; padding-top:6px; border-top:1px dashed var(--rule); }
@@ -87,7 +87,6 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
   </div>
   <div class="side">
     <div class="meta" id="meta"></div>
-    <details class="question" id="question" open><summary id="q-title"></summary><div class="md" id="q-body"></div><div class="answer md" id="q-answer"></div></details>
     <div>
       <h3>被划掉的字（看不清的字写 ?，公式写在 $ $ 里）</h3>
       <textarea id="text" spellcheck="false" placeholder="例：x=5 或 $\frac{1}{2}a$"></textarea>
@@ -100,6 +99,7 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
     </div>
     <input type="text" id="note" placeholder="备注（可空）">
     <div class="actions"><button id="confirm" class="primary">确认，下一处<kbd>Enter</kbd></button></div>
+    <details class="question" id="question" open><summary id="q-title"></summary><div class="md" id="q-body"></div><div class="answer md" id="q-answer"></div></details>
     <div class="help">
       <p>只写这个框里被划线划掉的原字，没被划的不用写。能认几个写几个，认不出的字写 <code>?</code>。</p>
       <p>Enter 确认并跳到下一处；Shift+Enter 换行。进度自动存在浏览器里，换电脑或清缓存前请先「导出」。</p>
@@ -110,7 +110,7 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
 <div class="toast" id="toast"></div>
 <script>
 "use strict";
-const PACK = window.PACK, REGIONS = PACK.regions, KEY = "struck-text:" + PACK.id, SCALE = 4;
+const PACK = window.PACK, REGIONS = PACK.regions, KEY = "struck-text:" + PACK.id, SCALE = 6;
 const $ = id => document.getElementById(id);
 let store = { regions: {} };
 try { store = JSON.parse(localStorage.getItem(KEY) || "") || store; } catch (e) { store = { regions: {} }; }
@@ -146,7 +146,7 @@ function markdown(text) {
   // The question's markdown: $$ $$ and $ $ formulas, line breaks; an image link shown as its link.
   const out = [], re = /\$\$([\s\S]+?)\$\$|\$([^$]+?)\$|!\[[^\]]*\]\(([^)]+)\)/g;
   let last = 0, m;
-  const words = s => escapeHtml(s).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>");
+  const words = s => escapeHtml(s).replace(/^#{1,6} +(.*)$/gm, "<b>$1</b>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>");
   while ((m = re.exec(text))) {
     out.push(words(text.slice(last, m.index)));
     out.push(m[1] !== undefined ? math(m[1], true) : m[2] !== undefined ? math(m[2], false) : '<a href="' + escapeHtml(m[3]) + '" target="_blank" rel="noopener">[题图]</a>');
@@ -170,7 +170,7 @@ function polygonOf(r) { const [l, t, rr, b] = r.box; return r.region && r.region
 
 function show(k) {
   if (!REGIONS.length) { $("meta").textContent = "这个包里没有区域。"; return; }
-  current = (k + REGIONS.length) % REGIONS.length; lastAction = null;
+  current = (k + REGIONS.length) % REGIONS.length; lastAction = { region: current, at: Date.now() / 1000 };   // reading the region counts
   const r = REGIONS[current], e = entry(r), page = PACK.pages[r.page], q = PACK.questions[page.question];
   const crop = [r.crop[2] - r.crop[0], r.crop[3] - r.crop[1]], room = $("clean-frame").parentElement.clientWidth - 4;
   $("clean").src = r.clean; $("erased").src = r.erased; $("page").src = page.image;
