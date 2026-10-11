@@ -112,7 +112,7 @@ def test_bundle_keeps_all_pages_rows_splits_and_human_labels(tmp_path):
     assert [p['split'] for group in packed for p in group['pages']]==['train','val','test']
     assert packed[1]['rows'][0]['page']==0
     assert packed[0]['initial_export']['pages']['p0']['revisions'][0]['runs']==[[0,2]]
-    assert 'library_store.js' in files[0].read_text()
+    assert 'window.ReviewLibraryStore=' in files[0].read_text()
     assert len({p['id'] for p in packed})==2
 
 

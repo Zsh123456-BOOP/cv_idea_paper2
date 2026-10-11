@@ -1,5 +1,8 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>划线精细复核</title><style>
+<title>划线精细复核</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js" onload="window.katexLoaded&&window.katexLoaded()"></script>
+<style>
 :root{color-scheme:light;--bg:#f4f5f7;--ink:#192635;--muted:#667382;--line:#dce1e7;--blue:#235cca;--green:#137660}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
 [hidden]{display:none!important}button,input,select{font:inherit}button{background:white;color:var(--ink);border:1px solid var(--line);border-radius:7px;padding:8px 12px;cursor:pointer}button:hover{border-color:var(--blue)}button:disabled{opacity:.45;cursor:wait}button.active,button.primary{background:var(--blue);color:white;border-color:var(--blue)}button.done{color:var(--green)}
@@ -28,6 +31,17 @@ main{flex:1;height:auto;min-height:0;overflow:hidden}aside{min-height:0;max-heig
 .extra-details .hint,.extra-details .notes,.extra-details .transcription{margin:4px 0;padding:6px}
 .status{margin:0;min-height:18px;font-size:12px}#saveHelp{font-size:11px}
 @media(max-width:850px){header{align-items:flex-start}header button{padding:4px 6px;font-size:12px}#appSubtitle{display:none}.content{padding:6px}.mode-selector p{font-size:11px}#detailPanel button{padding:4px 6px}.views{min-height:140px}}
+/* Text mode (pack.task strike_text): the struck text and the exam question in a third column. */
+body.text-mode main{grid-template-columns:170px minmax(0,1fr) 400px}
+#textSide{background:white;border-left:1px solid var(--line);overflow:auto;min-height:0;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+#textSide .transcription{margin:0;border:0;padding:0}#textSide .transcription summary{font-size:14px}
+#textSide textarea{font:16px/1.4 ui-monospace,Menlo,monospace;min-height:62px}
+.symbol-bar{display:flex;flex-wrap:wrap;gap:3px}#textSide .symbol-bar button{display:inline-block;width:auto;margin:0;padding:1px 6px;min-width:30px;font-size:15px;text-align:center}
+.symbol-field{position:relative}.ac{position:absolute;left:0;right:0;top:100%;z-index:5;max-height:300px;overflow:auto;background:white;border:1px solid var(--blue);border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.ac-item{display:grid;grid-template-columns:140px 64px 1fr;gap:8px;align-items:center;padding:4px 9px;cursor:pointer;font-size:13px}.ac-item.on{background:var(--blue);color:white}.ac-item code{font:12px ui-monospace,Menlo,monospace}.ac-sym{font-size:16px;text-align:center}
+.text-preview{min-height:30px;padding:6px 9px;border-radius:6px;background:var(--bg);font-size:17px;overflow-x:auto}.text-preview .none{color:var(--muted);font-size:13px}
+.prefill-line{font-size:12px;color:var(--muted)}.prefill-line code{color:var(--ink)}
+.exam{border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13px}.exam summary{cursor:pointer;color:var(--muted)}.exam .answer{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}.exam-body{overflow-x:auto}
 </style></head><body>
 <header><div><h1 id="appTitle">划线精细复核</h1><small id="appSubtitle">先检查整题，点一处涂改放大修正。</small> <span id="cleanBadge" class="badge" hidden>已清理杂点</span></div><div><span id="progress"></span> <button id="backupBtn" class="quiet" hidden>导出更新前备份</button> <button id="importBtn">导入</button> <button id="exportBtn">导出标注</button> <button id="snapshotBtn" hidden>保存可续标副本</button> <button id="bindBackup" class="quiet" hidden>绑定自动备份文件</button><span id="saveState" class="save-state" aria-live="polite">正在读取草稿…</span><input id="import" type="file" accept="application/json"></div></header>
 <main><aside id="nav" aria-label="题目与涂改区域"></aside><section class="content">
@@ -51,5 +65,13 @@ main{flex:1;height:auto;min-height:0;overflow:hidden}aside{min-height:0;max-heig
 </details>
 </section>
 <div id="status" class="status" aria-live="polite"></div><small><span id="saveHelp">每次修改自动保存在本浏览器。离线版可“保存可续标副本”，把图像与进度一起保存；请保留备份，清理浏览器数据会删除本地草稿。</span></small>
-</section></main>
-<script src="page_rules.js"></script><script src="pixel_rules.js"></script><script src="pixel_overview.js"></script><script src="pixel_viewports.js"></script><script src="pixel_editor.js"></script></body></html>
+</section>
+<aside id="textSide" hidden>
+<div id="textSlot"></div>
+<div class="symbol-field"><div class="symbol-bar" id="symbolBar"></div><div class="ac" id="symbolList" hidden></div></div>
+<div class="prefill-line" id="prefillLine"></div>
+<div class="text-preview" id="textPreview"></div>
+<details class="exam" open><summary id="questionTitle">题目与标准解答</summary><div class="exam-body" id="questionBody"></div></details>
+<small class="muted">写被划掉的原字，改正后的字不写；看不清的字写 ?，公式写在 $ $ 里。打 \ 选符号（可接着打英文或中文筛选），↑↓ 选，Enter／Tab 插入。Enter 确认像素和文字并跳到下一处，Shift+Enter 换行。像素直接在左边改：B 画笔、E 橡皮、1／2 切模式（先点一下图）。</small>
+</aside></main>
+<script src="page_rules.js"></script><script src="pixel_rules.js"></script><script src="pixel_overview.js"></script><script src="pixel_viewports.js"></script><script src="library_store.js"></script><script src="symbol_picker.js"></script><script src="pixel_text.js"></script><script src="pixel_editor.js"></script></body></html>

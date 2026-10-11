@@ -27,8 +27,14 @@ function save(){
     ReviewLibraryStore.put(key,{draft:store,export:exported()}).then(()=>{
       if(store.savedAt===stamp){$('saveState').textContent='全部修改已自动保存 · '+new Date(stamp).toLocaleTimeString();$('saveState').classList.remove('error');}
     }).catch(e=>{$('saveState').textContent='保存失败，请立即导出：'+e.message;$('saveState').classList.add('error');});
-  }else try{localStorage.setItem(key,JSON.stringify(store));$('saveState').textContent='草稿已自动保存 · '+new Date(store.savedAt).toLocaleTimeString();$('saveState').classList.remove('error');}
-  catch(e){$('saveState').textContent='浏览器保存失败，请保存可续标副本或导出标注';$('saveState').classList.add('error');}
+  }else{
+    // Offline page: localStorage and IndexedDB (read back), so one of them failing is seen and the other still holds the work.
+    let local=false;try{localStorage.setItem(key,JSON.stringify(store));local=true;}catch(e){}
+    const stamp=store.savedAt,shown=(db)=>{if(store.savedAt!==stamp)return;const where=[db&&'浏览器数据库',local&&'浏览器本地'].filter(Boolean);
+      $('saveState').textContent=where.length?'已自动保存 · '+new Date(stamp).toLocaleTimeString()+' · '+where.join(' + '):'保存失败！请立即导出标注或保存可续标副本';
+      $('saveState').classList.toggle('error',!where.length);};
+    ReviewLibraryStore.put(key,{draft:store}).then(()=>ReviewLibraryStore.get(key)).then(v=>shown(v?.draft?.savedAt===stamp)).catch(()=>shown(false));
+  }
   if(backupHandle){backupPending=JSON.stringify(exported());flushBackup();}
 }
 async function flushBackup(){
@@ -65,13 +71,13 @@ async function cleanStore(candidate){
   candidate.imageRevision=pack.image_revision||'original';return removed;
 }
 function nav(){
-  $('progress').textContent=selectingRegions()?`已框选 ${rows.length} 处 · ${Object.values(store.done).filter(Boolean).length} 题完成`:`像素 ${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length} / ${rows.length}`;
+  $('progress').textContent=TextMode.on()?`已完成 ${rows.filter(r=>TextMode.done(ensure(r))).length} / ${rows.length} · 像素 ${rows.filter(r=>ensure(r).confirmed).length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length}`:selectingRegions()?`已框选 ${rows.length} 处 · ${Object.values(store.done).filter(Boolean).length} 题完成`:`像素 ${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length} / ${rows.length}`;
   const nav=$('nav');nav.replaceChildren();
   pack.pages.forEach((p,i)=>{
     const h=document.createElement('button');h.className='question'+(!inDetail&&i===wholePage?' active':'');
     h.textContent=`第 ${i+1} 题 · 题号 ${p.question}${p.split?' · '+({train:'训练',val:'验证（不训练）',test:'测试（不训练）'}[p.split]||p.split):''}${store.done[i]?' ✓':''}`;h.onclick=()=>overview(i);nav.append(h);
     let number=0;
-    rows.forEach((r,k)=>{if(r.page!==i)return;number++;const b=document.createElement('button');b.textContent=`${ensure(r).confirmed?'✓':'○'} 划线 ${number}${ensure(r).needs_clean_review?' · 清洁后复核':''}`;if(inDetail&&k===at)b.className='active';b.onclick=()=>show(k);nav.append(b);});
+    rows.forEach((r,k)=>{if(r.page!==i)return;number++;const b=document.createElement('button');b.textContent=`${TextMode.done(ensure(r))?'✓':'○'} 划线 ${number}${ensure(r).needs_clean_review?' · 清洁后复核':''}`;if(inDetail&&k===at)b.className='active';b.onclick=()=>show(k);nav.append(b);});
   });
   const deleted=[...pack.rows,...store.extra].filter(r=>ensure(r).deleted&&!ensure(r).duplicate_of);
   if(deleted.length){const group=document.createElement('details'),summary=document.createElement('summary');summary.textContent=`已删除 ${deleted.length} 处（可恢复）`;group.append(summary);
@@ -90,7 +96,7 @@ async function show(index){
   manualKeep=R.keepPixels(s);uncertain=R.uncertainPixels(s);keepMarks=R.positivePixels(s);R.autoClean(s,grey);mask=R.decode(s.runs,grey.length);for(const id of ['edit','result']){$(id).width=original.width;$(id).height=original.height;}
   const n=rows.filter((r,i)=>r.page===row().page&&i<=at).length;
   $('title').textContent=`第 ${wholePage+1} 题 · 划线 ${n} · 多边形裁切 ${original.width} × ${original.height}`;$('notRevision').checked=s.not_revision;$('note').value=s.note;
-  $('transcription').value=s.text||'';$('unreadable').checked=!!s.unreadable;$('textConfirmed').checked=!!s.text_confirmed;updateTextState();
+  $('transcription').value=s.text||'';$('unreadable').checked=!!s.unreadable;$('textConfirmed').checked=!!s.text_confirmed;updateTextState();TextMode.onShow();
   $('previous').disabled=at===0;$('next').disabled=at===rows.length-1;
   updateModeControls();paint();viewports.fit();nav();lastTime=Date.now();save();status(s.confirmed?'这处已确认。继续修改会取消确认。':'仅显示、编辑多边形内部；框外已遮白。');
 }
@@ -241,7 +247,8 @@ $('textConfirmed').onchange=()=>{
   touch();state().text_confirmed=$('textConfirmed').checked;updateTextState();save();nav();
 };
 $('previous').onclick=()=>show(at-1);$('next').onclick=()=>show(at+1);
-$('confirm').onclick=()=>{if(busy||!original)return;finishPaint();touch();state().runs=R.encode(mask);state().confirmed=true;state().needs_clean_review=false;save();nav();if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
+$('confirm').onclick=()=>{if(busy||!original)return;finishPaint();touch();if(!TextMode.confirmText())return;state().runs=R.encode(mask);state().confirmed=true;state().needs_clean_review=false;save();nav();
+  if(TextMode.on()){if(at+1<rows.length)show(at+1);else status('全部区域都看完了，记得导出。');}else if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
 $('pageDone').onclick=()=>{
   const pi=inDetail?row().page:wholePage;
   if(!selectingRegions()&&rows.some(r=>r.page===pi&&!ensure(r).confirmed)){status('这题还有未确认的区域，请逐处复核后再确认整题。',true);return;}
@@ -307,7 +314,15 @@ window.addEventListener('beforeunload',()=>{if(pack&&store){finishPaint();touch(
 async function start(){
   const embedded=$('review-pack');pack=embedded?JSON.parse(embedded.textContent):await (await fetch('pack.json')).json();
   key='pixel-review-'+pack.id+(pack.standalone?'-offline-'+pack.image_revision:'');backupKey=key+'-before-clean';
-  let previous=null,warning='';try{previous=pack.library?JSON.stringify((await ReviewLibraryStore.get(key))?.draft||null):localStorage.getItem(key);}catch(e){warning='浏览器不允许本地保存，请使用可续标副本。';}
+  let previous=null,warning='';
+  try{
+    if(pack.library)previous=JSON.stringify((await ReviewLibraryStore.get(key))?.draft||null);
+    else{
+      // The newer of the offline page's two copies.
+      let local=null,db=null;try{local=JSON.parse(localStorage.getItem(key)||'null');}catch(e){}try{db=(await ReviewLibraryStore.get(key))?.draft||null;}catch(e){}
+      const newest=[local,db].filter(Boolean).sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))[0];previous=newest?JSON.stringify(newest):null;
+    }
+  }catch(e){warning='浏览器不允许本地保存，请使用可续标副本。';}
   let cached=null;try{cached=JSON.parse(previous||'null');}catch(e){warning='浏览器中的草稿格式异常，已改用文件内进度。';try{localStorage.setItem(key+'-unreadable-'+Date.now(),previous);}catch(e){}}
   const embeddedDraft=$('review-draft')?JSON.parse($('review-draft').textContent):null;
   store=(embeddedDraft?.savedAt||0)>(cached?.savedAt||0)?embeddedDraft:cached;
@@ -353,8 +368,9 @@ async function start(){
     $('exportBtn').textContent='导出框选';$('geometryBtn').hidden=true;$('refineBtn').hidden=true;
   }
   $('bindBackup').hidden=!window.showSaveFilePicker;
-  const first=rows.find(r=>!ensure(r).confirmed),pi=cursor?.page??first?.page??0;
-  const target=cursor?.id?rows.findIndex(r=>r.id===cursor.id):-1;
+  await TextMode.setup();
+  const first=rows.find(r=>!TextMode.done(ensure(r))),pi=cursor?.page??first?.page??0;
+  const target=cursor?.id?rows.findIndex(r=>r.id===cursor.id):TextMode.on()&&first?rows.indexOf(first):-1;
   if(target>=0)await show(target);else await overview(pi);
   const toReview=rows.filter(r=>ensure(r).needs_clean_review).length;
   if(toReview)status(`已载入 ${rows.length} 个区域。${toReview} 处原已确认标注去除了浅灰噪点，请看一眼后重新确认，已有修正仍保留。`);

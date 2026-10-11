@@ -10,6 +10,7 @@ from PIL import Image
 
 from revrender.data.pixel_masks import SCHEMA, encode
 from revrender.tools.annotate import struck_text as S
+from revrender.tools.annotate.pixel_review import HERE
 
 
 def revision(rid, box, erase, **extra):
@@ -75,7 +76,7 @@ def test_the_erased_crop_whitens_exactly_the_annotators_pixels(made):
     assert (erased[changed] == 255).all()
 
 
-def test_the_page_carries_regions_starting_texts_and_questions(made):
+def test_the_page_is_a_text_mode_review_pack_with_the_annotators_pixels(made):
     records = run_crops(made)
     readings = made/'predictions.jsonl'
     readings.write_text('\n'.join(json.dumps({'condition': 'raw_struck', 'id': r['id'], 'text': text})
@@ -85,26 +86,25 @@ def test_the_page_carries_regions_starting_texts_and_questions(made):
         'standard_solution_markdown': '$$x=4$$', 'final_answer': '$4$'}) for q, n in (('m_p18', 18), ('m_p19', 19))))
     (made/'groups.jsonl').write_text('\n'.join(json.dumps({'question_global_id': q, 'image_ids': [i]})
                                                for q, i in (('m_p18', 'w1_2_1'), ('m_p19', 'w2_3_1'))))
-    S.main(['page', '--crops', str(made/'crops'), '--readings', str(readings), '--questions', str(made/'questions.jsonl'),
-            '--answer-groups', str(made/'groups.jsonl'), '--output-dir', str(made/'page')])
-    html = (made/'page'/'补文字.html').read_text(encoding='utf-8')
-    pack = json.loads(re.search(r'window\.PACK = (\{.*?\});</script>', html, re.S).group(1))
-    assert [r['prefill'] for r in pack['regions']] == ['x=5', '?2', '???']
-    assert pack['pages']['w2_3_1']['question'] == 'm_p19' and set(pack['questions']) == {'m_p18', 'm_p19'}
-    assert pack['regions'][0]['erased'].startswith('data:image/png;base64,')
-    assert '<!--PACK-->' not in html and 'function mathParts' in html
-    again = made/'page2'
-    S.main(['page', '--crops', str(made/'crops'), '--readings', str(readings), '--questions', str(made/'questions.jsonl'),
-            '--answer-groups', str(made/'groups.jsonl'), '--output-dir', str(again)])
-    assert json.loads((again/'run_manifest.json').read_text())['id'] == pack['id']    # same regions, same browser storage
+    S.main(['page', '--crops', str(made/'crops'), '--export', str(made/'export.json'), '--readings', str(readings),
+            '--questions', str(made/'questions.jsonl'), '--answer-groups', str(made/'groups.jsonl'), '--output-dir', str(made/'page')])
+    pack = json.loads((made/'page'/'pack'/'pack.json').read_text())
+    assert pack['task'] == 'strike_text' and pack['text_source_pack'] == S.identity(records, 'struck-text')
+    assert [r['prefill'] for r in pack['rows']] == ['x=5', '?2', '???'] == [r['text'] for r in pack['rows']]
+    export = json.loads((made/'export.json').read_text())
+    assert pack['rows'][1]['runs'] == export['pages']['w1_2_1']['revisions'][0]['runs']          # the annotator's pixels, not a prediction
+    assert [p['exam_question'] for p in pack['pages']] == ['m_p18', 'm_p19'] and set(pack['questions']) == {'m_p18', 'm_p19'}
+    initial = json.loads((made/'page'/'initial.json').read_text())
+    assert initial['pack'] == pack['id'] and initial['pages']['w2_3_1']['revisions'][0]['unreadable'] is True
+    assert [r['text'] for r in initial['pages']['w1_2_1']['revisions']] == ['x=5', '?2']
+    html = (made/'page'/'site'/'标注.html').read_text()
+    assert 'const TextMode' in html and 'const SymbolPicker' in html and 'window.ReviewLibraryStore=' in html
 
 
 @pytest.mark.skipif(not shutil.which('node'), reason='needs node')
-def test_the_page_script_parses(tmp_path):
-    html = S.slot(S.slot(S.slot(S.EDITOR.read_text(encoding='utf-8'), 'RULES', S.RULES.read_text(encoding='utf-8')), 'OVERVIEW',
-                         S.OVERVIEW.read_text(encoding='utf-8')), 'PACK', 'window.PACK = {};')
-    scripts = re.findall(r'<script>(.*?)</script>', html, re.S)
-    for k, code in enumerate(scripts):
-        path = tmp_path/f'{k}.js'
-        path.write_text(code)
-        subprocess.run(['node', '--check', str(path)], check=True)
+def test_the_editor_scripts_parse_and_formulas_are_told_apart(tmp_path):
+    for name in ('symbol_picker.js', 'pixel_text.js', 'pixel_editor.js'):
+        subprocess.run(['node', '--check', str(HERE/name)], check=True)
+    code = f"const P = require({json.dumps(str(HERE/'symbol_picker.js'))}); console.log(JSON.stringify([P.insideMath('a $x'), P.insideMath('a $x$ '), "
+    code += "P.insideMath('\\\\$ 5'), new Set(P.SYMBOLS.map(s => s[0])).size === P.SYMBOLS.length, P.BAR.every(b => P.SYMBOLS.some(s => s[0] === b))]));"
+    assert json.loads(subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout) == [True, False, False, True, True]

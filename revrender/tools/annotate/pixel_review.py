@@ -19,7 +19,8 @@ from ...data.pixel_masks import encode, decode
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 HERE=Path(__file__).parent
-ASSETS = ('pixel_editor.html', 'pixel_editor.js', 'pixel_rules.js', 'pixel_overview.js', 'pixel_viewports.js', 'page_rules.js')
+ASSETS = ('pixel_editor.html', 'pixel_editor.js', 'pixel_rules.js', 'pixel_overview.js', 'pixel_viewports.js', 'page_rules.js',
+          'library_store.js', 'symbol_picker.js', 'pixel_text.js')
 
 
 def write_assets(out):

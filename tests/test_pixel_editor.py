@@ -147,7 +147,9 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         Image:class{async decode(){}},ImageData:class{constructor(data,width,height){Object.assign(this,{data,width,height});}},
         PixelOverview:class{constructor(c,handlers){this.handlers=handlers;}setImage(im,id,editing){this.selected=id;this.editing=editing;}draw(){}current(){return null;}fit(){}select(id){this.selected=id;}},
         fetch(){throw Error('Offline editor must not fetch');}};
-      ctx.window={addEventListener(){}};vm.createContext(ctx);
+      ctx.window={addEventListener(){}};
+      const offlineDisk=new Map();ctx.ReviewLibraryStore={async get(k){return offlineDisk.get(k);},async put(k,v){offlineDisk.set(k,JSON.parse(JSON.stringify(v)));},async flush(){}};
+      vm.createContext(ctx);vm.runInContext(fs.readFileSync(TEXT_MODE_SCRIPT,'utf8'),ctx);
       const code=fs.readFileSync(EDITOR,'utf8');vm.runInContext(code.slice(0,code.lastIndexOf('start().then')),ctx);
       async function run(){
         await vm.runInContext('start()',ctx);
@@ -164,7 +166,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         const deleted=vm.runInContext('exported().pages.p',ctx);
         await vm.runInContext('restore(history,future)',ctx);
         const restored=vm.runInContext('({count:rows.length,note:state().note,runs:state().runs})',ctx);
-        node('review-draft').textContent=JSON.stringify(saved);disk.clear();await vm.runInContext('start()',ctx);
+        node('review-draft').textContent=JSON.stringify(saved);disk.clear();offlineDisk.clear();await vm.runInContext('start()',ctx);
         const reopened=vm.runInContext('state().note',ctx);
         await vm.runInContext('show(0)',ctx);
         vm.runInContext("grey.fill(255);mask.fill(0);mask[44]=1;grey[44]=20;grey[45]=150;state().runs=R.encode(mask);",ctx);
@@ -215,7 +217,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         vm.runInContext("$('transcription').value='x + ?';$('transcription').oninput();$('textConfirmed').checked=true;$('textConfirmed').onchange();",ctx);
         const separateText=vm.runInContext('state().text_confirmed&&!state().confirmed',ctx);
         const labelled=vm.runInContext('exported()',ctx);
-        node('review-draft').textContent=vm.runInContext('JSON.stringify(store)',ctx);disk.clear();await vm.runInContext('start()',ctx);
+        node('review-draft').textContent=vm.runInContext('JSON.stringify(store)',ctx);disk.clear();offlineDisk.clear();await vm.runInContext('start()',ctx);
         const labelReload=vm.runInContext("({text:state().text,checked:state().text_confirmed,choice:state().annotationMode,green:keepMarks[33],erased:mask[34]})",ctx);
         await vm.runInContext('overview(0)',ctx);
         vm.runInContext("whole.handlers.reshape('p#r',[[0,0],[10,0],[10,3],[3,3],[3,10],[0,10]]);",ctx);
@@ -228,7 +230,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         vm.runInContext("$('pageDone').onclick();",ctx);
         const frameMode=vm.runInContext("({detail:inDetail,task:exported().task,done:store.done[0],confirmed:rows.some(r=>ensure(r).confirmed),empty:rows.at(-1).runs.length===0})",ctx);
         node('review-pack').textContent=JSON.stringify({...pack,id:'empty-frames',task:'region_selection',rows:[],initial_export:undefined});
-        node('review-draft').textContent='null';disk.clear();await vm.runInContext('start()',ctx);
+        node('review-draft').textContent='null';disk.clear();offlineDisk.clear();await vm.runInContext('start()',ctx);
         const blankFrames=vm.runInContext("({rows:rows.length,detail:inDetail,task:pack.task})",ctx);
         const libraryDisk=new Map(),libraryKey='pixel-review-library-fixture-offline-clean';
         ctx.ReviewLibraryStore={async get(k){return libraryDisk.get(k);},async put(k,v){libraryDisk.set(k,JSON.parse(JSON.stringify(v)));},async flush(){}};
@@ -259,7 +261,7 @@ def test_offline_editor_load_autosave_delete_undo_and_restore_from_embedded_draf
         const readingOrder=vm.runInContext("pack.rows=[{...pack.rows[0],id:'lower',box:[0,20,10,30]},{...pack.rows[0],id:'upper',box:[0,0,10,10]}];store.extra=[];syncRows();rows.map(r=>r.id)",ctx);
         console.log(JSON.stringify({readingOrder,dedup,dedupBackup,dedupReload,libraryImport,rejectedImport,library,librarySaved,blankFrames,frameMode,erased,protectedAgain,loaded,saved:!!saved,deleted,restored,reopened,before,applied,undone,automaticSaved,stamp,outsideWhite,brushOutside,eraseKey,textKey,imeKey,paintKey,modeTextGuard,keepMode,emptyKeep,liveKeep,liveErase,keepResult,greenOnly,cleanResult,restoredMode,redOnly,retainedKeep,cleared,keepUndo,separateText,labelled,labelReload,croppedExport,expandedExport}));
       }run().catch(e=>{console.error(e);process.exit(1);});
-    '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor)))
+    '''.replace('VIEWPORT',json.dumps(str(viewport))).replace('EDITOR',json.dumps(str(editor))).replace('TEXT_MODE_SCRIPT',json.dumps(str(RULES.with_name('pixel_text.js'))))
     command=f'const R=require({json.dumps(str(RULES))});'+script
     got=json.loads(subprocess.check_output([NODE,'-e',command],text=True))
     assert got['dedup']=={'visible':1,'cursor':'p#auto','active':1,'archive':1}

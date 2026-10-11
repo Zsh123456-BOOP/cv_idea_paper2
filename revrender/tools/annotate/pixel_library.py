@@ -154,7 +154,7 @@ def bundle(args):
                        duplicate_groups=duplicates,
                        library={'id':source['id'],'part':number,'parts':(len(source['pages'])+args.pages_per_part-1)//args.pages_per_part},
                        initial_export={'schema':SCHEMA,'pack':identity,'pages':originals})
-        html=render_html(payload).replace('<script id="review-pack"','<script src="../library_store.js"></script><script id="review-pack"',1)
+        html=render_html(payload)
         (out/'parts'/f'{number:03d}.html').write_text(html)
         parts.append({'id':identity,'file':f'parts/{number:03d}.html','pages':len(pages),'regions':sum(not r.get('deleted') for r in rows)-sum(len(g['ids'])-1 for g in duplicates),'confirmed':sum(bool(r.get('confirmed')) for r in rows),'splits':dict(Counter(p['split'] for p in pages))})
     meta={'id':source['id'],'parts':parts,'page_to_part':lookup,'initial_pages':initial,
@@ -164,7 +164,7 @@ def bundle(args):
     (out/'library_data.js').write_text('window.REVIEW_LIBRARY='+script_json(meta)+';')
     for name in ('library_store.js','pixel_library.html','pixel_library.js'):
         (out/('index.html' if name.endswith('.html') else name)).write_text((HERE/name).read_text())
-    inputs=[args.pack/'pack.json',Path(__file__),*(HERE/n for n in (*ASSETS,'pixel_library.js','pixel_library.html','library_store.js'))]
+    inputs=[args.pack/'pack.json',Path(__file__),*(HERE/n for n in (*ASSETS,'pixel_library.js','pixel_library.html'))]
     write_manifest(out,config=to_jsonable(args),inputs={str(p):digest(p) for p in inputs},parts=len(parts),pages=len(source['pages']),regions=len(source['rows']),visible_regions=sum(p['regions'] for p in parts))
     print(json.dumps({'parts':len(parts),'pages':len(source['pages']),'regions':len(source['rows']),'entry':str(out/'index.html')}))
 

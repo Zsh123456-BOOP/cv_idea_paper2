@@ -354,13 +354,12 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 ## 补被划文字（2026-10-11）
 
-用户定：论文单位是「一处修改」（输入整题、输出每处被划内容，教育分析看改对没有），像素精修过的区域补上划线下面的原字，作训练和预实验数据；对错由模型对照标准答案先判、用户逐条确认，不让用户另标。
+用户定：论文单位是「一处修改」（输入整题、输出每处被划内容，教育分析看改对没有），像素精修过的区域补上划线下面的原字，作训练和预实验数据；对错由模型对照标准答案先判、用户逐条确认，不让用户另标。框只框被划掉的字（与测试 / 验证框同口径），写被划掉的原字，改正后的字不写。
 
-- 裁切：`python -m revrender.tools.annotate.struck_text crops --export 全量导出.json --review paper2_full_review20261010 --pages 扫描 ... --split train --split val --output-dir OUT`。只取确认且未删除的区域；划分沿用全量预标包（已并入第一篇书写者、同学生对和固定验证书写者），测试书写者的区域不进。每处存扫描小图（给 VLM 起稿）、清洁小图和按用户擦除结果涂白的小图。
+- 裁切：`python -m revrender.tools.annotate.struck_text crops --export 全量导出.json --review paper2_full_review20261010 --pages 扫描 ... --split train --split val --output-dir OUT`。只取确认且未删除的区域；划分沿用全量预标包（已并入第一篇书写者、同学生对和固定验证书写者），测试书写者的区域不进。每处存扫描小图（给 VLM 起稿）、清洁小图和按用户擦除结果涂白的小图，每页存清洁整页。
 - 起稿：`recognize_lines --conditions raw_struck`，Qwen3-VL-32B-FP8 TP2，与测试 / 验证框标注的起稿相同。
-- 页面：`struck_text page --crops OUT --readings predictions.jsonl --questions 第一篇 questions_with_answers.jsonl --answer-groups 第一篇 answer_groups.jsonl --output-dir PAGE`，单文件离线，导出 `paper2-struck-text-v1`。保存：每次改动写入 IndexedDB 并读回核对、同时写 localStorage，可绑定一个备份文件（每次改动写入）；顶部显示存在哪里，全部失败时红色横幅常驻、关页前拦截。第一版只写 localStorage、失败只闪提示，用户约 150 处标注没有存下（2026-10-11），已改；新版在无头 Chrome 的 file:// 下验证过重启后进度仍在、失败时报红。题面与标准解答来自第一篇 `line_edit_question_answer_authority_20260814_v1`（22 道考试题，派生参考答案），作答图经 `line_edit_response_index_20260814_v1` 对到题。
-- 框：只框被划掉的字（与测试 / 验证框同口径），在整份作答上用 `pixel_overview.js` 的多边形手柄调整；用户擦掉的笔画标红。按用户像素推出的被划字范围（`struck_box`：保留模式取保留的墨迹，擦除模式取与擦掉笔画相连的墨迹）比精修框窄 40% 以上时，起始框换成它并提示确认（本包 9 处）。导出 `region`（当前框）、`review_region`、`suggested_region`、`region_edited`。打 `\` 选符号（命令、显示、中文意思），另有常用符号按钮。
-- 本轮：导出 `全量划线标注_2026-10-11.json`（服务器 `paper2_annotation_labels/`）的 238 处确认区域中，训练 199（含第一篇未用书写者 79）、验证 16，测试 23 未放入。服务器 `paper2_struck_text_crops20261011`、`paper2_struck_text_struck32b20261011`；本机 `work/struck_text_page20261011/补文字.html`，桌面副本 `补被划文字.html`（包 ID `paper2-struck-text-5a688fece9ad`）。
+- 页面：`struck_text page --crops OUT --export 全量导出.json --readings predictions.jsonl --questions 第一篇 questions_with_answers.jsonl --answer-groups 第一篇 answer_groups.jsonl --output-dir PAGE`，生成像素精修页的文字模式（`task: strike_text`）：PAGE/pack、PAGE/site/标注.html。用户的像素、多边形、两种模式和画笔 / 橡皮全部照旧（`pixel_editor.js`），右栏是被划文字（`pixel_text.js`；打 `\` 选符号，`symbol_picker.js`）、模型初稿和题面 / 标准解答；Enter 同时确认像素和文字。离线页同时存 localStorage 和 IndexedDB（读回核对），可绑定备份文件。第一次打开时自动接入旧「补被划文字」页存在浏览器里的进度（`text_source_pack`），调过的框按新框裁切、像素待再确认。之后改编辑器只能用 `pixel_review update-html` 更新现有页（存储键含图像版本）。题面与标准解答来自第一篇 `line_edit_question_answer_authority_20260814_v1`（22 道考试题，派生参考答案），作答图经 `line_edit_response_index_20260814_v1` 对到题。
+- 本轮：导出 `全量划线标注_2026-10-11.json`（服务器 `paper2_annotation_labels/`）的 238 处确认区域中，训练 199（含第一篇未用书写者 79）、验证 16，测试 23 未放入。服务器 `paper2_struck_text_crops20261011`、`paper2_struck_text_struck32b20261011`；本机 `work/struck_pixels_page20261011`，桌面 `涂改精修与文字标注.html`（包 ID `paper2-struck-pixels-5a688fece9ad`）。第一版独立文字页只写 localStorage、失败只闪提示，用户约 150 处文字没有存下；已并入本页并在无头 Chrome 的 file:// 下验证接入旧进度、真实按键与鼠标、刷新后仍在。
 
 ## 数据
 

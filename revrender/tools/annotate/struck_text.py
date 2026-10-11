@@ -1,30 +1,32 @@
-"""What is written under each strike region of the pixel review: the regions the annotator confirmed there, packed with a VLM's
-starting text into one offline page where the annotator types what was struck.
+"""What is written under each strike region of the pixel review: the regions the annotator confirmed there, with a VLM's starting
+text, in the pixel review page's text mode, where the annotator types what was struck and corrects pixels and boxes in one place.
 
     python -m revrender.tools.annotate.struck_text crops --export EXPORT.json --review REVIEW_PACK_DIR --pages DIR [--pages DIR ...]
         --split train [--split val ...] --output-dir OUT
-    python -m revrender.tools.annotate.struck_text page --crops OUT --readings predictions.jsonl --questions questions_with_answers.jsonl
-        --answer-groups answer_groups.jsonl --output-dir PAGE
+    python -m revrender.tools.annotate.struck_text page --crops OUT --export EXPORT.json --readings predictions.jsonl
+        --questions questions_with_answers.jsonl --answer-groups answer_groups.jsonl --output-dir PAGE
 
 ``crops``: every confirmed, not deleted region of the review export (``data.pixel_masks`` schema) on a page of the review pack
 (``tools.annotate.pixel_library infer``) whose split is one of ``--split`` -- the pack's split already folds in paper 1's writers, the
 same-student pairs and the frozen validation writers.  Per region: the scan cropped round its box (``CROP``) for ``recognize_lines
 --conditions raw_struck`` (OUT/pack.json, a line pack, as ``page_prefill`` writes for the box annotation), and the review's cleaned page
-cropped the same way twice, as it is and with the annotator's erased pixels white; per page the cleaned page, at most ``PAGE_WIDTH``
-wide.  OUT/regions.json lists them in page order, regions top to bottom.
+cropped the same way twice, as it is and with the annotator's erased pixels white; per page the cleaned page.  OUT/regions.json lists
+them in page order, regions top to bottom.
 
-``page``: the regions, their crops and pages inlined with their starting texts (``page_pack.starting_text`` of the reading), and each
-page's exam question with its derived standard solution (paper 1's response index maps a page to its question), into PAGE/补文字.html
-(``struck_text.html``; text rules from ``page_rules.js``, polygon handles from ``pixel_overview.js``).  A region is to hold only the
-struck writing (as the test and validation boxes do); where the struck writing the annotator's pixels point at (``struck_box``) is
-much narrower than the review region, the page starts from that box and says so, the review region kept to go back to.  The pack id depends only on the region ids, so a rebuilt page keeps what the
-browser already saved.  Crops and pages are student work: OUT and PAGE stay under work/ or the server, never in Git.
+``page``: a pixel review pack (task ``strike_text``) of those regions -- the cleaned pages, each page's exam question with its derived
+standard solution (paper 1's response index maps a page to its question), each region with the annotator's pixels, polygon and marks from
+``--export`` and its starting text (``page_pack.starting_text`` of the reading) -- and its offline page (``pixel_offline.standalone``):
+PAGE/pack/ and PAGE/site/标注.html.  The pixel editor's text mode (``pixel_text.js``, ``symbol_picker.js``) shows the struck text beside the
+pixels and confirms both at once; on first opening it takes over what the earlier struck-text page kept in the browser
+(``text_source_pack``: that page's id, from the same region ids).  Later editor changes reach an existing page with ``pixel_review
+update-html`` (its storage key holds the image revision).  Crops, pages and the page are student work: never in Git.
 """
 import argparse
-import base64
 import hashlib
 import json
 import re
+import shutil
+from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
@@ -33,17 +35,11 @@ from PIL import Image
 from ... import pages as pages_module
 from ...data.pixel_masks import SCHEMA, decode
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
-from ...data.pixel_masks import region_pixels
-from .page_pack import RULES, read_readings, slot
-from .page_prefill import corners, region_of
+from .page_pack import read_readings
+from .pixel_offline import standalone
 
-HERE = Path(__file__).parent
-EDITOR, OVERVIEW = HERE/'struck_text.html', HERE/'pixel_overview.js'
 CROP = (30, 12)        # a crop is the region's box and this margin (x, y), as page_prefill cuts the box annotation's crops
-PAGE_WIDTH = 1400      # pages wider than this are shown scaled down (the crops keep the scan's pixels)
 UNKNOWN_RUN = re.compile(r'\?{4,}')   # a reader that loops on unreadable characters starts as three of them
-INK = 245              # darker than this is ink (as the review pages count it)
-NARROW = .6            # a struck box this much narrower than the review region replaces it as the starting region
 
 
 def confirmed_regions(export):
@@ -90,10 +86,7 @@ def crops(args):
         with Image.open(args.review/'images'/f'{page}.png') as opened:
             grey = np.asarray(opened.convert('L'))
         require(grey.shape == (rgb.height, rgb.width), f'{page}: the review page is not the size of the scan')
-        shown = Image.fromarray(grey)
-        if shown.width > PAGE_WIDTH:
-            shown = shown.resize((PAGE_WIDTH, round(grey.shape[0]*PAGE_WIDTH/grey.shape[1])), Image.LANCZOS)
-        shown.save(out/'pages'/f'{page}.png')
+        Image.fromarray(grey).save(out/'pages'/f'{page}.png')
         for revision in sorted(regions[page], key=lambda r: (r['box'][1], r['box'][0])):
             box = crop_box(revision['box'], rgb.size)
             k = len(rows)
@@ -119,32 +112,6 @@ def crops(args):
     print(json.dumps(summary, ensure_ascii=False))
 
 
-def struck_box(clean, erased, region, crop, mode):
-    """The box (page coordinates) of the struck writing in a region, from the crops: the ink the annotator kept (``keep`` mode: what
-    is left is the struck writing) or the ink connected to what they erased (the strike, through the letters it crosses), inside the
-    region.  None when there is none."""
-    inside = region_pixels(region, crop) if region else np.ones(clean.shape, bool)
-    ink = (clean < INK) & inside
-    seeds = (erased < INK) & ink if mode == 'keep' else (clean != erased) & inside
-    box = region_of(seeds, ink)
-    return None if box is None else [box[0]+crop[0], box[1]+crop[1], box[2]+crop[0], box[3]+crop[1]]
-
-
-def starting_region(record, root):
-    """(region, suggested): the struck box when it is much narrower than the review region, else the review region."""
-    grey = lambda name: np.asarray(Image.open(root/record['images'][name]).convert('L'))
-    region = record['region'] or corners(record['box'])
-    box = struck_box(grey('clean'), grey('erased'), region, record['crop'], record['mode'])
-    l, _, r, _ = record['box']
-    if box and box[2]-box[0] < NARROW*(r-l):
-        return corners(box), True
-    return region, False
-
-
-def data_url(path):
-    return 'data:image/png;base64,'+base64.b64encode(Path(path).read_bytes()).decode()
-
-
 def question_of(answer_groups):
     """{image id: question_global_id} from paper 1's response index."""
     found = {}
@@ -155,35 +122,50 @@ def question_of(answer_groups):
     return found
 
 
+def identity(records, kind):
+    return f'paper2-{kind}-'+hashlib.sha256('|'.join(r['id'] for r in records).encode()).hexdigest()[:12]
+
+
 def page(args):
     records = json.loads((args.crops/'regions.json').read_text())
+    export = json.loads(args.export.read_text())
+    require(export.get('schema') == SCHEMA, 'not a pixel review export')
+    human = {r['id']: r for q in export['pages'].values() for r in q.get('revisions', [])}
+    missing = [r['id'] for r in records if r['id'] not in human]
+    require(not missing, f'{len(missing)} region(s) of the crops are not in the export, e.g. {missing[:2]}')
     texts = read_readings(args.readings)
     questions = {q['question_global_id']: q for q in map(json.loads, args.questions.read_text(encoding='utf-8').splitlines())}
     of = question_of(args.answer_groups)
-    missing = sorted({r['page'] for r in records if of.get(r['page']) not in questions})
-    require(not missing, f'{len(missing)} page(s) without an exam question, e.g. {missing[:2]}')
-    pages, used = {}, set()
-    for r in records:
-        if r['page'] not in pages:
-            pages[r['page']] = {'image': data_url(args.crops/r['images']['page']), 'size': r['page_size'], 'question': of[r['page']]}
-            used.add(of[r['page']])
-    regions = []
-    for r in records:
-        start, suggested = starting_region(r, args.crops)
-        regions.append({**{k: r[k] for k in ('id', 'page', 'split', 'box', 'region', 'crop', 'mode')}, 'start': start, 'suggested': suggested,
-                        'prefill': UNKNOWN_RUN.sub('???', texts.get(r['id'], '')), 'unreadable': r['unreadable'],
-                        'clean': data_url(args.crops/r['images']['clean']), 'erased': data_url(args.crops/r['images']['erased'])})
-    exam = {q: {k: questions[q][k] for k in ('question_global_id', 'printed_problem_no', 'source_exam_title', 'problem_statement_markdown',
-                                             'standard_solution_markdown', 'final_answer')} for q in sorted(used)}
-    identity = 'paper2-struck-text-'+hashlib.sha256('|'.join(r['id'] for r in records).encode()).hexdigest()[:12]
-    pack = {'id': identity, 'schema': 'paper2-struck-text-pack-v1', 'regions': regions, 'pages': pages, 'questions': exam}
-    html = slot(slot(slot(EDITOR.read_text(encoding='utf-8'), 'RULES', RULES.read_text(encoding='utf-8')), 'OVERVIEW',
-                     OVERVIEW.read_text(encoding='utf-8')), 'PACK', 'window.PACK = '+json.dumps(pack, ensure_ascii=False)+';')
+    lost = sorted({r['page'] for r in records if of.get(r['page']) not in questions})
+    require(not lost, f'{len(lost)} page(s) without an exam question, e.g. {lost[:2]}')
     out = make_output_dir(args.output_dir)
-    (out/'补文字.html').write_text(html, encoding='utf-8')
-    summary = {'id': identity, 'regions': len(regions), 'pages': len(pages), 'questions': len(exam),
-               'with_prefill': sum(bool(r['prefill']) for r in regions), 'suggested': sum(r['suggested'] for r in regions), 'bytes': (out/'补文字.html').stat().st_size}
-    inputs = [args.crops/'regions.json', args.crops/'run_manifest.json', args.readings, args.questions, args.answer_groups, EDITOR, RULES, OVERVIEW]
+    (out/'pack'/'images').mkdir(parents=True)
+    pages, index, rows, initial = [], {}, [], {}
+    for r in records:
+        if r['page'] not in index:
+            index[r['page']] = len(pages)
+            source = args.crops/r['images']['page']
+            with Image.open(source) as opened:
+                require(list(opened.size) == r['page_size'], f'{r["page"]}: the cleaned page is not at the scan\'s size')
+            shutil.copyfile(source, out/'pack'/'images'/f'{r["page"]}.png')
+            pages.append({'id': r['page'], 'question': r['page'].split('_')[-2], 'image': f'images/{r["page"]}.png', 'size': r['page_size'],
+                          'split': r['split'], 'exam_question': of[r['page']]})
+        prefill = UNKNOWN_RUN.sub('???', texts.get(r['id'], ''))
+        h = human[r['id']]
+        rows.append({'id': r['id'], 'page': index[r['page']], 'box': h['box'], 'region': h['region'], 'runs': h['runs'], 'text': prefill,
+                     'prefill': prefill})
+        page_record = initial.setdefault(r['page'], {'revisions': [], 'done': False})
+        page_record['revisions'].append({**h, 'text': h.get('text') or prefill})
+    used = sorted({p['exam_question'] for p in pages})
+    exam = {q: {k: questions[q][k] for k in ('question_global_id', 'printed_problem_no', 'source_exam_title', 'problem_statement_markdown',
+                                             'standard_solution_markdown', 'final_answer')} for q in used}
+    pack_id = identity(records, 'struck-pixels')
+    write_json(out/'pack'/'pack.json', {'id': pack_id, 'schema': 'paper2-pixel-review-pack-v1', 'task': 'strike_text', 'pages': pages,
+                                         'rows': rows, 'questions': exam, 'text_source_pack': identity(records, 'struck-text')})
+    write_json(out/'initial.json', {'schema': SCHEMA, 'pack': pack_id, 'task': 'strike_text', 'pages': initial})
+    standalone(Namespace(pack=out/'pack', review_export=out/'initial.json', output_dir=out/'site'))
+    summary = {'id': pack_id, 'regions': len(rows), 'pages': len(pages), 'questions': len(exam), 'with_prefill': sum(bool(r['prefill']) for r in rows)}
+    inputs = [args.crops/'regions.json', args.crops/'run_manifest.json', args.export, args.readings, args.questions, args.answer_groups]
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in inputs}, **summary)
     print(json.dumps(summary, ensure_ascii=False))
 
@@ -199,6 +181,7 @@ def main(argv=None):
     c.add_argument('--output-dir', type=Path, required=True)
     p = sub.add_parser('page')
     p.add_argument('--crops', type=Path, required=True, help='the output of crops')
+    p.add_argument('--export', type=Path, required=True, help='the pixel review export the crops were cut from')
     p.add_argument('--readings', type=Path, required=True, help='recognize_lines predictions on the crops (raw_struck)')
     p.add_argument('--questions', type=Path, required=True, help='questions_with_answers.jsonl (paper 1)')
     p.add_argument('--answer-groups', type=Path, required=True, help="answer_groups.jsonl of paper 1's response index")
