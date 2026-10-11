@@ -28,7 +28,8 @@ contact_regions = 24
 bootstrap = 10000
 
 [decisions]
-primary = ["qwen3vl8b", "internvl35_8b", "minicpmv4", "gemma3_12b"]
+# MiniCPM-V-4 (named minicpm: its first smoke, minicpmv4, hung) or, failing it, GLM-4.1V as the fourth family; never both
+primary = ["qwen3vl8b", "internvl35_8b", "minicpm", "glm41v", "gemma3_12b"]
 majority = 3
 d1_held_below = 0.65
 d1_exact_below = 0.35

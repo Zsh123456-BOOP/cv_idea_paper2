@@ -88,7 +88,7 @@ def test_test_writers_are_refused(tmp_path):
 
 def test_the_config_names_the_primary_models_and_fixed_thresholds():
     cfg = D.load_config(D.Path(__file__).parents[1]/'configs'/'struck_diagnostics.toml')
-    assert len(cfg['decisions']['primary']) == 4 and cfg['decisions']['majority'] == 3
+    assert len(cfg['decisions']['primary']) == 5 and cfg['decisions']['majority'] == 3
     assert cfg['data']['box_remover'].endswith('paper2_strokes_boxes/formal/step_8000.pt')   # synthetic only: never saw these regions
 
 
@@ -104,7 +104,7 @@ def test_score_reads_predictions_and_takes_the_decisions(tmp_path):
     (build/'regions.json').write_text(json.dumps(regions))
     cfg = D.load_config(D.Path(__file__).parents[1]/'configs'/'struck_diagnostics.toml')
     readings = []
-    for model in cfg['decisions']['primary']:
+    for model in [m for m in cfg['decisions']['primary'] if m != 'glm41v']:
         # the raw page is misread, the oracle versions read right
         good = {'E*', 'M*'}
         lines = [json.dumps({'id': r['id'], 'condition': 'boxed_marked' if r['variant'] in D.MARKED else 'boxed_read',
