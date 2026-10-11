@@ -157,7 +157,7 @@ def bundle(args):
         html=render_html(payload)
         (out/'parts'/f'{number:03d}.html').write_text(html)
         parts.append({'id':identity,'file':f'parts/{number:03d}.html','pages':len(pages),'regions':sum(not r.get('deleted') for r in rows)-sum(len(g['ids'])-1 for g in duplicates),'confirmed':sum(bool(r.get('confirmed')) for r in rows),'splits':dict(Counter(p['split'] for p in pages))})
-    meta={'id':source['id'],'parts':parts,'page_to_part':lookup,'initial_pages':initial,
+    meta={'id':source['id'],'title':args.title,'parts':parts,'page_to_part':lookup,'initial_pages':initial,
           'page_splits':{p['id']:p['split'] for p in source['pages']},'image_source':source['image_source'],
           'selected_checkpoint':source['selected_checkpoint'],'validation':source['selection'],
           'protected_validation_writers':source['protected_validation_writers']}
@@ -176,6 +176,7 @@ def main():
     i.add_argument('--review-export',type=Path,action='append',default=[]);i.add_argument('--name',default='paper2-full-review')
     b=sub.add_parser('bundle');b.add_argument('--pack',type=Path,required=True);b.add_argument('--output-dir',type=Path,required=True)
     b.add_argument('--pages-per-part',type=int,default=20)
+    b.add_argument('--title',default='全部涂改 · 筛选与精修')
     args=p.parse_args();infer_all(args) if args.command=='infer' else bundle(args)
 
 

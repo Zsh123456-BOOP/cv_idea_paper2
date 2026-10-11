@@ -1,5 +1,6 @@
 'use strict';
 const L=window.REVIEW_LIBRARY,S=window.ReviewLibraryStore,$=id=>document.getElementById(id);
+if(L.title){document.title=L.title;document.querySelector('h1').textContent=L.title;}
 let saved=new Map();
 function openPart(file){const frame=$('editor');frame.src=file;frame.hidden=false;document.body.classList.add('reviewing');}
 window.addEventListener('message',e=>{

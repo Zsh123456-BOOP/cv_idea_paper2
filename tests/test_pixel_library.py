@@ -105,7 +105,7 @@ def test_bundle_keeps_all_pages_rows_splits_and_human_labels(tmp_path):
         rows.append({'id':f'p{i}#r','page':i,'box':[0,0,10,10],'region':[[0,0],[10,0],[10,10],[0,10]],'runs':[[0,2]],'confirmed':True,'preserved_manual':True})
     data={'id':'full','schema':'paper2-pixel-review-pack-v1','task':'strike_only','image_revision':'review-clean-v1','model_revision':'model-A','image_source':'images','selected_checkpoint':'candidate','selection':{'selected':'manual','models':{}},'protected_validation_writers':['held'],'pages':pages,'rows':rows}
     (source/'pack.json').write_text(json.dumps(data))
-    out=tmp_path/'out';bundle(Namespace(pack=source,output_dir=out,pages_per_part=2))
+    out=tmp_path/'out';bundle(Namespace(pack=source,output_dir=out,pages_per_part=2,title='测试集'))
     files=sorted((out/'parts').glob('*.html'));assert len(files)==2
     packed=[json.loads(EmbeddedReview(p.read_text()).values['review-pack']) for p in files]
     assert sum(len(p['rows']) for p in packed)==3
