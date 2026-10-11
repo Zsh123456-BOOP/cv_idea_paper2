@@ -17,6 +17,7 @@ formulas, □ for what cannot be read, no solving or correcting -- and what a co
   boxed_read       an image with a blue box round one revision, and the instruction to give what the student wrote in the box (under
                    a strike if one is there): eval.struck_diagnostics
   boxed_marked     the same, the strike drawn red and said to be the strike
+  from_pack        the words (and the system prompt) each row of the pack carries: ``prompt``, ``system`` (eval.revision_judgment)
 
 Token conditions (``--backend hf``, Qwen3-VL; ``models.vlm_tokens``) leave the image alone and hide visual tokens from the text, each
 token keeping its position:
@@ -65,6 +66,7 @@ CONDITIONS = {
     'raw_struck': ('raw', (STRUCK,), None),
     'boxed_read': ('raw', (BOX,), None),
     'boxed_marked': ('raw', (MARKED, BOX), None),
+    'from_pack': ('raw', None, None),
     'hide_band_neutral': ('raw', (), 'band'),
     'hide_ink_neutral': ('raw', (), 'ink'),
     'soft_band_neutral': ('raw', (), 'soft_band'),
@@ -84,14 +86,16 @@ def hint_text(boxes):
 def prompt(condition, row):
     """The words of a condition for a row of the pack."""
     _, parts, _ = CONDITIONS[condition]
+    if parts is None:
+        return row['prompt']
     return '\n'.join([SKELETON, *(hint_text(row['boxes']) if part == 'hint' else part for part in parts)])
 
 
-def messages(image, text):
+def messages(image, text, system=SYSTEM):
     buffer = io.BytesIO()
     image.save(buffer, format='PNG')
     url = 'data:image/png;base64,'+base64.b64encode(buffer.getvalue()).decode()
-    return [{'role': 'system', 'content': SYSTEM},
+    return [{'role': 'system', 'content': system},
             {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': url}}, {'type': 'text', 'text': text}]}]
 
 
@@ -121,7 +125,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     p.add_argument('--pack', type=Path, required=True)
     p.add_argument('--model', type=Path, required=True)
-    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | {'raw_struck', 'boxed_read', 'boxed_marked'}])
+    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | {'raw_struck', 'boxed_read', 'boxed_marked', 'from_pack'}])
     p.add_argument('--backend', choices=('vllm', 'hf'), default='vllm')
     p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
     p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')
@@ -139,6 +143,7 @@ def main(argv=None):
     require(len(set(args.conditions)) == len(args.conditions), 'duplicate condition')
     require(args.backend == 'hf' or not TOKEN_RULES & set(args.conditions), 'token conditions need --backend hf')
     require(args.backend == 'hf' or not args.adapter, '--adapter needs --backend hf')
+    require(args.backend == 'vllm' or 'from_pack' not in args.conditions, 'from_pack needs --backend vllm')
     pack = json.loads((args.pack/'pack.json').read_text())
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
     rows = pack['rows'][:args.limit or None]
@@ -172,7 +177,8 @@ def main(argv=None):
                              args.soft if CONDITIONS[c][2] == 'soft_band' else 0.) for (c, row), image in zip(batch, images)]
                 results = reader.read(requests, SYSTEM, args.max_new_tokens)
             else:
-                generated = model.chat([messages(image, prompt(c, row)) for (c, row), image in zip(batch, images)], sampling, use_tqdm=False)
+                generated = model.chat([messages(image, prompt(c, row), row.get('system', SYSTEM) if c == 'from_pack' else SYSTEM)
+                                        for (c, row), image in zip(batch, images)], sampling, use_tqdm=False)
                 results = [{'text': g.outputs[0].text, 'tokens': len(g.outputs[0].token_ids), 'finish': g.outputs[0].finish_reason} for g in generated]
             require(len(results) == len(batch), 'missing generation results')
             for (condition, row), result in zip(batch, results):

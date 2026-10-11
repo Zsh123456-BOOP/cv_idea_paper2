@@ -1,0 +1,19 @@
+# Phase 2 of docs/struck_diagnostics_plan.md (§12.1): does knowing the struck content help judge a revision?
+# Nothing is trained; no test writer is read.  The decision below was fixed before any judgment was read.
+name = "revision_judgment"
+seed = 42
+
+[data]
+labels = "/home/zsh/hme/outputs/paper2_annotation_labels/划线精细标注_paper2-struck-pixels-5a688fece9ad_2026-10-11_judged.json"
+diagnostics = "/home/zsh/hme/outputs/paper2_struck_diag20261011r2_build"            # regions.json and the R / S3 page images
+readings = "/home/zsh/hme/outputs/paper2_struck_diag20261011r2_read_qwen3vl8b_read/predictions.jsonl"
+questions = "/home/zsh/hme/code_roi725_v1/outputs/line_edit_question_answer_authority_20260814_v1/questions_with_answers.jsonl"
+answer_groups = "/home/zsh/hme/code_roi725_v1/outputs/line_edit_response_index_20260814_v1/answer_groups.jsonl"
+
+[score]
+bootstrap = 10000
+
+[decisions]
+primary = "qwen3vl32b"
+field = "struck"
+gain = 0.10
