@@ -33,6 +33,7 @@ def test_a_request_has_one_image_and_the_reading_is_what_is_inside_the_tags():
     assert request[0]['role'] == 'system' and [c['type'] for c in content] == ['image_url', 'text'] and content[0]['image_url']['url'].startswith('data:image/png;base64,')
     assert R.reading_of('<transcription>\n$x=3$\n</transcription>') == '$x=3$' and R.reading_of('<transcription>x=') == 'x='
     assert R.reading_of('plain text') == 'plain text' and R.reading_of('<transcription>[空]</transcription>') == '' and R.reading_of('') == ''
+    assert R.reading_of('<think>reply as <transcription>...</transcription></think><answer><transcription>y=2</transcription></answer>') == 'y=2'
 
 
 PACK = [

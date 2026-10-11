@@ -4,8 +4,8 @@
 #   1. build the versions and scopes (eval.struck_diagnostics build; the synthetic box remover needs a card) unless OUT_build is there;
 #   2. per model a 20-request smoke (at least 95% of readings inside <transcription>, else the model is skipped and logged), then its
 #      readings of both packs (boxed_read, boxed_marked); the secondary models read the S1 packs only.  Card 1: Qwen3-VL-8B, 4B,
-#      InternVL3.5-8B, MiniCPM-V-4 or, failing it, GLM-4.1V-9B-Thinking (the fourth primary family); card 2: Qwen2.5-VL-7B, Qwen3-VL-2B;
-#      then cards 2 and 3 together: gemma-3-12b (bf16 does not fit one 4090) and Qwen3-VL-32B-FP8 (reported apart);
+#      InternVL3.5-8B, MiniCPM-V-4; card 2: Qwen2.5-VL-7B, Qwen3-VL-2B; then cards 2 and 3 together: gemma-3-12b (bf16 does not fit
+#      one 4090), Qwen3-VL-32B-FP8 (reported apart) and, when MiniCPM failed, GLM-4.1V-9B-Thinking (the fourth primary family);
 #   3. score every model that read (OUT_score_<time>).
 #     ALLOW_GPU3=1 run_struck_diagnostics.sh OUT_PREFIX
 # A reading already complete is kept; one whose directory exists without complete.json is waited for (an earlier run may still be
@@ -48,7 +48,8 @@ read_model() {   # NAME MODEL_DIR CARD_UUIDS NUMA CUDA_INDICES SUFFIX EXTRA_ARGS
                CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines)
     if complete "${OUT}_read_${name}_marked"; then stamp "kept $name"; return 0; fi
     if [ -e "${OUT}_smoke_$name" ]; then
-        wait_for "${OUT}_smoke_$name" || { stamp "skipped $name (an earlier smoke failed)"; return 1; }
+        { wait_for "${OUT}_smoke_$name" && parsed "${OUT}_smoke_$name/predictions.jsonl"; } \
+            || { stamp "skipped $name (an earlier smoke failed)"; return 1; }
     elif ! gpu "$card" "$numa" "${OUT}_smoke_$name" -- timeout 1800 "${run[@]}" --pack "${OUT}_build/pack_read$suffix" --conditions boxed_read \
               --limit 20 "${common[@]}" --output-dir "${OUT}_smoke_$name" > "${OUT}_smoke_$name.log" 2>&1 \
          || ! parsed "${OUT}_smoke_$name/predictions.jsonl" >> "${OUT}_smoke_$name.log" 2>&1; then
@@ -67,12 +68,15 @@ stamp "2. models"
 ( read_model qwen3vl8b $M/Qwen3-VL-8B-Instruct $C1 0 1 '' || true
   read_model qwen3vl4b $M/Qwen3-VL-4B-Instruct $C1 0 1 _s1 || true
   read_model internvl35_8b $M/InternVL3_5-8B $C1 0 1 '' --trust-remote-code || true
-  read_model minicpm $M/MiniCPM-V-4 $C1 0 1 '' --trust-remote-code \
-      || read_model glm41v $M/GLM-4.1V-9B-Thinking $C1 0 1 '' --trust-remote-code --max-new-tokens 2048 || true ) > "${OUT}_lane1.log" 2>&1 & L1=$!
+  read_model minicpm $M/MiniCPM-V-4 $C1 0 1 '' --trust-remote-code || true
+  touch "${OUT}_lane1.done" ) > "${OUT}_lane1.log" 2>&1 & L1=$!
 ( read_model qwen25vl7b $M/Qwen2.5-VL-7B-Instruct $C2 1 2 _s1 || true
   read_model qwen3vl2b $M/Qwen3-VL-2B-Instruct $C2 1 2 _s1 || true
   read_model gemma3_12b $M/gemma-3-12b-it "$C2,$C3" 1 2,3 '' --tp 2 || true
-  read_model qwen3vl32b $M/Qwen3-VL-32B-Instruct-FP8 "$C2,$C3" 1 2,3 '' --tp 2 || true ) > "${OUT}_lane23.log" 2>&1 & L23=$!
+  read_model qwen3vl32b $M/Qwen3-VL-32B-Instruct-FP8 "$C2,$C3" 1 2,3 '' --tp 2 || true
+  # the fourth primary family when MiniCPM fails its smoke; two cards, its cache does not fit next to the weights on one
+  until [ -e "${OUT}_lane1.done" ]; do sleep 60; done
+  complete "${OUT}_read_minicpm_marked" || read_model glm41v $M/GLM-4.1V-9B-Thinking "$C2,$C3" 1 2,3 '' --tp 2 --trust-remote-code --max-new-tokens 2048 || true ) > "${OUT}_lane23.log" 2>&1 & L23=$!
 wait $L1; wait $L23
 
 stamp "3. score"

@@ -96,7 +96,9 @@ def messages(image, text):
 
 
 def reading_of(raw):
-    """The text inside <transcription> (all of the output when the tags are missing); [空] is no text."""
+    """The text inside <transcription> (all of the output when the tags are missing); [空] is no text.  A thinking model's
+    reasoning (up to </think>) is left out: it may quote the tags."""
+    raw = raw.rsplit('</think>', 1)[-1]
     found = re.search(r'<transcription>(.*?)(?:</transcription>|$)', raw, re.S)
     text = (found.group(1) if found else raw).strip()
     return '' if text in ('[空]', '空', '【空】') else text
