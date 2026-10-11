@@ -100,7 +100,7 @@ const TextMode = (() => {
     $('prefillLine').innerHTML = r.prefill ? '模型初稿：<code>' + escape(r.prefill) + '</code>' : '模型初稿：（空）';
     preview(); question();
     const area = $('transcription'); area.focus(); area.setSelectionRange(area.value.length, area.value.length);
-    if (notice) { const text = notice; notice = ''; setTimeout(() => status(text), 0); }
+    if (notice) { const text = notice; notice = ''; setTimeout(() => status(text), 1200); }
   }
   function confirmText() {
     // true when the region may be confirmed: struck text written, or unreadable, or not a strike at all.
