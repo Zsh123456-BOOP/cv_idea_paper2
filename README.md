@@ -352,6 +352,15 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 当前标注辅助模型（2026-10-07）：`/home/zsh/hme/outputs/paper2_pixel_finetune20261007/formal/step_800.pt`，由 `paper2_pixel_finetune_eval20261007/summary.json` 的原生验证结果选定。66 处确认中 50 处训练、16 处按书写者留作验证，具体数字见 RESULTS。后续框选入口为桌面 `划线区域框选.html`，源包 `work/pixel_region_selection20261007` / 服务器 `paper2_pixel_region_selection20261007`，30 道新题、初始空框；离线包 `work/pixel_region_selection_offline20261007`。用户导出约 80 个框后用此模型运行 `prefill-regions`，再生成精修单文件。验证对比页在 `work/pixel_finetune_eval20261007/验证对比.html`，两处真实多边形已完成预填集成检查。不同推理批量在阈值边缘出现 1 像素差异，已记入 `work/pixel_region_prefill_smoke20261007/verification.json`。
 
+## 补被划文字（2026-10-11）
+
+用户定：论文单位是「一处修改」（输入整题、输出每处被划内容，教育分析看改对没有），像素精修过的区域补上划线下面的原字，作训练和预实验数据；对错由模型对照标准答案先判、用户逐条确认，不让用户另标。
+
+- 裁切：`python -m revrender.tools.annotate.struck_text crops --export 全量导出.json --review paper2_full_review20261010 --pages 扫描 ... --split train --split val --output-dir OUT`。只取确认且未删除的区域；划分沿用全量预标包（已并入第一篇书写者、同学生对和固定验证书写者），测试书写者的区域不进。每处存扫描小图（给 VLM 起稿）、清洁小图和按用户擦除结果涂白的小图。
+- 起稿：`recognize_lines --conditions raw_struck`，Qwen3-VL-32B-FP8 TP2，与测试 / 验证框标注的起稿相同。
+- 页面：`struck_text page --crops OUT --readings predictions.jsonl --questions 第一篇 questions_with_answers.jsonl --answer-groups 第一篇 answer_groups.jsonl --output-dir PAGE`，单文件离线，浏览器自动保存，导出 `paper2-struck-text-v1`。题面与标准解答来自第一篇 `line_edit_question_answer_authority_20260814_v1`（22 道考试题，派生参考答案），作答图经 `line_edit_response_index_20260814_v1` 对到题。
+- 本轮：导出 `全量划线标注_2026-10-11.json`（服务器 `paper2_annotation_labels/`）的 238 处确认区域中，训练 199（含第一篇未用书写者 79）、验证 16，测试 23 未放入。服务器 `paper2_struck_text_crops20261011`、`paper2_struck_text_struck32b20261011`；本机 `work/struck_text_page20261011/补文字.html`，桌面副本 `补被划文字.html`（包 ID `paper2-struck-text-5a688fece9ad`）。
+
 ## 数据
 
 原始数据（`~/Desktop/cv_idea/未标注数据`、`标注好数据`）只读，用 `configs/paths.toml` 指过去，不复制。第一篇用的数据包在服务器上：
