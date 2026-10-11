@@ -14,6 +14,9 @@ formulas, □ for what cannot be read, no solving or correcting -- and what a co
   overlay_final    the revision tinted red in the one image, said to be a marker and not writing, and the instruction above
   hint_final       the scan, the places of the masks in words (thousandths of the width and height), and the instruction above
   raw_struck       the scan, and the instruction to give only what is struck out or blacked out (the annotation page's starting text)
+  boxed_read       an image with a blue box round one revision, and the instruction to give what the student wrote in the box (under
+                   a strike if one is there): eval.struck_diagnostics
+  boxed_marked     the same, the strike drawn red and said to be the strike
 
 Token conditions (``--backend hf``, Qwen3-VL; ``models.vlm_tokens``) leave the image alone and hide visual tokens from the text, each
 token keeping its position:
@@ -47,6 +50,9 @@ SKELETON = ('请转写图中的手写数学作答。保留原来的换行；公�
 FINAL = '只转写学生最终保留的有效作答：被划掉、涂黑或作废的内容不要输出，保留替换后的内容。'
 STRUCK = '只转写被划线划掉或涂黑的那部分内容，能认出多少写多少；没有被划掉的内容不要输出。公式写在 $ $ 之间。'
 OVERLAY = '图中的红色是已检测出的涂改位置，是辅助标记，不是学生的笔迹。'
+BOX = ('只转写蓝色框里学生原来写的内容，框外的内容不要输出。框里的字上可能有划线，也可能划线已经被去掉：有划线时，读出划线下面原来写的字，'
+       '不要输出划线本身。')
+MARKED = '图中红色的笔画是划线（作废记号），不是学生写的字；黑色的笔画是学生写的字。'
 CONDITIONS = {
     'raw_neutral': ('raw', (), None),
     'raw_final': ('raw', (FINAL,), None),
@@ -57,6 +63,8 @@ CONDITIONS = {
     'overlay_final': ('overlay', (OVERLAY, FINAL), None),
     'hint_final': ('raw', ('hint', FINAL), None),
     'raw_struck': ('raw', (STRUCK,), None),
+    'boxed_read': ('raw', (BOX,), None),
+    'boxed_marked': ('raw', (MARKED, BOX), None),
     'hide_band_neutral': ('raw', (), 'band'),
     'hide_ink_neutral': ('raw', (), 'ink'),
     'soft_band_neutral': ('raw', (), 'soft_band'),
@@ -111,13 +119,14 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     p.add_argument('--pack', type=Path, required=True)
     p.add_argument('--model', type=Path, required=True)
-    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | {'raw_struck'}])
+    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | {'raw_struck', 'boxed_read', 'boxed_marked'}])
     p.add_argument('--backend', choices=('vllm', 'hf'), default='vllm')
     p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
     p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')
     p.add_argument('--gpu-memory', type=float, default=.90, help='vllm: share of each card the engine may take (lower it when others hold memory there)')
     p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
     p.add_argument('--max-new-tokens', type=int, default=256)
+    p.add_argument('--max-model-len', type=int, default=4096, help='vllm: context length (whole-question images need more)')
     p.add_argument('--cell-threshold', type=float, default=.25, help='token rules: share of a token cell under the band that hides it')
     p.add_argument('--ink-threshold', type=float, default=.05, help='token rules: share of a token cell on masked ink that hides it')
     p.add_argument('--soft', type=float, default=4., help='soft_band: bias subtracted from the attention logits of the hidden tokens')
@@ -138,7 +147,7 @@ def main(argv=None):
         reader = Reader(args.model, adapter=args.adapter)
     else:
         from vllm import LLM, SamplingParams
-        model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=4096, max_num_seqs=16, gpu_memory_utilization=args.gpu_memory,
+        model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=args.max_model_len, max_num_seqs=16, gpu_memory_utilization=args.gpu_memory,
                     limit_mm_per_prompt={'image': 1}, tensor_parallel_size=args.tp, trust_remote_code=args.trust_remote_code, disable_log_stats=True)
         sampling = SamplingParams(temperature=0, max_tokens=args.max_new_tokens, seed=SEED)
     write_manifest(out, config=to_jsonable(args), inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'),

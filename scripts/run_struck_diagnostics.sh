@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# The diagnostic study of docs/struck_diagnostics_plan.md, unattended:
+#   1. build the versions and scopes (eval.struck_diagnostics build; the synthetic box remover needs a card);
+#   2. per model a 20-request smoke (at least 95% of readings inside <transcription>, else the model is skipped and logged), then its
+#      readings of both packs (boxed_read, boxed_marked); lane 1 on card 1 and lane 2 on card 2 at once; the secondary models read the
+#      S1 packs only;
+#   3. the two-card models (gemma-3-12b in bf16 does not fit one 4090; Qwen3-VL-32B-FP8, reported apart) on cards 1 and 2;
+#   4. score every model that read.
+#     run_struck_diagnostics.sh OUT_PREFIX
+# Every stage is create-only under OUT_PREFIX_*; nothing is trained; no test writer is read (build refuses them).
+set -Eeuo pipefail
+source "$(dirname "$0")/_common.sh"
+OUT="$1"
+C1=GPU-d0bcc564-5bd9-b943-f995-8536415088e3; C2=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0
+M=/home/zsh/hme/models
+test ! -e "${OUT}_build" || { echo 'create-only output exists'; exit 2; }
+require_clean_source
+trap 'echo "pipeline failed at line $LINENO $(date -u +%FT%TZ)"; touch "$OUT.FAILED"' ERR
+stamp() { echo "$* $(date -u +%FT%TZ)"; }
+gpu() { bash "$ROOT/scripts/launch_gpu_job.sh" "$@"; }
+
+stamp "1. build"
+gpu $C1 0 "${OUT}_build" -- "$PY" -m revrender.eval.struck_diagnostics build --config "$ROOT/configs/struck_diagnostics.toml" --output-dir "${OUT}_build"
+
+parsed() {   # predictions.jsonl -> exit 0 when at least 95% of the raw outputs carry <transcription>
+    "$PY" - "$1" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1], encoding='utf-8')]
+ok = sum('<transcription>' in r['raw'] for r in rows)
+print(f'parsed {ok}/{len(rows)}')
+sys.exit(0 if rows and ok >= .95*len(rows) else 1)
+PY
+}
+read_model() {   # NAME MODEL_DIR CARD_UUID NUMA CUDA_INDEX SUFFIX EXTRA_ARGS...
+    local name="$1" dir="$2" card="$3" numa="$4" index="$5" suffix="$6"; shift 6
+    local common=(--model "$dir" --max-model-len 8192 --gpu-memory .85 "$@")
+    if ! gpu "$card" "$numa" "${OUT}_smoke_$name" -- env CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines --pack "${OUT}_build/pack_read$suffix" \
+            --conditions boxed_read --limit 20 "${common[@]}" --output-dir "${OUT}_smoke_$name" > "${OUT}_smoke_$name.log" 2>&1 \
+       || ! parsed "${OUT}_smoke_$name/predictions.jsonl" >> "${OUT}_smoke_$name.log" 2>&1; then
+        stamp "skipped $name (smoke failed; see ${OUT}_smoke_$name.log)"; echo "$name" >> "${OUT}_skipped.txt"; return 0
+    fi
+    for kind in read marked; do
+        gpu "$card" "$numa" "${OUT}_read_${name}_$kind" -- env CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines \
+            --pack "${OUT}_build/pack_$kind$suffix" --conditions "boxed_$kind" "${common[@]}" --output-dir "${OUT}_read_${name}_$kind" \
+            > "${OUT}_read_${name}_$kind.log" 2>&1
+    done
+    stamp "read $name"
+}
+
+stamp "2. one-card models"
+( read_model qwen3vl8b $M/Qwen3-VL-8B-Instruct $C1 0 1 ''
+  read_model internvl35_8b $M/InternVL3_5-8B $C1 0 1 '' --trust-remote-code
+  read_model qwen3vl2b $M/Qwen3-VL-2B-Instruct $C1 0 1 _s1
+  read_model qwen3vl4b $M/Qwen3-VL-4B-Instruct $C1 0 1 _s1 ) > "${OUT}_lane1.log" 2>&1 & L1=$!
+( read_model minicpmv4 $M/MiniCPM-V-4 $C2 1 2 '' --trust-remote-code
+  read_model qwen25vl7b $M/Qwen2.5-VL-7B-Instruct $C2 1 2 _s1 ) > "${OUT}_lane2.log" 2>&1 & L2=$!
+wait $L1; wait $L2
+
+stamp "3. two-card models"
+read_model gemma3_12b $M/gemma-3-12b-it "$C1,$C2" 0 1,2 '' --tp 2
+read_model qwen3vl32b $M/Qwen3-VL-32B-Instruct-FP8 "$C1,$C2" 0 1,2 '' --tp 2
+
+stamp "4. score"
+READINGS=()
+for d in "${OUT}"_read_*_read "${OUT}"_read_*_marked; do
+    [ -f "$d/complete.json" ] || continue
+    name=$(basename "$d"); name=${name#$(basename "$OUT")_read_}; name=${name%_read}; name=${name%_marked}
+    READINGS+=(--readings "$name=$d/predictions.jsonl")
+done
+"$PY" -m revrender.eval.struck_diagnostics score --config "$ROOT/configs/struck_diagnostics.toml" --build "${OUT}_build" "${READINGS[@]}" \
+    --output-dir "${OUT}_score" > "${OUT}_score.log" 2>&1
+stamp "pipeline complete"
+touch "$OUT.COMPLETE"

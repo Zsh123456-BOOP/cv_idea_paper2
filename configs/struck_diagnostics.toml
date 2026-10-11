@@ -1,0 +1,38 @@
+# Diagnostic study: why do VLMs misread struck content?  (docs/struck_diagnostics_plan.md)
+# Nothing is trained; no test writer is read.  The thresholds below were fixed before any reading was seen.
+name = "struck_diagnostics"
+seed = 42
+
+[data]
+pixel_export = "/home/zsh/hme/outputs/paper2_annotation_labels/划线精细标注_paper2-struck-pixels-5a688fece9ad_2026-10-11.json"
+page_splits = "/home/zsh/hme/outputs/paper2_struck_text_crops20261011/regions.json"   # the split of every page of the pixel set
+box_export = "/home/zsh/hme/outputs/paper2_annotation_labels/涂改标注_paper2-revision-boxes-val_2026-10-05-08-08.json"
+pages = "/home/zsh/hme/outputs/paper2_full_review20261010/images"
+detector = "/home/zsh/hme/outputs/paper2_pages_clean_run_unlabeled3976_tight"
+box_remover = "/home/zsh/hme/outputs/paper2_strokes_boxes/formal/step_8000.pt"   # synthetic only: never saw a real refinement
+mapping = "/home/zsh/hme/outputs/paper2_splits/index_manifest.json"
+same_student = "/home/zsh/hme/outputs/paper2_splits/same_student_pairs.json"
+
+[images]
+red = [215, 40, 40]
+blue = [0, 90, 255]
+box_width = 2
+box_gap = 3           # the blue box lies this far outside the region's bounding box
+crop_pad = 12         # S1 and S2 margins
+mask_reach = 3        # predicted masks count inside the region grown by this much
+remover_point = [0.4, 0.5, 0.0]   # mask threshold, nms, score threshold (as the unified evaluation)
+line_overlap = 0.5    # a line belongs to S2 when it overlaps the region over this share of the lower height
+contact_regions = 24
+
+[score]
+bootstrap = 10000
+
+[decisions]
+primary = ["qwen3vl8b", "internvl35_8b", "minicpmv4", "gemma3_12b"]
+majority = 3
+d1_held_below = 0.65
+d1_exact_below = 0.35
+d2_gain = 0.15
+d2_none = 0.05
+d3_margin = 0.03
+d5_gain = 0.05
