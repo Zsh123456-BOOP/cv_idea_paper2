@@ -8,6 +8,7 @@
 #   4. score every model that read.
 #     run_struck_diagnostics.sh OUT_PREFIX
 # Every stage is create-only under OUT_PREFIX_*; nothing is trained; no test writer is read (build refuses them).
+# Models load offline (HF_HUB_OFFLINE): remote-code models otherwise wait on the hub at start-up.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 OUT="$1"
@@ -33,14 +34,14 @@ PY
 }
 read_model() {   # NAME MODEL_DIR CARD_UUID NUMA CUDA_INDEX SUFFIX EXTRA_ARGS...
     local name="$1" dir="$2" card="$3" numa="$4" index="$5" suffix="$6"; shift 6
-    local common=(--model "$dir" --max-model-len 8192 --gpu-memory .85 "$@")
-    if ! gpu "$card" "$numa" "${OUT}_smoke_$name" -- env CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines --pack "${OUT}_build/pack_read$suffix" \
+    local common=(--model "$dir" --max-model-len 6144 --gpu-memory .85 "$@")   # 8192 leaves an 8B model too little KV cache at .85
+    if ! gpu "$card" "$numa" "${OUT}_smoke_$name" -- env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines --pack "${OUT}_build/pack_read$suffix" \
             --conditions boxed_read --limit 20 "${common[@]}" --output-dir "${OUT}_smoke_$name" > "${OUT}_smoke_$name.log" 2>&1 \
        || ! parsed "${OUT}_smoke_$name/predictions.jsonl" >> "${OUT}_smoke_$name.log" 2>&1; then
         stamp "skipped $name (smoke failed; see ${OUT}_smoke_$name.log)"; echo "$name" >> "${OUT}_skipped.txt"; return 0
     fi
     for kind in read marked; do
-        gpu "$card" "$numa" "${OUT}_read_${name}_$kind" -- env CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines \
+        gpu "$card" "$numa" "${OUT}_read_${name}_$kind" -- env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines \
             --pack "${OUT}_build/pack_$kind$suffix" --conditions "boxed_$kind" "${common[@]}" --output-dir "${OUT}_read_${name}_$kind" \
             > "${OUT}_read_${name}_$kind.log" 2>&1
     done
