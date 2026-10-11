@@ -364,6 +364,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 本轮：导出 `全量划线标注_2026-10-11.json`（服务器 `paper2_annotation_labels/`）的 238 处确认区域中，训练 199（含第一篇未用书写者 79）、验证 16，测试 23 未放入。服务器 `paper2_struck_text_crops20261011`、`paper2_struck_text_struck32b20261011`；本机 `work/struck_pixels_page20261011`，桌面 `涂改精修与文字标注.html`（包 ID `paper2-struck-pixels-5a688fece9ad`）。第一版独立文字页只写 localStorage、失败只闪提示，用户约 150 处文字没有存下；已并入本页并在无头 Chrome 的 file:// 下验证接入旧进度、真实按键与鼠标、刷新后仍在。
 - 诊断实验（2026-10-11，方案 `docs/struck_diagnostics_plan.md`）：`ALLOW_GPU3=1 bash scripts/run_struck_diagnostics.sh OUT`（可续跑；`eval.struck_diagnostics build / score`）。结论见 RESULTS「被划内容诊断实验」：分离是瓶颈，擦除优于标红，现有擦线方法连字一起擦。
 - 第二阶段（2026-10-12，方案 §12.1）：`eval.revision_judgment build --config configs/revision_judgment.toml --output-dir PACK`，`recognize_lines --pack PACK --conditions from_pack`（每行自带提示和系统提示），`eval.revision_judgment score --pack PACK --judgments NAME=predictions.jsonl`。结论见 RESULTS「第二阶段」。
+- 测试集标注入口（2026-10-12）：`annotation_set --lines test=1432` 取全部 72 道合格测试题（≥12 行、≥3 行有涂改；前 22 题即原测试题，顺序不变），`work/test_annotation_set20261012`。服务器 `paper2_test_review20261012.sh`：`clean_pages`、`pages`、`tighten`（与全量复核同一检查点、OCR 文本、模板），`pixel_library infer`（预填固定为 step800，不用之后的微调模型，避免测试标签偏向我们的方法；带入全量导出里这 72 题的 17 处人工记录），`bundle --title`。桌面 `测试集涂改标注.html` + 目录 `测试集涂改标注/`：72 题、723 个检测、折叠重复后 516 处，存储键与全量库分开。
 
 ## 数据
 
