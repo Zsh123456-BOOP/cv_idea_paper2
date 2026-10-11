@@ -362,6 +362,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 改起稿（用户 2026-10-11 定）：在用户精修后的图上读，只读框选的多边形。`struck_text erased --crops OUT --export 全量导出.json --review paper2_full_review20261010 --output-dir ERASED`（擦除像素涂白、多边形外涂白，留 4 像素白边），`recognize_lines --conditions erased_neutral`（Qwen3-VL-32B-FP8，服务器最大的 Qwen 识别模型），再 `struck_text update --source 桌面页 --readings ... --output-dir NEW` 原位更新（包 ID、图像版本、进度不变）；编辑器只替换既未确认、也未改过（仍等于旧初稿）的文字。服务器 `paper2_struck_text_erased20261011`、`paper2_struck_text_erased32b20261011`；215 处中 204 处初稿变了。注意：初稿来自 VLM 读擦除图，后面「先擦后读」的评测要换别的模型读，并在论文里写明。
 - 对错初判（用户 2026-10-11 定：模型先判、用户确认）：对照标准解答和整份作答逐处判断被划内容对不对、改后对不对、修改类型（纠错 / 改错 / 错改错 / 抵消 / 笔误重写 / 等价改写 / 换思路 / 删除多余 / 放弃 / 不确定）和理由，存 `work/annotation_exports/修改对错初判_2026-10-11.json`（`paper2-revision-judgment-draft-v1`，216 处，作者为模型）；`struck_text update --source 桌面页 --judgments 该文件` 原位加入页面，右栏「修改对错」可改，Enter 同时确认像素、文字和对错；导出字段 `judgment`、`judgment_confirmed`。论文里须写明这批标签是"模型初判、人工逐条确认"并报告改动比例。
 - 本轮：导出 `全量划线标注_2026-10-11.json`（服务器 `paper2_annotation_labels/`）的 238 处确认区域中，训练 199（含第一篇未用书写者 79）、验证 16，测试 23 未放入。服务器 `paper2_struck_text_crops20261011`、`paper2_struck_text_struck32b20261011`；本机 `work/struck_pixels_page20261011`，桌面 `涂改精修与文字标注.html`（包 ID `paper2-struck-pixels-5a688fece9ad`）。第一版独立文字页只写 localStorage、失败只闪提示，用户约 150 处文字没有存下；已并入本页并在无头 Chrome 的 file:// 下验证接入旧进度、真实按键与鼠标、刷新后仍在。
+- 诊断实验（2026-10-11，方案 `docs/struck_diagnostics_plan.md`）：`ALLOW_GPU3=1 bash scripts/run_struck_diagnostics.sh OUT`（可续跑；`eval.struck_diagnostics build / score`）。结论见 RESULTS「被划内容诊断实验」：分离是瓶颈，擦除优于标红，现有擦线方法连字一起擦。
 
 ## 数据
 
