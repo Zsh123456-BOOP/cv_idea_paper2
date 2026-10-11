@@ -358,7 +358,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 
 - 裁切：`python -m revrender.tools.annotate.struck_text crops --export 全量导出.json --review paper2_full_review20261010 --pages 扫描 ... --split train --split val --output-dir OUT`。只取确认且未删除的区域；划分沿用全量预标包（已并入第一篇书写者、同学生对和固定验证书写者），测试书写者的区域不进。每处存扫描小图（给 VLM 起稿）、清洁小图和按用户擦除结果涂白的小图。
 - 起稿：`recognize_lines --conditions raw_struck`，Qwen3-VL-32B-FP8 TP2，与测试 / 验证框标注的起稿相同。
-- 页面：`struck_text page --crops OUT --readings predictions.jsonl --questions 第一篇 questions_with_answers.jsonl --answer-groups 第一篇 answer_groups.jsonl --output-dir PAGE`，单文件离线，浏览器自动保存，导出 `paper2-struck-text-v1`。题面与标准解答来自第一篇 `line_edit_question_answer_authority_20260814_v1`（22 道考试题，派生参考答案），作答图经 `line_edit_response_index_20260814_v1` 对到题。
+- 页面：`struck_text page --crops OUT --readings predictions.jsonl --questions 第一篇 questions_with_answers.jsonl --answer-groups 第一篇 answer_groups.jsonl --output-dir PAGE`，单文件离线，导出 `paper2-struck-text-v1`。保存：每次改动写入 IndexedDB 并读回核对、同时写 localStorage，可绑定一个备份文件（每次改动写入）；顶部显示存在哪里，全部失败时红色横幅常驻、关页前拦截。第一版只写 localStorage、失败只闪提示，用户约 150 处标注没有存下（2026-10-11），已改；新版在无头 Chrome 的 file:// 下验证过重启后进度仍在、失败时报红。题面与标准解答来自第一篇 `line_edit_question_answer_authority_20260814_v1`（22 道考试题，派生参考答案），作答图经 `line_edit_response_index_20260814_v1` 对到题。
 - 本轮：导出 `全量划线标注_2026-10-11.json`（服务器 `paper2_annotation_labels/`）的 238 处确认区域中，训练 199（含第一篇未用书写者 79）、验证 16，测试 23 未放入。服务器 `paper2_struck_text_crops20261011`、`paper2_struck_text_struck32b20261011`；本机 `work/struck_text_page20261011/补文字.html`，桌面副本 `补被划文字.html`（包 ID `paper2-struck-text-5a688fece9ad`）。
 
 ## 数据

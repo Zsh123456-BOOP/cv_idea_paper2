@@ -60,6 +60,12 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
 .modal { position:fixed; inset:0; background:rgba(0,0,0,.72); display:none; overflow:auto; z-index:5; padding:24px; cursor:zoom-out; }
 .modal.open { display:block; }
 .modal .frame { margin:auto; display:block; width:fit-content; }
+.saved { font-size:12.5px; padding:1px 8px; border-radius:10px; background:var(--rule); }
+.saved.ok { background:var(--done); color:#fff; }
+.saved.bad { background:#c62828; color:#fff; }
+.banner { background:#c62828; color:#fff; padding:8px 14px; font-weight:600; }
+.banner.hint { background:var(--warn); }
+.banner button { margin-left:10px; }
 .toast { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); background:rgba(0,0,0,.78); color:#fff; padding:5px 12px; border-radius:6px; font-size:13px; display:none; z-index:6; }
 @media (max-width: 860px) { .main { flex-direction:column; } .side { width:auto; border-left:none; border-top:1px solid var(--rule); } }
 </style>
@@ -70,7 +76,8 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
 <div class="bar">
   <b>补被划文字</b>
   <span class="pill" id="progress"></span>
-  <span class="meta" id="saved">进度会自动保存在这个浏览器里</span>
+  <span class="saved" id="saved">正在打开保存…</span>
+  <button id="bind" title="选一个桌面上的文件，之后每次改动都自动写进去">绑定备份文件</button>
   <button id="filter" aria-pressed="false" title="只在没确认的之间跳">只看未完成</button>
   <span class="grow"></span>
   <button id="prev">上一处<kbd>Alt←</kbd></button>
@@ -79,6 +86,7 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
   <button id="export" class="primary">导出</button>
   <input id="file" type="file" accept=".json,application/json" hidden>
 </div>
+<div class="banner" id="banner" hidden></div>
 <div class="chips" id="chips"></div>
 <div class="main">
   <div class="views">
@@ -114,14 +122,115 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
 const PACK = window.PACK, REGIONS = PACK.regions, KEY = "struck-text:" + PACK.id, SCALE = 6;
 const $ = id => document.getElementById(id);
 let store = { regions: {} };
-try { store = JSON.parse(localStorage.getItem(KEY) || "") || store; } catch (e) { store = { regions: {} }; }
-if (!store.regions) store.regions = {};
-// Only what the annotator did is stored; a region nobody touched shows the pack's starting text, so a rebuilt page's new text reaches it.
-for (const [id, e] of Object.entries(store.regions)) if (!e.done && !e.edited) delete store.regions[id];
-const save = () => {
-  try { localStorage.setItem(KEY, JSON.stringify(store)); $("saved").textContent = "已自动保存 " + new Date().toLocaleTimeString(); $("saved").style.color = ""; }
-  catch (e) { $("saved").textContent = "自动保存失败：请先导出"; $("saved").style.color = "var(--warn)"; }
-};
+
+// ---------- saving ----------
+// Every change is written to IndexedDB and read back, to localStorage, and (once bound) to a backup file on disk; the bar says which
+// of them hold the latest state, and a red banner that does not go away says when none does.
+const DB_NAME = "paper2-struck-text", DB_STORE = "progress";
+let dbOpening = null, backupHandle = null, waitingHandle = null, ready = false, pending = Promise.resolve(), failing = false, unsaved = false;
+function db() {
+  return dbOpening ||= new Promise((resolve, reject) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(DB_STORE);
+    r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+  });
+}
+async function dbGet(key) {
+  const d = await db();
+  return new Promise((resolve, reject) => { const r = d.transaction(DB_STORE).objectStore(DB_STORE).get(key); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+}
+async function dbPut(key, value) {
+  const d = await db();
+  return new Promise((resolve, reject) => {
+    const t = d.transaction(DB_STORE, "readwrite"); t.objectStore(DB_STORE).put(value, key);
+    t.oncomplete = resolve; t.onerror = () => reject(t.error); t.onabort = () => reject(t.error || Error("保存被中断"));
+  });
+}
+function exported(snapshot) {
+  const regions = {};
+  for (const r of REGIONS) {
+    const e = snapshot.regions[r.id] || entry(r);
+    regions[r.id] = { page: r.page, split: r.split, question: PACK.pages[r.page].question, prefill: r.prefill, text: e.text, unreadable: e.unreadable,
+                      not_strike: e.not_strike, note: e.note, done: e.done, seconds: e.seconds, confirmed_at: e.confirmed_at || null, edited: !!snapshot.regions[r.id] };
+  }
+  return { schema: "paper2-struck-text-v1", pack: PACK.id, exported_at: new Date().toISOString(), saved_at: snapshot.savedAt || null, regions };
+}
+function banner(text, kind) {
+  const b = $("banner");
+  if (!text) { b.hidden = true; return; }
+  b.hidden = false; b.className = "banner" + (kind === "hint" ? " hint" : ""); b.textContent = text;
+  if (kind === "hint" && window.showSaveFilePicker) { const k = document.createElement("button"); k.textContent = "现在绑定"; k.onclick = bind; b.appendChild(k); }
+  if (kind === "regrant") { const k = document.createElement("button"); k.textContent = "继续写入备份文件"; k.onclick = regrant; b.appendChild(k); }
+}
+function status(held, problems) {
+  const s = $("saved"), time = new Date().toLocaleTimeString();
+  failing = !held.length || problems.length > 0;
+  s.className = "saved " + (held.length ? (problems.length ? "bad" : "ok") : "bad");
+  s.textContent = held.length ? `已保存 ${time} · ${held.join(" + ")}` : "没有保存成功";
+  if (!held.length) banner("自动保存失败：" + problems.join("；") + "。请马上点右上角「导出」，再告诉我。", "error");
+  else if (problems.length) banner("部分保存失败：" + problems.join("；") + "（" + held.join("、") + " 已保存）。", "error");
+  else if (!backupHandle && waitingHandle) banner(`备份文件「${waitingHandle.name}」需要点一下授权才能继续写入（浏览器里已保存）。`, "regrant");
+  else if (!backupHandle) banner("进度已存在浏览器里。建议再绑定一个备份文件：之后每次改动都会同时写进这个文件，浏览器数据丢了也不怕。", "hint");
+  else banner(null);
+}
+async function persist(snapshot) {
+  const held = [], problems = [];
+  try {
+    await dbPut(KEY, snapshot);
+    const back = await dbGet(KEY);
+    if (!back || back.savedAt !== snapshot.savedAt) throw Error("读回不一致");
+    held.push("浏览器数据库");
+  } catch (e) { problems.push("浏览器数据库 " + (e && e.message || e)); }
+  try {
+    localStorage.setItem(KEY, JSON.stringify(snapshot));
+    if (JSON.parse(localStorage.getItem(KEY)).savedAt !== snapshot.savedAt) throw Error("读回不一致");
+    held.push("浏览器本地");
+  } catch (e) { if (!held.length) problems.push("浏览器本地 " + (e && e.message || e)); }
+  if (backupHandle) {
+    try {
+      const w = await backupHandle.createWritable();
+      await w.write(JSON.stringify(exported(snapshot), null, 1)); await w.close();
+      held.push("备份文件 " + backupHandle.name);
+    } catch (e) { problems.push("备份文件 " + (e && e.message || e)); }
+  }
+  status(held, problems);
+  unsaved = !held.length;
+}
+function save() {
+  store.savedAt = new Date().toISOString(); unsaved = true;
+  const snapshot = JSON.parse(JSON.stringify(store));
+  pending = pending.catch(() => {}).then(() => persist(snapshot));
+  return pending;
+}
+async function bind() {
+  try {
+    backupHandle = await window.showSaveFilePicker({ suggestedName: `补被划文字_自动备份_${PACK.id}.json`, types: [{ description: "标注 JSON", accept: { "application/json": [".json"] } }] });
+    try { await dbPut(KEY + ":backup", backupHandle); } catch (e) {}
+    await save(); toast("已绑定备份文件：" + backupHandle.name);
+  } catch (e) { if (e && e.name !== "AbortError") toast("绑定失败：" + e.message); }
+}
+async function regrant() {
+  try { if (await waitingHandle.requestPermission({ mode: "readwrite" }) === "granted") { backupHandle = waitingHandle; waitingHandle = null; await save(); return; } } catch (e) {}
+  toast("没有授权，备份文件暂不写入");
+}
+async function load() {
+  // The newest of what IndexedDB and localStorage hold (by savedAt).
+  const found = [];
+  try { const v = await dbGet(KEY); if (v) found.push(v); } catch (e) {}
+  try { const v = JSON.parse(localStorage.getItem(KEY) || "null"); if (v) found.push(v); } catch (e) {}
+  found.sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")));
+  store = found[0] || { regions: {} };
+  if (!store.regions) store.regions = {};
+  // Only what the annotator did is stored; a region nobody touched shows the pack's starting text, so a rebuilt page's new text reaches it.
+  for (const [id, e] of Object.entries(store.regions)) if (!e.done && !e.edited) delete store.regions[id];
+  try {
+    const h = await dbGet(KEY + ":backup");
+    if (h && h.queryPermission) { if (await h.queryPermission({ mode: "readwrite" }) === "granted") backupHandle = h; else waitingHandle = h; }
+  } catch (e) {}
+  ready = true;
+  await save();          // once at opening, so a browser that cannot keep anything says so before any work is done
+}
+window.addEventListener("beforeunload", ev => { if (unsaved || failing) { ev.preventDefault(); ev.returnValue = ""; } });
 let current = 0, onlyOpen = false, lastAction = null;
 
 function entry(r) {
@@ -218,8 +327,9 @@ function step(direction) {
   }
   toast("全部确认完了");
 }
-function edit(field, value) { touch(); const e = stored(REGIONS[current]); e[field] = value; save(); if (field === "text") $("preview").innerHTML = rendered(value); renderChips(); }
+function edit(field, value) { if (!ready) return; touch(); const e = stored(REGIONS[current]); e[field] = value; save(); if (field === "text") $("preview").innerHTML = rendered(value); renderChips(); }
 function confirmRegion() {
+  if (!ready) return;
   touch(); const e = stored(REGIONS[current]);
   e.done = true; e.confirmed_at = new Date().toISOString(); save(); renderProgress(); step(1);
 }
@@ -254,13 +364,7 @@ $("page-frame").onclick = () => {
 $("modal").onclick = () => $("modal").classList.remove("open");
 
 $("export").onclick = () => {
-  const regions = {};
-  for (const r of REGIONS) {
-    const e = entry(r);
-    regions[r.id] = { page: r.page, split: r.split, question: PACK.pages[r.page].question, prefill: r.prefill, text: e.text, unreadable: e.unreadable,
-                      not_strike: e.not_strike, note: e.note, done: e.done, seconds: e.seconds, confirmed_at: e.confirmed_at || null };
-  }
-  const value = { schema: "paper2-struck-text-v1", pack: PACK.id, exported_at: new Date().toISOString(), regions };
+  const value = exported(store);
   const blob = new Blob([JSON.stringify(value, null, 1)], { type: "application/json" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
   a.download = `补被划文字_${PACK.id}_${new Date().toISOString().slice(0, 10)}.json`; a.click();
@@ -284,8 +388,10 @@ $("file").onchange = async ev => {
   ev.target.value = "";
 };
 window.addEventListener("resize", () => show(current));
+$("bind").onclick = bind;
+if (!window.showSaveFilePicker) $("bind").hidden = true;
 window.katexLoaded = () => show(current);
-show(Math.max(0, REGIONS.findIndex(r => !entry(r).done)));
+load().then(() => show(Math.max(0, REGIONS.findIndex(r => !entry(r).done))));
 </script>
 </body>
 </html>
