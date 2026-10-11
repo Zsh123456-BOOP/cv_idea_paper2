@@ -15,7 +15,9 @@ wide.  OUT/regions.json lists them in page order, regions top to bottom.
 
 ``page``: the regions, their crops and pages inlined with their starting texts (``page_pack.starting_text`` of the reading), and each
 page's exam question with its derived standard solution (paper 1's response index maps a page to its question), into PAGE/补文字.html
-(``struck_text.html``; text rules from ``page_rules.js``).  The pack id depends only on the region ids, so a rebuilt page keeps what the
+(``struck_text.html``; text rules from ``page_rules.js``, polygon handles from ``pixel_overview.js``).  A region is to hold only the
+struck writing (as the test and validation boxes do); where the struck writing the annotator's pixels point at (``struck_box``) is
+much narrower than the review region, the page starts from that box and says so, the review region kept to go back to.  The pack id depends only on the region ids, so a rebuilt page keeps what the
 browser already saved.  Crops and pages are student work: OUT and PAGE stay under work/ or the server, never in Git.
 """
 import argparse
@@ -31,13 +33,17 @@ from PIL import Image
 from ... import pages as pages_module
 from ...data.pixel_masks import SCHEMA, decode
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
+from ...data.pixel_masks import region_pixels
 from .page_pack import RULES, read_readings, slot
+from .page_prefill import corners, region_of
 
 HERE = Path(__file__).parent
-EDITOR = HERE/'struck_text.html'
+EDITOR, OVERVIEW = HERE/'struck_text.html', HERE/'pixel_overview.js'
 CROP = (30, 12)        # a crop is the region's box and this margin (x, y), as page_prefill cuts the box annotation's crops
 PAGE_WIDTH = 1400      # pages wider than this are shown scaled down (the crops keep the scan's pixels)
 UNKNOWN_RUN = re.compile(r'\?{4,}')   # a reader that loops on unreadable characters starts as three of them
+INK = 245              # darker than this is ink (as the review pages count it)
+NARROW = .6            # a struck box this much narrower than the review region replaces it as the starting region
 
 
 def confirmed_regions(export):
@@ -113,6 +119,28 @@ def crops(args):
     print(json.dumps(summary, ensure_ascii=False))
 
 
+def struck_box(clean, erased, region, crop, mode):
+    """The box (page coordinates) of the struck writing in a region, from the crops: the ink the annotator kept (``keep`` mode: what
+    is left is the struck writing) or the ink connected to what they erased (the strike, through the letters it crosses), inside the
+    region.  None when there is none."""
+    inside = region_pixels(region, crop) if region else np.ones(clean.shape, bool)
+    ink = (clean < INK) & inside
+    seeds = (erased < INK) & ink if mode == 'keep' else (clean != erased) & inside
+    box = region_of(seeds, ink)
+    return None if box is None else [box[0]+crop[0], box[1]+crop[1], box[2]+crop[0], box[3]+crop[1]]
+
+
+def starting_region(record, root):
+    """(region, suggested): the struck box when it is much narrower than the review region, else the review region."""
+    grey = lambda name: np.asarray(Image.open(root/record['images'][name]).convert('L'))
+    region = record['region'] or corners(record['box'])
+    box = struck_box(grey('clean'), grey('erased'), region, record['crop'], record['mode'])
+    l, _, r, _ = record['box']
+    if box and box[2]-box[0] < NARROW*(r-l):
+        return corners(box), True
+    return region, False
+
+
 def data_url(path):
     return 'data:image/png;base64,'+base64.b64encode(Path(path).read_bytes()).decode()
 
@@ -139,20 +167,23 @@ def page(args):
         if r['page'] not in pages:
             pages[r['page']] = {'image': data_url(args.crops/r['images']['page']), 'size': r['page_size'], 'question': of[r['page']]}
             used.add(of[r['page']])
-    regions = [{**{k: r[k] for k in ('id', 'page', 'split', 'box', 'region', 'crop', 'mode')},
-                'prefill': UNKNOWN_RUN.sub('???', texts.get(r['id'], '')), 'unreadable': r['unreadable'],
-                'clean': data_url(args.crops/r['images']['clean']), 'erased': data_url(args.crops/r['images']['erased'])} for r in records]
+    regions = []
+    for r in records:
+        start, suggested = starting_region(r, args.crops)
+        regions.append({**{k: r[k] for k in ('id', 'page', 'split', 'box', 'region', 'crop', 'mode')}, 'start': start, 'suggested': suggested,
+                        'prefill': UNKNOWN_RUN.sub('???', texts.get(r['id'], '')), 'unreadable': r['unreadable'],
+                        'clean': data_url(args.crops/r['images']['clean']), 'erased': data_url(args.crops/r['images']['erased'])})
     exam = {q: {k: questions[q][k] for k in ('question_global_id', 'printed_problem_no', 'source_exam_title', 'problem_statement_markdown',
                                              'standard_solution_markdown', 'final_answer')} for q in sorted(used)}
     identity = 'paper2-struck-text-'+hashlib.sha256('|'.join(r['id'] for r in records).encode()).hexdigest()[:12]
     pack = {'id': identity, 'schema': 'paper2-struck-text-pack-v1', 'regions': regions, 'pages': pages, 'questions': exam}
-    html = slot(slot(EDITOR.read_text(encoding='utf-8'), 'RULES', RULES.read_text(encoding='utf-8')), 'PACK',
-                'window.PACK = '+json.dumps(pack, ensure_ascii=False)+';')
+    html = slot(slot(slot(EDITOR.read_text(encoding='utf-8'), 'RULES', RULES.read_text(encoding='utf-8')), 'OVERVIEW',
+                     OVERVIEW.read_text(encoding='utf-8')), 'PACK', 'window.PACK = '+json.dumps(pack, ensure_ascii=False)+';')
     out = make_output_dir(args.output_dir)
     (out/'补文字.html').write_text(html, encoding='utf-8')
     summary = {'id': identity, 'regions': len(regions), 'pages': len(pages), 'questions': len(exam),
-               'with_prefill': sum(bool(r['prefill']) for r in regions), 'bytes': (out/'补文字.html').stat().st_size}
-    inputs = [args.crops/'regions.json', args.crops/'run_manifest.json', args.readings, args.questions, args.answer_groups, EDITOR, RULES]
+               'with_prefill': sum(bool(r['prefill']) for r in regions), 'suggested': sum(r['suggested'] for r in regions), 'bytes': (out/'补文字.html').stat().st_size}
+    inputs = [args.crops/'regions.json', args.crops/'run_manifest.json', args.readings, args.questions, args.answer_groups, EDITOR, RULES, OVERVIEW]
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in inputs}, **summary)
     print(json.dumps(summary, ensure_ascii=False))
 

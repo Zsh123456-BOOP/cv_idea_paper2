@@ -57,6 +57,19 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
 .prefill code { font:12px ui-monospace, Menlo, monospace; color:var(--ink); }
 .help { font-size:12.5px; color:var(--muted); border-top:1px solid var(--rule); padding-top:8px; }
 .help p { margin:3px 0; }
+.editor { position:relative; height:46vh; min-height:260px; border:1px solid var(--rule); background:#e6e9ee; }
+.editor canvas { position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; outline:none; }
+.tools { display:flex; flex-wrap:wrap; gap:6px 8px; align-items:center; margin-top:6px; }
+.note { color:var(--warn); margin-left:8px; font-weight:600; }
+.chip.sug { border-style:dashed; border-color:var(--warn); }
+.symbols { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; }
+.symbols button { padding:1px 7px; min-width:30px; font-size:15px; }
+.field { position:relative; }
+.ac { position:absolute; left:0; right:0; top:100%; z-index:4; max-height:300px; overflow:auto; background:var(--panel); border:1px solid var(--sel); border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,.18); }
+.ac-item { display:grid; grid-template-columns:150px 70px 1fr; gap:8px; align-items:center; padding:4px 9px; cursor:pointer; }
+.ac-item.on { background:var(--sel); color:#fff; }
+.ac-item code { font:12.5px ui-monospace, Menlo, monospace; }
+.ac-sym { font-size:17px; text-align:center; }
 .modal { position:fixed; inset:0; background:rgba(0,0,0,.72); display:none; overflow:auto; z-index:5; padding:24px; cursor:zoom-out; }
 .modal.open { display:block; }
 .modal .frame { margin:auto; display:block; width:fit-content; }
@@ -70,6 +83,7 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
 @media (max-width: 860px) { .main { flex-direction:column; } .side { width:auto; border-left:none; border-top:1px solid var(--rule); } }
 </style>
 <!--RULES--><script>/* page_rules.js is inlined here */</script><!--/RULES-->
+<!--OVERVIEW--><script>/* pixel_overview.js is inlined here */</script><!--/OVERVIEW-->
 <!--PACK--><script>window.PACK = { id: "empty", regions: [], pages: {}, questions: {} };</script><!--/PACK-->
 </head>
 <body>
@@ -90,15 +104,24 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
 <div class="chips" id="chips"></div>
 <div class="main">
   <div class="views">
-    <div class="view"><h3>原图（蓝框是你精修时的范围）</h3><div class="frame" id="clean-frame"><img id="clean" alt=""><svg id="clean-svg"></svg></div></div>
+    <div class="view">
+      <h3>框：只框住被划掉的字（红色是你精修时擦掉的笔画）<span class="note" id="box-note"></span></h3>
+      <div class="editor"><canvas id="overview" tabindex="0"></canvas></div>
+      <div class="tools">
+        <button id="fit-box">放大到框<kbd>Alt F</kbd></button>
+        <button id="whole">看整份作答<kbd>Alt W</kbd></button>
+        <button id="reset-box">恢复精修时的框</button>
+        <span class="meta">拖白点移动顶点 · 拖边上的小点加顶点 · Alt+点顶点删除 · 空白处拖一下画新框 · 滚轮缩放 · 右键／Shift／空格拖动平移 · 点别的框跳过去</span>
+      </div>
+    </div>
     <div class="view"><h3>擦掉划线后（你的精修结果）</h3><div class="frame" id="erased-frame"><img id="erased" alt=""></div></div>
-    <div class="view"><h3>整份作答（点开放大）</h3><div class="frame page-frame" id="page-frame"><img id="page" alt=""><svg id="page-svg"></svg></div></div>
   </div>
   <div class="side">
     <div class="meta" id="meta"></div>
     <div>
       <h3>被划掉的字（看不清的字写 ?，公式写在 $ $ 里）</h3>
-      <textarea id="text" spellcheck="false" placeholder="例：x=5 或 $\frac{1}{2}a$"></textarea>
+      <div class="symbols" id="symbols"></div>
+      <div class="field"><textarea id="text" spellcheck="false" placeholder="例：x=5 或 $\frac{1}{2}a$；打 \ 选符号"></textarea><div class="ac" id="ac" hidden></div></div>
       <div class="prefill" id="prefill"></div>
     </div>
     <div class="preview" id="preview"></div>
@@ -110,12 +133,12 @@ input[type=text] { width:100%; font:inherit; padding:5px 8px; border:1px solid v
     <div class="actions"><button id="confirm" class="primary">确认，下一处<kbd>Enter</kbd></button></div>
     <details class="question" id="question" open><summary id="q-title"></summary><div class="md" id="q-body"></div><div class="answer md" id="q-answer"></div></details>
     <div class="help">
-      <p>只写这个框里被划线划掉的原字，没被划的不用写。能认几个写几个，认不出的字写 <code>?</code>。</p>
+      <p>先把框调到只包住被划掉的字，再写这些字：只写被划掉的原字，改正后的字不写。能认几个写几个，认不出的字写 <code>?</code>。</p>
+      <p>符号：打 <code>\</code> 弹出候选，接着打英文或中文筛选（如 <code>\所以</code>），↑↓ 选，Enter／Tab 插入，Esc 关闭；不在 $ $ 里会自动加上。</p>
       <p>Enter 确认并跳到下一处；Shift+Enter 换行。进度自动存在浏览器里，换电脑或清缓存前请先「导出」。</p>
     </div>
   </div>
 </div>
-<div class="modal" id="modal"><div class="frame" id="big-frame"><img id="big" alt=""><svg id="big-svg"></svg></div></div>
 <div class="toast" id="toast"></div>
 <script>
 "use strict";
@@ -151,7 +174,8 @@ function exported(snapshot) {
   for (const r of REGIONS) {
     const e = snapshot.regions[r.id] || entry(r);
     regions[r.id] = { page: r.page, split: r.split, question: PACK.pages[r.page].question, prefill: r.prefill, text: e.text, unreadable: e.unreadable,
-                      not_strike: e.not_strike, note: e.note, done: e.done, seconds: e.seconds, confirmed_at: e.confirmed_at || null, edited: !!snapshot.regions[r.id] };
+                      not_strike: e.not_strike, note: e.note, done: e.done, seconds: e.seconds, confirmed_at: e.confirmed_at || null, edited: !!snapshot.regions[r.id],
+                      region: e.region || r.start, review_region: reviewRegion(r), suggested_region: r.suggested ? r.start : null, region_edited: !!e.region_edited };
   }
   return { schema: "paper2-struck-text-v1", pack: PACK.id, exported_at: new Date().toISOString(), saved_at: snapshot.savedAt || null, regions };
 }
@@ -235,7 +259,7 @@ let current = 0, onlyOpen = false, lastAction = null;
 
 function entry(r) {
   // The stored record of a region, or (not stored) its starting state.
-  return store.regions[r.id] || { text: r.prefill || "", unreadable: !!r.unreadable, not_strike: false, note: "", done: false, seconds: 0 };
+  return store.regions[r.id] || { text: r.prefill || "", unreadable: !!r.unreadable, not_strike: false, note: "", done: false, seconds: 0, region: r.start };
 }
 function stored(r) { if (!store.regions[r.id]) store.regions[r.id] = { ...entry(r), edited: true }; return store.regions[r.id]; }
 function flagged(e) { return e.unreadable || e.not_strike; }
@@ -276,24 +300,65 @@ function fit(img, natural, room) {
   const w = Math.max(1, Math.min(room, natural[0] * SCALE));
   img.style.width = w + "px"; img.style.height = (w * natural[1] / natural[0]) + "px";
 }
-function outline(svg, size, polygon, offset, width) {
-  svg.setAttribute("viewBox", `0 0 ${size[0]} ${size[1]}`);
-  svg.setAttribute("preserveAspectRatio", "none");
-  const points = polygon.map(([x, y]) => `${x - offset[0]},${y - offset[1]}`).join(" ");
-  svg.innerHTML = `<polygon points="${points}" fill="rgba(21,101,192,.06)" stroke="#1565c0" stroke-width="${width}" stroke-dasharray="${2 * width} ${width}" vector-effect="non-scaling-stroke"/>`;
+function reviewRegion(r) { const [l, t, rr, b] = r.box; return r.region && r.region.length >= 3 ? r.region : [[l, t], [rr, t], [rr, b], [l, b]]; }
+function regionOf(r) { const e = entry(r); return e.region && e.region.length >= 3 ? e.region : r.start; }
+
+// ---------- the box, on the whole answer (polygon handles: pixel_overview.js) ----------
+const tinted = new Map();   // page id -> Promise<canvas>: the cleaned page with every region's erased strokes in red
+const loaded = src => new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = reject; i.src = src; });
+function pageCanvas(pageId) {
+  if (!tinted.has(pageId)) tinted.set(pageId, (async () => {
+    const page = await loaded(PACK.pages[pageId].image), c = document.createElement("canvas");
+    c.width = page.naturalWidth; c.height = page.naturalHeight;
+    const cx = c.getContext("2d"); cx.drawImage(page, 0, 0);
+    for (const r of REGIONS.filter(x => x.page === pageId)) {
+      const [clean, erased] = await Promise.all([loaded(r.clean), loaded(r.erased)]), w = clean.naturalWidth, h = clean.naturalHeight;
+      const a = document.createElement("canvas"), b = document.createElement("canvas"); a.width = b.width = w; a.height = b.height = h;
+      a.getContext("2d").drawImage(clean, 0, 0); b.getContext("2d").drawImage(erased, 0, 0);
+      const ca = a.getContext("2d").getImageData(0, 0, w, h), cb = b.getContext("2d").getImageData(0, 0, w, h);
+      const out = cx.getImageData(r.crop[0], r.crop[1], w, h);
+      for (let k = 0; k < ca.data.length; k += 4) if (ca.data[k] !== cb.data[k]) { out.data[k] = 215; out.data[k + 1] = 40; out.data[k + 2] = 40; }
+      cx.putImageData(out, r.crop[0], r.crop[1]);
+    }
+    return c;
+  })());
+  return tinted.get(pageId);
 }
-function polygonOf(r) { const [l, t, rr, b] = r.box; return r.region && r.region.length >= 3 ? r.region : [[l, t], [rr, t], [rr, b], [l, b]]; }
+const overview = new PixelOverview($("overview"), {
+  rows: () => { const r = REGIONS[current]; return REGIONS.filter(x => x.page === r.page).map(x => ({ id: x.id, region: regionOf(x), confirmed: entry(x).done, not_revision: entry(x).not_strike })); },
+  // A click on another box opens it; a click on paper keeps the current box selected (its handles stay).
+  select: row => { const r = REGIONS[current]; if (row && row.id !== r.id) show(REGIONS.findIndex(x => x.id === row.id)); else if (!row) overview.selected = r.id; },
+  zoom: () => {}, activity: () => {},
+  open: id => { const k = REGIONS.findIndex(x => x.id === id); if (k >= 0 && k !== current) show(k); },
+  reshape: (id, region) => setRegion(id, region),
+  create: region => setRegion(REGIONS[current].id, region),
+});
+function setRegion(id, region) {
+  if (!ready) return;
+  const r = REGIONS.find(x => x.id === id), size = PACK.pages[r.page].size;
+  region = region.map(([x, y]) => [Math.round(Math.max(0, Math.min(size[0], x))), Math.round(Math.max(0, Math.min(size[1], y)))]);
+  if (region.length < 3 || polygonArea(region) < 4) { toast("框太小了"); return; }
+  if (r !== REGIONS[current]) return;
+  touch(); const e = stored(r); e.region = region; e.region_edited = true; save(); overview.draw(); renderBoxNote();
+}
+function renderBoxNote() {
+  const r = REGIONS[current], e = entry(r);
+  $("box-note").textContent = r.suggested && !e.region_edited && !e.done ? "这处框已按你擦掉的笔画自动收紧，请看一下对不对" : "";
+}
+let showing = 0;
+async function showBox() {
+  const r = REGIONS[current], ticket = ++showing, canvas = await pageCanvas(r.page);
+  if (ticket !== showing) return;
+  overview.setImage(canvas, r.id, true); overview.focus(regionOf(r)); renderBoxNote();
+}
 
 function show(k) {
   if (!REGIONS.length) { $("meta").textContent = "这个包里没有区域。"; return; }
   current = (k + REGIONS.length) % REGIONS.length; lastAction = { region: current, at: Date.now() / 1000 };   // reading the region counts
   const r = REGIONS[current], e = entry(r), page = PACK.pages[r.page], q = PACK.questions[page.question];
-  const crop = [r.crop[2] - r.crop[0], r.crop[3] - r.crop[1]], room = $("clean-frame").parentElement.clientWidth - 4;
-  $("clean").src = r.clean; $("erased").src = r.erased; $("page").src = page.image;
-  fit($("clean"), crop, room); fit($("erased"), crop, room);
-  outline($("clean-svg"), crop, polygonOf(r), [r.crop[0], r.crop[1]], 1.5);
-  const pw = Math.min(room, 900); $("page").style.width = pw + "px"; $("page").style.height = (pw * page.size[1] / page.size[0]) + "px";
-  outline($("page-svg"), page.size, [[r.crop[0], r.crop[1]], [r.crop[2], r.crop[1]], [r.crop[2], r.crop[3]], [r.crop[0], r.crop[3]]], [0, 0], 2.5);
+  const crop = [r.crop[2] - r.crop[0], r.crop[3] - r.crop[1]];
+  $("erased").src = r.erased; fit($("erased"), crop, $("erased-frame").parentElement.clientWidth - 4);
+  showBox();
   $("meta").textContent = `第 ${current + 1} / ${REGIONS.length} 处 · ${r.split === "val" ? "验证" : "训练"} · ${r.page}`;
   $("q-title").textContent = q ? `第 ${q.printed_problem_no} 题 · ${q.source_exam_title}（题目与标准解答）` : "（没有对应的题目）";
   $("q-body").innerHTML = q ? markdown(q.problem_statement_markdown) : "";
@@ -316,7 +381,7 @@ function renderChips() {
   }
   REGIONS.forEach((r, i) => {
     const e = entry(r), c = box.children[i];
-    c.className = "chip" + (e.done ? " done" : "") + (flagged(e) ? " flag" : "") + (i === current ? " cur" : "");
+    c.className = "chip" + (e.done ? " done" : "") + (flagged(e) ? " flag" : "") + (r.suggested && !e.region_edited && !e.done ? " sug" : "") + (i === current ? " cur" : "");
   });
   box.children[current].scrollIntoView({ block: "nearest", inline: "nearest" });
 }
@@ -334,10 +399,84 @@ function confirmRegion() {
   e.done = true; e.confirmed_at = new Date().toISOString(); save(); renderProgress(); step(1);
 }
 
-$("text").addEventListener("input", ev => edit("text", ev.target.value));
+// ---------- symbols: type \ for a list (command, how it looks, what it means) ----------
+// ▮ marks where the caret goes after inserting.
+const SYMBOLS = [
+  ["because", "\\because ", "因为"], ["therefore", "\\therefore ", "所以"], ["angle", "\\angle ", "角"], ["triangle", "\\triangle ", "三角形"],
+  ["parallel", "\\parallel ", "平行"], ["perp", "\\perp ", "垂直"], ["cong", "\\cong ", "全等"], ["sim", "\\sim ", "相似"],
+  ["circ", "^{\\circ}", "度（°）"], ["frac", "\\frac{▮}{}", "分数"], ["sqrt", "\\sqrt{▮}", "根号"], ["sqrt[n]", "\\sqrt[▮]{}", "n 次根号"],
+  ["^", "^{▮}", "上标／乘方"], ["_", "_{▮}", "下标"], ["^2", "^{2}", "平方"], ["^3", "^{3}", "立方"],
+  ["times", "\\times ", "乘号"], ["div", "\\div ", "除号"], ["cdot", "\\cdot ", "点乘"], ["pm", "\\pm ", "正负"], ["mp", "\\mp ", "负正"],
+  ["neq", "\\neq ", "不等于"], ["approx", "\\approx ", "约等于"], ["leq", "\\leq ", "小于等于"], ["geq", "\\geq ", "大于等于"],
+  ["lt", "< ", "小于"], ["gt", "> ", "大于"], ["equiv", "\\equiv ", "恒等于"],
+  ["left|", "\\left|▮\\right|", "绝对值"], ["left(", "\\left(▮\\right)", "大括号（圆括号）"], ["overline", "\\overline{▮}", "上划线／线段"],
+  ["overset{\\frown}", "\\overset{\\frown}{▮}", "弧"], ["vec", "\\vec{▮}", "向量"], ["odot", "\\odot ", "圆（⊙）"], ["square", "\\square ", "正方形"],
+  ["pi", "\\pi ", "圆周率"], ["alpha", "\\alpha ", "阿尔法"], ["beta", "\\beta ", "贝塔"], ["gamma", "\\gamma ", "伽马"], ["theta", "\\theta ", "西塔"],
+  ["infty", "\\infty ", "无穷"], ["in", "\\in ", "属于"], ["notin", "\\notin ", "不属于"], ["subseteq", "\\subseteq ", "子集"],
+  ["cap", "\\cap ", "交集"], ["cup", "\\cup ", "并集"], ["varnothing", "\\varnothing ", "空集"],
+  ["rightarrow", "\\rightarrow ", "箭头"], ["Rightarrow", "\\Rightarrow ", "推出"], ["Leftrightarrow", "\\Leftrightarrow ", "等价"],
+  ["cdots", "\\cdots ", "省略号"], ["%", "\\% ", "百分号"], ["cases", "\\begin{cases}▮\\\\ \\end{cases}", "方程组（\\\\ 换行）"],
+  ["sin", "\\sin ", "正弦"], ["cos", "\\cos ", "余弦"], ["tan", "\\tan ", "正切"], ["text", "\\text{▮}", "公式里写中文"],
+];
+const BAR = ["because", "therefore", "angle", "triangle", "parallel", "perp", "cong", "sim", "circ", "times", "div", "pm", "neq", "leq", "geq", "frac", "sqrt", "^", "pi"];
+const shown = snippet => snippet.replace("▮", snippet.includes("{▮}") || snippet.includes("[▮]") ? "x" : "x").replace(/\{\}/g, "{y}");
+function symbolHtml(snippet) { return math(shown(snippet).trim(), false); }
+let picker = { open: false, items: [], index: 0, start: 0 };
+function closePicker() { picker.open = false; $("ac").hidden = true; }
+function suggest() {
+  const t = $("text"), before = t.value.slice(0, t.selectionStart), m = /\\([A-Za-z^_|(\[\]%\u4e00-\u9fa5]*)$/.exec(before);
+  if (!m) return closePicker();
+  const q = m[1], rank = ([name, , zh]) => !q ? 0 : name.startsWith(q) ? 0 : name.toLowerCase().includes(q.toLowerCase()) ? 1 : zh.includes(q) ? 2 : -1;
+  const items = SYMBOLS.map(x => [rank(x), x]).filter(([k]) => k >= 0).sort((a, b) => a[0] - b[0]).map(([, x]) => x);
+  if (!items.length) return closePicker();
+  picker = { open: true, items, index: 0, start: m.index };
+  renderPicker();
+}
+function renderPicker() {
+  const box = $("ac"); box.hidden = false;
+  box.replaceChildren(...picker.items.map(([name, snippet, zh], i) => {
+    const row = document.createElement("div"); row.className = "ac-item" + (i === picker.index ? " on" : "");
+    row.innerHTML = `<code>\\${escapeHtml(name)}</code><span class="ac-sym">${symbolHtml(snippet)}</span><span>${escapeHtml(zh)}</span>`;
+    row.onmousedown = ev => { ev.preventDefault(); picker.index = i; choose(); };
+    return row;
+  }));
+  box.children[picker.index].scrollIntoView({ block: "nearest" });
+}
+function pickKey(ev) {
+  if (!picker.open) return false;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") { ev.preventDefault(); picker.index = (picker.index + (ev.key === "ArrowDown" ? 1 : -1) + picker.items.length) % picker.items.length; renderPicker(); return true; }
+  if ((ev.key === "Enter" || ev.key === "Tab") && !ev.isComposing) { ev.preventDefault(); choose(); return true; }
+  if (ev.key === "Escape") { ev.preventDefault(); closePicker(); return true; }
+  return false;
+}
+function insideMath(text) { return (text.replace(/\\\$/g, "").match(/\$/g) || []).length % 2 === 1; }
+function insert(snippet, from, to) {
+  // Put a symbol's LaTeX at [from, to) of the text, inside $ $ when the caret is not already in a formula; the caret goes to ▮.
+  const t = $("text"), value = t.value, wrap = !insideMath(value.slice(0, from));
+  let body = wrap ? "$" + snippet.replace(/ $/, "") + "$" : snippet;
+  const caret = body.includes("▮") ? body.indexOf("▮") : body.length; body = body.replace("▮", "");
+  t.value = value.slice(0, from) + body + value.slice(to);
+  t.focus(); t.setSelectionRange(from + caret, from + caret);
+  edit("text", t.value);
+}
+function choose() { const t = $("text"), [, snippet] = picker.items[picker.index]; closePicker(); insert(snippet, picker.start, t.selectionStart); }
+$("symbols").replaceChildren(...BAR.map(name => {
+  const [, snippet, zh] = SYMBOLS.find(x => x[0] === name), b = document.createElement("button");
+  b.title = zh + "（\\" + name + "）"; b.dataset.snippet = snippet;
+  b.onmousedown = ev => ev.preventDefault();
+  b.onclick = () => { const t = $("text"); insert(snippet, t.selectionStart, t.selectionEnd); };
+  return b;
+}));
+function renderBar() { for (const b of $("symbols").children) b.innerHTML = symbolHtml(b.dataset.snippet); }
+renderBar();
+
+$("text").addEventListener("input", ev => { edit("text", ev.target.value); suggest(); });
 $("text").addEventListener("keydown", ev => {
+  if (pickKey(ev)) return;
   if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); confirmRegion(); }
 });
+$("text").addEventListener("blur", () => setTimeout(closePicker, 150));
+$("text").addEventListener("click", suggest);
 $("unreadable").addEventListener("change", ev => edit("unreadable", ev.target.checked));
 $("notstrike").addEventListener("change", ev => edit("not_strike", ev.target.checked));
 $("note").addEventListener("input", ev => edit("note", ev.target.value));
@@ -346,22 +485,23 @@ $("confirm").onclick = confirmRegion;
 $("prev").onclick = () => step(-1);
 $("next").onclick = () => step(1);
 $("filter").onclick = () => { onlyOpen = !onlyOpen; $("filter").setAttribute("aria-pressed", String(onlyOpen)); };
+const typing = el => el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT");
 document.addEventListener("keydown", ev => {
-  if (ev.key === "Escape") { $("modal").classList.remove("open"); return; }
+  if (ev.code === "Space" && !typing(document.activeElement)) { ev.preventDefault(); overview.space = true; return; }
   if (!ev.altKey) return;
   const k = ev.code;
+  if (k === "KeyF") { ev.preventDefault(); overview.focus(regionOf(REGIONS[current])); return; }
+  if (k === "KeyW") { ev.preventDefault(); overview.fit(); return; }
   if (k === "ArrowLeft") { ev.preventDefault(); step(-1); }
   else if (k === "ArrowRight") { ev.preventDefault(); step(1); }
   else if (k === "KeyU") { ev.preventDefault(); $("unreadable").checked = !$("unreadable").checked; edit("unreadable", $("unreadable").checked); }
   else if (k === "KeyX") { ev.preventDefault(); $("notstrike").checked = !$("notstrike").checked; edit("not_strike", $("notstrike").checked); }
 });
-$("page-frame").onclick = () => {
-  const r = REGIONS[current], page = PACK.pages[r.page], w = Math.min(window.innerWidth - 48, page.size[0]);
-  $("big").src = page.image; $("big").style.width = w + "px"; $("big").style.height = (w * page.size[1] / page.size[0]) + "px";
-  outline($("big-svg"), page.size, [[r.crop[0], r.crop[1]], [r.crop[2], r.crop[1]], [r.crop[2], r.crop[3]], [r.crop[0], r.crop[3]]], [0, 0], 2.5);
-  $("modal").classList.add("open");
-};
-$("modal").onclick = () => $("modal").classList.remove("open");
+document.addEventListener("keyup", ev => { if (ev.code === "Space") overview.space = false; });
+window.addEventListener("blur", () => { overview.space = false; });
+$("fit-box").onclick = () => overview.focus(regionOf(REGIONS[current]));
+$("whole").onclick = () => overview.fit();
+$("reset-box").onclick = () => { setRegion(REGIONS[current].id, reviewRegion(REGIONS[current])); overview.focus(regionOf(REGIONS[current])); };
 
 $("export").onclick = () => {
   const value = exported(store);
@@ -380,17 +520,18 @@ $("file").onchange = async ev => {
     for (const r of REGIONS) {
       const v = value.regions[r.id]; if (!v) continue;
       store.regions[r.id] = { text: v.text || "", unreadable: !!v.unreadable, not_strike: !!v.not_strike, note: v.note || "", done: !!v.done,
-                              seconds: v.seconds || 0, confirmed_at: v.confirmed_at || null, edited: true };
+                              seconds: v.seconds || 0, confirmed_at: v.confirmed_at || null, edited: true,
+                              region: v.region || r.start, region_edited: !!v.region_edited };
       n++;
     }
     save(); show(current); toast(`导入了 ${n} 处`);
   } catch (e) { toast("导入失败：" + e.message); }
   ev.target.value = "";
 };
-window.addEventListener("resize", () => show(current));
+window.addEventListener("resize", () => { const r = REGIONS[current], crop = [r.crop[2] - r.crop[0], r.crop[3] - r.crop[1]]; fit($("erased"), crop, $("erased-frame").parentElement.clientWidth - 4); });
 $("bind").onclick = bind;
 if (!window.showSaveFilePicker) $("bind").hidden = true;
-window.katexLoaded = () => show(current);
+window.katexLoaded = () => { renderBar(); show(current); };
 load().then(() => show(Math.max(0, REGIONS.findIndex(r => !entry(r).done))));
 </script>
 </body>

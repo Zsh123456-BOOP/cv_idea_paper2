@@ -101,7 +101,8 @@ def test_the_page_carries_regions_starting_texts_and_questions(made):
 
 @pytest.mark.skipif(not shutil.which('node'), reason='needs node')
 def test_the_page_script_parses(tmp_path):
-    html = S.slot(S.slot(S.EDITOR.read_text(encoding='utf-8'), 'RULES', S.RULES.read_text(encoding='utf-8')), 'PACK', 'window.PACK = {};')
+    html = S.slot(S.slot(S.slot(S.EDITOR.read_text(encoding='utf-8'), 'RULES', S.RULES.read_text(encoding='utf-8')), 'OVERVIEW',
+                         S.OVERVIEW.read_text(encoding='utf-8')), 'PACK', 'window.PACK = {};')
     scripts = re.findall(r'<script>(.*?)</script>', html, re.S)
     for k, code in enumerate(scripts):
         path = tmp_path/f'{k}.js'
