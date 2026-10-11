@@ -5,14 +5,17 @@ const SymbolPicker = (() => {
   // [name, LaTeX inserted (▮ marks where the caret goes), meaning]
   const SYMBOLS = [
     ['because', '\\because ', '因为'], ['therefore', '\\therefore ', '所以'], ['angle', '\\angle ', '角'], ['triangle', '\\triangle ', '三角形'],
-    ['parallel', '\\parallel ', '平行'], ['perp', '\\perp ', '垂直'], ['cong', '\\cong ', '全等'], ['sim', '\\sim ', '相似'],
+    ['parallel', '\\parallel ', '平行'], ['perp', '\\perp ', '垂直'],
+    ['Rt', '\\mathrm{Rt}\\triangle ', '直角三角形（Rt△）'], ['parallelogram', '\\text{▱}', '平行四边形（▱）'],
+    ['quan', '\\text{≌}', '全等（课本写法 ≌）'], ['xiangsi', '\\backsim ', '相似（课本写法 ∽）'], ['cong', '\\cong ', '全等（≅）'], ['sim', '\\sim ', '相似（∼）'],
+    ['prime', '^{\\prime}', '撇（A′）'], ['S_triangle', 'S_{\\triangle ▮}', '三角形面积'], ['odot', '\\odot ', '圆（⊙）'],
     ['circ', '^{\\circ}', '度（°）'], ['frac', '\\frac{▮}{}', '分数'], ['sqrt', '\\sqrt{▮}', '根号'], ['sqrt[n]', '\\sqrt[▮]{}', 'n 次根号'],
     ['^', '^{▮}', '上标／乘方'], ['_', '_{▮}', '下标'], ['^2', '^{2}', '平方'], ['^3', '^{3}', '立方'],
     ['times', '\\times ', '乘号'], ['div', '\\div ', '除号'], ['cdot', '\\cdot ', '点乘'], ['pm', '\\pm ', '正负'], ['mp', '\\mp ', '负正'],
     ['neq', '\\neq ', '不等于'], ['approx', '\\approx ', '约等于'], ['leq', '\\leq ', '小于等于'], ['geq', '\\geq ', '大于等于'],
     ['lt', '< ', '小于'], ['gt', '> ', '大于'], ['equiv', '\\equiv ', '恒等于'],
     ['left|', '\\left|▮\\right|', '绝对值'], ['left(', '\\left(▮\\right)', '括号'], ['overline', '\\overline{▮}', '上划线／线段'],
-    ['overset{\\frown}', '\\overset{\\frown}{▮}', '弧'], ['vec', '\\vec{▮}', '向量'], ['odot', '\\odot ', '圆（⊙）'], ['square', '\\square ', '正方形'],
+    ['overset{\\frown}', '\\overset{\\frown}{▮}', '弧'], ['vec', '\\vec{▮}', '向量'], ['square', '\\square ', '正方形'],
     ['pi', '\\pi ', '圆周率'], ['alpha', '\\alpha ', '阿尔法'], ['beta', '\\beta ', '贝塔'], ['gamma', '\\gamma ', '伽马'], ['theta', '\\theta ', '西塔'],
     ['infty', '\\infty ', '无穷'], ['in', '\\in ', '属于'], ['notin', '\\notin ', '不属于'], ['subseteq', '\\subseteq ', '子集'],
     ['cap', '\\cap ', '交集'], ['cup', '\\cup ', '并集'], ['varnothing', '\\varnothing ', '空集'],
@@ -20,7 +23,7 @@ const SymbolPicker = (() => {
     ['cdots', '\\cdots ', '省略号'], ['%', '\\% ', '百分号'], ['cases', '\\begin{cases}▮\\\\ \\end{cases}', '方程组（\\\\ 换行）'],
     ['sin', '\\sin ', '正弦'], ['cos', '\\cos ', '余弦'], ['tan', '\\tan ', '正切'], ['text', '\\text{▮}', '公式里写中文'],
   ];
-  const BAR = ['because', 'therefore', 'angle', 'triangle', 'parallel', 'perp', 'cong', 'sim', 'circ', 'times', 'div', 'pm', 'neq', 'leq', 'geq', 'frac', 'sqrt', '^', 'pi'];
+  const BAR = ['because', 'therefore', 'angle', 'triangle', 'Rt', 'parallelogram', 'parallel', 'perp', 'quan', 'xiangsi', 'circ', 'times', 'div', 'pm', 'neq', 'leq', 'geq', 'frac', 'sqrt', '^', 'pi'];
   const escape = text => text.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const sample = snippet => snippet.replace('▮', 'x').replace(/\{\}/g, '{y}').trim();
   function math(tex, display = false) {
