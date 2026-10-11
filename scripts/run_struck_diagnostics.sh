@@ -3,15 +3,15 @@
 # 2026-10-11: ALLOW_GPU3=1):
 #   1. build the versions and scopes (eval.struck_diagnostics build; the synthetic box remover needs a card) unless OUT_build is there;
 #   2. per model a 20-request smoke (at least 95% of readings inside <transcription>, else the model is skipped and logged), then its
-#      readings of both packs (boxed_read, boxed_marked); three one-card lanes at once; the secondary models read the S1 packs only;
-#      MiniCPM-V-4 starts alone in its lane (it hung at start-up next to other engines) and, if it fails again, GLM-4.1V-9B-Thinking
-#      takes its place as the fourth primary family;
-#   3. the two-card models on cards 2 and 3 (gemma-3-12b in bf16 does not fit one 4090; Qwen3-VL-32B-FP8, reported apart);
-#   4. score every model that read.
+#      readings of both packs (boxed_read, boxed_marked); the secondary models read the S1 packs only.  Card 1: Qwen3-VL-8B, 4B,
+#      InternVL3.5-8B, MiniCPM-V-4 or, failing it, GLM-4.1V-9B-Thinking (the fourth primary family); card 2: Qwen2.5-VL-7B, Qwen3-VL-2B;
+#      then cards 2 and 3 together: gemma-3-12b (bf16 does not fit one 4090) and Qwen3-VL-32B-FP8 (reported apart);
+#   3. score every model that read (OUT_score_<time>).
 #     ALLOW_GPU3=1 run_struck_diagnostics.sh OUT_PREFIX
 # A reading already complete is kept; one whose directory exists without complete.json is waited for (an earlier run may still be
 # writing it).  Nothing is trained; no test writer is read (build refuses them).  Models load offline (HF_HUB_OFFLINE): remote-code
-# models otherwise wait on the hub at start-up.
+# models otherwise wait on the hub at start-up; and without the launcher's CPU thread caps (OMP/MKL/OPENBLAS_NUM_THREADS): with them
+# InternVL, MiniCPM, GLM-4.1V and gemma-3 hang while the engine starts (the readings run on the GPU, greedy).
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 OUT="$1"
@@ -44,10 +44,11 @@ PY
 read_model() {   # NAME MODEL_DIR CARD_UUIDS NUMA CUDA_INDICES SUFFIX EXTRA_ARGS...  -> 0 when both readings are complete
     local name="$1" dir="$2" card="$3" numa="$4" index="$5" suffix="$6"; shift 6
     local common=(--model "$dir" --max-model-len 6144 --gpu-memory .85 "$@")
-    local run=(env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines)
+    local run=(env -u OMP_NUM_THREADS -u MKL_NUM_THREADS -u OPENBLAS_NUM_THREADS HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+               CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.recognize_lines)
     if complete "${OUT}_read_${name}_marked"; then stamp "kept $name"; return 0; fi
     if [ -e "${OUT}_smoke_$name" ]; then
-        complete "${OUT}_smoke_$name" || { stamp "skipped $name (an earlier smoke did not finish)"; return 1; }
+        wait_for "${OUT}_smoke_$name" || { stamp "skipped $name (an earlier smoke failed)"; return 1; }
     elif ! gpu "$card" "$numa" "${OUT}_smoke_$name" -- timeout 1800 "${run[@]}" --pack "${OUT}_build/pack_read$suffix" --conditions boxed_read \
               --limit 20 "${common[@]}" --output-dir "${OUT}_smoke_$name" > "${OUT}_smoke_$name.log" 2>&1 \
          || ! parsed "${OUT}_smoke_$name/predictions.jsonl" >> "${OUT}_smoke_$name.log" 2>&1; then
@@ -62,22 +63,19 @@ read_model() {   # NAME MODEL_DIR CARD_UUIDS NUMA CUDA_INDICES SUFFIX EXTRA_ARGS
     stamp "read $name"
 }
 
-stamp "2. one-card models"
-( read_model qwen3vl8b $M/Qwen3-VL-8B-Instruct $C1 0 1 ''
-  read_model qwen3vl4b $M/Qwen3-VL-4B-Instruct $C1 0 1 _s1 || true ) > "${OUT}_lane1.log" 2>&1 & L1=$!
+stamp "2. models"
+( read_model qwen3vl8b $M/Qwen3-VL-8B-Instruct $C1 0 1 '' || true
+  read_model qwen3vl4b $M/Qwen3-VL-4B-Instruct $C1 0 1 _s1 || true
+  read_model internvl35_8b $M/InternVL3_5-8B $C1 0 1 '' --trust-remote-code || true
+  read_model minicpm $M/MiniCPM-V-4 $C1 0 1 '' --trust-remote-code \
+      || read_model glm41v $M/GLM-4.1V-9B-Thinking $C1 0 1 '' --trust-remote-code --max-new-tokens 2048 || true ) > "${OUT}_lane1.log" 2>&1 & L1=$!
 ( read_model qwen25vl7b $M/Qwen2.5-VL-7B-Instruct $C2 1 2 _s1 || true
   read_model qwen3vl2b $M/Qwen3-VL-2B-Instruct $C2 1 2 _s1 || true
-  # MiniCPM alone on its card (its own smoke directory: the first one hung), else GLM-4.1V as the fourth primary family
-  read_model minicpm $M/MiniCPM-V-4 $C2 1 2 '' --trust-remote-code \
-      || read_model glm41v $M/GLM-4.1V-9B-Thinking $C2 1 2 '' --trust-remote-code --max-new-tokens 2048 || true ) > "${OUT}_lane2.log" 2>&1 & L2=$!
-( read_model internvl35_8b $M/InternVL3_5-8B $C3 1 3 '' --trust-remote-code || true ) > "${OUT}_lane3.log" 2>&1 & L3=$!
-wait $L1; wait $L2; wait $L3
+  read_model gemma3_12b $M/gemma-3-12b-it "$C2,$C3" 1 2,3 '' --tp 2 || true
+  read_model qwen3vl32b $M/Qwen3-VL-32B-Instruct-FP8 "$C2,$C3" 1 2,3 '' --tp 2 || true ) > "${OUT}_lane23.log" 2>&1 & L23=$!
+wait $L1; wait $L23
 
-stamp "3. two-card models"
-read_model gemma3_12b $M/gemma-3-12b-it "$C2,$C3" 1 2,3 '' --tp 2 || true
-read_model qwen3vl32b $M/Qwen3-VL-32B-Instruct-FP8 "$C2,$C3" 1 2,3 '' --tp 2 || true
-
-stamp "4. score"
+stamp "3. score"
 READINGS=()
 for d in "${OUT}"_read_*_read "${OUT}"_read_*_marked; do
     complete "$d" || continue
@@ -85,6 +83,6 @@ for d in "${OUT}"_read_*_read "${OUT}"_read_*_marked; do
     READINGS+=(--readings "$name=$d/predictions.jsonl")
 done
 "$PY" -m revrender.eval.struck_diagnostics score --config "$ROOT/configs/struck_diagnostics.toml" --build "${OUT}_build" "${READINGS[@]}" \
-    --output-dir "${OUT}_score" > "${OUT}_score.log" 2>&1
+    --output-dir "${OUT}_score_$(date -u +%Y%m%dT%H%M)" > "${OUT}_score.log" 2>&1
 stamp "pipeline complete"
 touch "$OUT.COMPLETE"
