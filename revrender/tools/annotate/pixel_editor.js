@@ -72,12 +72,13 @@ async function cleanStore(candidate){
 }
 function nav(){
   $('progress').textContent=TextMode.on()?`已完成 ${rows.filter(r=>TextMode.done(ensure(r),r)).length} / ${rows.length} · 像素 ${rows.filter(r=>ensure(r).confirmed).length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length}${TextMode.judging()?' · 对错 '+rows.filter(TextMode.judged).length:''}`:selectingRegions()?`已框选 ${rows.length} 处 · ${Object.values(store.done).filter(Boolean).length} 题完成`:`像素 ${rows.filter(r=>ensure(r).confirmed).length} / ${rows.length} · 文字 ${rows.filter(r=>ensure(r).text_confirmed).length} / ${rows.length}`;
-  const nav=$('nav');nav.replaceChildren();
+  const nav=$('nav');nav.replaceChildren();const filter=TextMode.filterBox();if(filter)nav.append(filter);
   pack.pages.forEach((p,i)=>{
+    if(TextMode.filtering()&&!rows.some(r=>r.page===i&&TextMode.matches(r)))return;
     const h=document.createElement('button');h.className='question'+(!inDetail&&i===wholePage?' active':'');
     h.textContent=`第 ${i+1} 题 · 题号 ${p.question}${p.split?' · '+({train:'训练',val:'验证（不训练）',test:'测试（不训练）'}[p.split]||p.split):''}${store.done[i]?' ✓':''}`;h.onclick=()=>overview(i);nav.append(h);
     let number=0;
-    rows.forEach((r,k)=>{if(r.page!==i)return;number++;const b=document.createElement('button');b.textContent=`${TextMode.done(ensure(r),r)?'✓':'○'} 划线 ${number}${ensure(r).needs_clean_review?' · 清洁后复核':''}`;if(inDetail&&k===at)b.className='active';b.onclick=()=>show(k);nav.append(b);});
+    rows.forEach((r,k)=>{if(r.page!==i)return;number++;if(!TextMode.matches(r))return;const b=document.createElement('button');b.textContent=`${TextMode.done(ensure(r),r)?'✓':'○'} 划线 ${number}${TextMode.tag(r)}${ensure(r).needs_clean_review?' · 清洁后复核':''}`;if(inDetail&&k===at)b.className='active';b.onclick=()=>show(k);nav.append(b);});
   });
   const deleted=[...pack.rows,...store.extra].filter(r=>ensure(r).deleted&&!ensure(r).duplicate_of);
   if(deleted.length){const group=document.createElement('details'),summary=document.createElement('summary');summary.textContent=`已删除 ${deleted.length} 处（可恢复）`;group.append(summary);
@@ -97,7 +98,7 @@ async function show(index){
   const n=rows.filter((r,i)=>r.page===row().page&&i<=at).length;
   $('title').textContent=`第 ${wholePage+1} 题 · 划线 ${n} · 多边形裁切 ${original.width} × ${original.height}`;$('notRevision').checked=s.not_revision;$('note').value=s.note;
   $('transcription').value=s.text||'';$('unreadable').checked=!!s.unreadable;$('textConfirmed').checked=!!s.text_confirmed;updateTextState();TextMode.onShow();
-  $('previous').disabled=at===0;$('next').disabled=at===rows.length-1;
+  $('previous').disabled=TextMode.step(at,-1)<0;$('next').disabled=TextMode.step(at,1)<0;
   updateModeControls();paint();viewports.fit();nav();lastTime=Date.now();save();status(s.confirmed?'这处已确认。继续修改会取消确认。':'仅显示、编辑多边形内部；框外已遮白。');
 }
 function updateModeControls(){
@@ -246,9 +247,9 @@ $('textConfirmed').onchange=()=>{
   if($('textConfirmed').checked&&!state().unreadable&&!state().text?.trim()){$('textConfirmed').checked=false;status('请先填写被划内容，或勾选“整处无法辨认”。',true);return;}
   touch();state().text_confirmed=$('textConfirmed').checked;updateTextState();save();nav();
 };
-$('previous').onclick=()=>show(at-1);$('next').onclick=()=>show(at+1);
+$('previous').onclick=()=>show(TextMode.step(at,-1));$('next').onclick=()=>show(TextMode.step(at,1));
 $('confirm').onclick=()=>{if(busy||!original)return;finishPaint();touch();if(!TextMode.confirmText())return;state().runs=R.encode(mask);state().confirmed=true;state().needs_clean_review=false;save();nav();
-  if(TextMode.on()){if(at+1<rows.length)show(at+1);else status('全部区域都看完了，记得导出。');}else if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
+  if(TextMode.on()){const k=TextMode.step(at,1);if(k>=0)show(k);else status(TextMode.filtering()?'筛选出的这一类已看完。':'全部区域都看完了，记得导出。');}else if(rows[at+1]?.page===row().page)show(at+1);else overview(row().page);};
 $('pageDone').onclick=()=>{
   const pi=inDetail?row().page:wholePage;
   if(!selectingRegions()&&rows.some(r=>r.page===pi&&!ensure(r).confirmed)){status('这题还有未确认的区域，请逐处复核后再确认整题。',true);return;}
@@ -303,7 +304,7 @@ document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&k==='z'){e.preventDefault();restore(e.shiftKey?future:history,e.shiftKey?history:future);}
   else if(k==='0'||k==='escape'){e.preventDefault();if(inDetail)overview();else whole.fit();}
   else if(k==='h'){if(inDetail)$('hide').click();else $('wholeHide').click();}
-  else if(inDetail&&k==='n')show(at+1);else if(inDetail&&k==='p')show(at-1);
+  else if(inDetail&&k==='n')show(TextMode.step(at,1));else if(inDetail&&k==='p')show(TextMode.step(at,-1));
   else if(inDetail&&e.key==='Enter'){$('confirm').click();}
   else if(e.code==='Space'){e.preventDefault();space=true;whole.space=true;}
 });

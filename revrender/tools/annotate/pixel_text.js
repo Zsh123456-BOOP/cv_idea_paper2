@@ -140,8 +140,45 @@ const TextMode = (() => {
     if (j) { s.judgment = { ...j }; s.judgment_confirmed = true; }
     return true;
   }
+  // The region list filtered by judgment (any field 不确定, a type, a value of 被划内容 / 改后, not yet confirmed); remembered per browser.
+  const FILTER_KEY = 'paper2-judgment-filter';
+  let filter = '', box = null;
+  try { filter = localStorage.getItem(FILTER_KEY) || ''; } catch (e) {}
+  function matches(r, f = filter) {
+    if (!f || !judging()) return true;
+    const s = ensure(r), j = judgment(s, r.id);
+    if (!j) return false;
+    if (f === 'uncertain') return FIELDS.some(([, key]) => j[key] === '不确定');
+    if (f === 'unconfirmed') return !s.judgment_confirmed;
+    const [key, value] = f.split(':');
+    return j[key] === value;
+  }
+  const filtering = () => !!filter && judging();
+  function filterBox() {
+    // The <select> above the region list, its counts brought up to date.
+    if (!judging()) return null;
+    if (!box) {
+      box = document.createElement('label'); box.className = 'judge-filter';
+      box.append('按对错筛选', document.createElement('select'));
+      box.lastChild.onchange = ev => { filter = ev.target.value; try { localStorage.setItem(FILTER_KEY, filter); } catch (e) {} nav(); };
+    }
+    const count = f => rows.filter(r => matches(r, f)).length, values = pack.judgment_values || {};
+    const options = [['', `全部（${rows.length}）`], ['uncertain', `任一栏不确定（${count('uncertain')}）`], ['unconfirmed', `对错未确认（${count('unconfirmed')}）`],
+      ...(values.type || []).map(v => [`type:${v}`, `类型：${v}（${count('type:' + v)}）`]),
+      ...[['struck', '被划内容'], ['after', '改后']].flatMap(([key, name]) => (values[key] || []).map(v => [`${key}:${v}`, `${name}：${v}（${count(key + ':' + v)}）`]))];
+    if (!options.some(([v]) => v === filter)) filter = '';
+    box.lastChild.replaceChildren(...options.map(([v, text]) => { const o = document.createElement('option'); o.value = v; o.textContent = text; return o; }));
+    box.lastChild.value = filter;
+    return box;
+  }
+  function step(from, direction) {
+    // The next region in that direction the filter shows; -1 when there is none.
+    for (let k = from + direction; k >= 0 && k < rows.length; k += direction) if (matches(rows[k])) return k;
+    return -1;
+  }
+  function tag(r) { const j = judging() && judgment(ensure(r), r.id); return j?.type ? ' · ' + j.type : ''; }
   // Done: pixels confirmed; in text mode the text too; with judgment drafts, the judgment of a region that has one.
   const done = (s, r) => !on() ? s.confirmed : s.confirmed && s.text_confirmed && (!judging() || !r || !judgment(s, r.id) || !!s.judgment_confirmed);
   const judged = r => { const s = ensure(r); return !!(judging() && judgment(s, r.id) && s.judgment_confirmed); };
-  return { on, setup, onShow, confirmText, preview, done, judging, judged };
+  return { on, setup, onShow, confirmText, preview, done, judging, judged, matches, filtering, filterBox, step, tag };
 })();
