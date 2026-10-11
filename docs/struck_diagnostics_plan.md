@@ -270,3 +270,4 @@ D2 与 D2′ 都不成立时记为"部分成立"；D3 与 D3′ 都不成立时�
 ## 变更记录
 
 （执行中如有偏离，在此写明日期、改动、原因。）
+- 2026-10-11（执行）：实现为 `revrender/eval/struck_diagnostics.py`（build / score）、`configs/struck_diagnostics.toml`、`scripts/run_struck_diagnostics.sh`，`recognize_lines` 增加 `boxed_read` / `boxed_marked` 与 `--max-model-len`。偏离：①上下文用 6144 而非 8192（8B 模型在 .85 显存下 8192 放不下 KV 缓存；整题图约 2 千个视觉 token，6144 够用）；②模型一律离线加载（`HF_HUB_OFFLINE=1`，带远程代码的 InternVL 否则在启动时等待联网而卡住）；③MiniCPM-V-4 在 vLLM 0.16 下启动卡住（与其他引擎并行时两次复现），主流程跳过，主流程结束后单独重试，仍失败则以 GLM-4.1V-9B-Thinking（`--max-new-tokens 2048`）作为第四个主模型；④第一次运行（`paper2_struck_diag20261011`）因上述问题中止，正式结果在 `paper2_struck_diag20261011r2`。
