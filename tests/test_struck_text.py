@@ -108,3 +108,34 @@ def test_the_editor_scripts_parse_and_formulas_are_told_apart(tmp_path):
     code = f"const P = require({json.dumps(str(HERE/'symbol_picker.js'))}); console.log(JSON.stringify([P.insideMath('a $x'), P.insideMath('a $x$ '), "
     code += "P.insideMath('\\\\$ 5'), new Set(P.SYMBOLS.map(s => s[0])).size === P.SYMBOLS.length, P.BAR.every(b => P.SYMBOLS.some(s => s[0] === b))]));"
     assert json.loads(subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout) == [True, False, False, True, True]
+
+
+def test_erased_crops_hold_only_the_polygon_with_the_strike_white(made):
+    run_crops(made)
+    export = json.loads((made/'export.json').read_text())
+    export['pages']['w1_2_1']['revisions'][0]['region'] = [[60, 25], [100, 25], [100, 38], [60, 38]]     # narrower than its box
+    (made/'export2.json').write_text(json.dumps(export))
+    S.main(['erased', '--crops', str(made/'crops'), '--export', str(made/'export2.json'), '--review', str(made/'review'),
+            '--output-dir', str(made/'erased')])
+    pack = json.loads((made/'erased'/'pack.json').read_text())
+    row = next(r for r in pack['rows'] if r['id'] == 'w1_2_1#b')
+    crop = np.asarray(Image.open(made/'erased'/row['images']['erased']))
+    assert crop.shape == (13+2*S.EDGE, 40+2*S.EDGE)                      # the polygon and EDGE of paper
+    assert (crop[:S.EDGE] == 255).all() and (crop[:, -S.EDGE:] == 255).all()
+    assert (crop[S.EDGE:S.EDGE+2, S.EDGE:S.EDGE+40] == 255).all()          # the annotator's erased rows
+    assert (crop[S.EDGE+2:S.EDGE+13, S.EDGE:S.EDGE+40] == 30).all()        # the writing left under the strike
+
+
+def test_redraft_keeps_the_page_identity_and_remembers_the_starting_texts(made, tmp_path):
+    from revrender.tools.annotate.pixel_offline import EmbeddedReview
+    test_the_page_is_a_text_mode_review_pack_with_the_annotators_pixels(made)
+    source = made/'page'/'site'/'标注.html'
+    before = json.loads(EmbeddedReview(source.read_text()).values['review-pack'])
+    readings = tmp_path/'erased.jsonl'
+    readings.write_text('\n'.join(json.dumps({'condition': 'erased_neutral', 'id': r['id'], 'text': t})
+                                  for r, t in zip(before['rows'], ['x=5', '[空]', '12'])))
+    S.main(['redraft', '--source', str(source), '--readings', str(readings), '--output-dir', str(tmp_path/'new')])
+    after = json.loads(EmbeddedReview((tmp_path/'new'/'标注.html').read_text()).values['review-pack'])
+    assert (after['id'], after['image_revision']) == (before['id'], before['image_revision'])
+    assert [r['prefill'] for r in after['rows']] == ['x=5', '', '12']
+    assert [r.get('previous_prefill') for r in after['rows']] == [None, ['?2'], ['???']]

@@ -40,20 +40,22 @@ def slot(text, name, payload):
 def starting_text(reading):
     """A reading as the page's starting text: □ (the reader's unreadable character) as ?, line breaks as spaces, the marks a strike was
     drawn with taken off (innermost first), and a formula with no command, ^ or _ in it as plain text."""
+    if reading.strip() == '[空]':          # the reader's word for nothing to transcribe
+        return ''
     text, before = ' '.join(reading.replace('□', '?').split()), None
     while text != before:
         before, text = text, WRAPPER.sub(r'\1', text)
     return PLAIN.sub(lambda m: m.group(1) if m.group(1) is not None else m.group(2), text).strip()
 
 
-def read_readings(path):
-    """{row id: starting text} from recognize_lines' predictions under ``CONDITION``."""
+def read_readings(path, condition=CONDITION):
+    """{row id: starting text} from recognize_lines' predictions under ``condition``."""
     texts = {}
     for line in Path(path).read_text(encoding='utf-8').splitlines():
         row = json.loads(line)
-        if row['condition'] == CONDITION:
+        if row['condition'] == condition:
             texts[row['id']] = starting_text(row['text'])
-    require(texts, f'{path}: no {CONDITION} reading')
+    require(texts, f'{path}: no {condition} reading')
     return texts
 
 

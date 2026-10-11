@@ -79,6 +79,13 @@ const TextMode = (() => {
     });
     window.katexLoaded = () => { picker.paintBar(); preview(); if (row()) question(); };
     if (window.katex) window.katexLoaded();
+    // A new starting text reaches a region the annotator has neither confirmed nor changed (its text is still an earlier starting text).
+    let redrafted = 0;
+    for (const r of rows) {
+      const s = ensure(r), earlier = r.previous_prefill || [];
+      if (!s.text_confirmed && s.text !== r.prefill && earlier.includes(s.text || '')) { s.text = r.prefill; redrafted++; }
+    }
+    if (redrafted) { save(); notice = `已用新的模型初稿替换 ${redrafted} 处还没改过的文字。`; }
     if (!store.textMigrated && pack.text_source_pack) {
       const old = await oldProgress();
       const result = old ? apply(old.regions || {}) : { count: 0, reshaped: 0 };

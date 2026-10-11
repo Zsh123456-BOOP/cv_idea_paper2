@@ -5,6 +5,9 @@ text, in the pixel review page's text mode, where the annotator types what was s
         --split train [--split val ...] --output-dir OUT
     python -m revrender.tools.annotate.struck_text page --crops OUT --export EXPORT.json --readings predictions.jsonl
         --questions questions_with_answers.jsonl --answer-groups answer_groups.jsonl --output-dir PAGE
+    python -m revrender.tools.annotate.struck_text erased --crops OUT --export EXPORT.json --review REVIEW_PACK_DIR --output-dir ERASED
+    python -m revrender.tools.annotate.struck_text redraft --source PAGE.html --readings predictions.jsonl --condition erased_neutral
+        --output-dir NEW_PAGE
 
 ``crops``: every confirmed, not deleted region of the review export (``data.pixel_masks`` schema) on a page of the review pack
 (``tools.annotate.pixel_library infer``) whose split is one of ``--split`` -- the pack's split already folds in paper 1's writers, the
@@ -19,7 +22,15 @@ standard solution (paper 1's response index maps a page to its question), each r
 PAGE/pack/ and PAGE/site/标注.html.  The pixel editor's text mode (``pixel_text.js``, ``symbol_picker.js``) shows the struck text beside the
 pixels and confirms both at once; on first opening it takes over what the earlier struck-text page kept in the browser
 (``text_source_pack``: that page's id, from the same region ids).  Later editor changes reach an existing page with ``pixel_review
-update-html`` (its storage key holds the image revision).  Crops, pages and the page are student work: never in Git.
+update-html`` (its storage key holds the image revision).
+
+``erased``: the same regions as the annotator left them in ``--export``, each cut to its polygon (outside white, ``EDGE`` pixels of paper
+round it) from the cleaned page with the annotator's erased pixels white: what is left is the writing under the strike.  ERASED/pack.json
+is a line pack for ``recognize_lines --conditions erased_neutral`` (transcribe what is there; no word of striking).
+
+``redraft``: an existing page (``--source``) with new starting texts from ``--readings``, its pack id, image revision and embedded
+progress kept, so the browser's progress stays.  The editor replaces a region's text with the new starting text only where the annotator
+has neither confirmed nor changed it (it still equals the starting text it replaces, kept as ``previous_prefill``).  Crops, pages and the page are student work: never in Git.
 """
 import argparse
 import hashlib
@@ -35,9 +46,11 @@ from PIL import Image
 from ... import pages as pages_module
 from ...data.pixel_masks import SCHEMA, decode
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
+from ...data.pixel_masks import region_pixels
 from .page_pack import read_readings
-from .pixel_offline import standalone
+from .pixel_offline import EmbeddedReview, render_html, standalone
 
+EDGE = 4               # paper kept round a region's polygon in the erased crops
 CROP = (30, 12)        # a crop is the region's box and this margin (x, y), as page_prefill cuts the box annotation's crops
 UNKNOWN_RUN = re.compile(r'\?{4,}')   # a reader that loops on unreadable characters starts as three of them
 
@@ -170,6 +183,58 @@ def page(args):
     print(json.dumps(summary, ensure_ascii=False))
 
 
+def erased_crops(args):
+    records = json.loads((args.crops/'regions.json').read_text())
+    export = json.loads(args.export.read_text())
+    require(export.get('schema') == SCHEMA, 'not a pixel review export')
+    human = {r['id']: r for q in export['pages'].values() for r in q.get('revisions', [])}
+    out = make_output_dir(args.output_dir)
+    (out/'crops').mkdir()
+    rows, pages = [], {}
+    for k, record in enumerate(records):
+        r = human[record['id']]
+        if record['page'] not in pages:
+            with Image.open(args.review/'images'/f'{record["page"]}.png') as opened:
+                pages[record['page']] = np.asarray(opened.convert('L'))
+        grey = pages[record['page']].copy()
+        l, t, rr, b = r['box']
+        grey[t:b, l:rr][decode(r['runs'], (b-t, rr-l))] = 255
+        xs, ys = [p[0] for p in r['region']], [p[1] for p in r['region']]
+        box = [max(0, int(min(xs))-EDGE), max(0, int(min(ys))-EDGE), min(grey.shape[1], int(max(xs))+EDGE), min(grey.shape[0], int(max(ys))+EDGE)]
+        crop = grey[box[1]:box[3], box[0]:box[2]].copy()
+        crop[~region_pixels(r['region'], box)] = 255
+        name = f'crops/{k:05d}.png'
+        Image.fromarray(crop).save(out/name)
+        rows.append({'id': record['id'], 'line_id': record['id'], 'image_id': record['page'], 'kind': 'line', 'split': record['split'],
+                     'size': [crop.shape[1], crop.shape[0]], 'images': {'erased': name}, 'boxes': [[0, 0, 1000, 1000]]})
+    write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
+    inputs = [args.crops/'regions.json', args.export, *(args.review/'images'/f'{p}.png' for p in pages)]
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in inputs}, regions=len(rows), pages=len(pages))
+    print(json.dumps({'regions': len(rows), 'pages': len(pages)}))
+
+
+def redraft(args):
+    data = EmbeddedReview(args.source.read_text()).values
+    require('review-pack' in data, 'not an offline review page')
+    payload, draft = json.loads(data['review-pack']), json.loads(data.get('review-draft') or 'null')
+    require(payload.get('task') == 'strike_text', 'not a struck-text page')
+    texts = read_readings(args.readings, args.condition)
+    changed = 0
+    for row in payload['rows']:
+        if row['id'] in texts:
+            new = UNKNOWN_RUN.sub('???', texts[row['id']])
+            if new != row.get('prefill'):
+                # Every starting text a region has had: the editor replaces only a text still equal to one of them.
+                row['previous_prefill'] = [*row.get('previous_prefill', []), row.get('prefill', '')]
+                row['prefill'] = new
+                changed += 1
+    out = make_output_dir(args.output_dir)
+    (out/'标注.html').write_text(render_html(payload, draft))
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [args.source, args.readings]}, pack=payload['id'],
+                   image_revision=payload.get('image_revision'), regions=len(payload['rows']), new_prefill=changed, embedded_progress_preserved=True)
+    print(json.dumps({'pack': payload['id'], 'regions': len(payload['rows']), 'new_prefill': changed}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -186,8 +251,18 @@ def main(argv=None):
     p.add_argument('--questions', type=Path, required=True, help='questions_with_answers.jsonl (paper 1)')
     p.add_argument('--answer-groups', type=Path, required=True, help="answer_groups.jsonl of paper 1's response index")
     p.add_argument('--output-dir', type=Path, required=True)
+    e = sub.add_parser('erased')
+    e.add_argument('--crops', type=Path, required=True, help='the output of crops (its regions)')
+    e.add_argument('--export', type=Path, required=True, help='the pixel review export with the regions as the annotator left them')
+    e.add_argument('--review', type=Path, required=True, help='the review pack directory (images/)')
+    e.add_argument('--output-dir', type=Path, required=True)
+    d = sub.add_parser('redraft')
+    d.add_argument('--source', type=Path, required=True, help='the page now in use')
+    d.add_argument('--readings', type=Path, required=True)
+    d.add_argument('--condition', default='erased_neutral')
+    d.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
-    crops(args) if args.command == 'crops' else page(args)
+    {'crops': crops, 'page': page, 'erased': erased_crops, 'redraft': redraft}[args.command](args)
     return 0
 
 
