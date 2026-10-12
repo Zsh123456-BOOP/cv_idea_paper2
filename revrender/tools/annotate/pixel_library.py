@@ -169,6 +169,27 @@ def bundle(args):
     print(json.dumps({'parts':len(parts),'pages':len(source['pages']),'regions':len(source['rows']),'entry':str(out/'index.html')}))
 
 
+def prefill_export(args):
+    """A pack's regions as a review export: the model's prefill, unconfirmed, with near-identical crops merged as the library merges
+    them (``duplicate_groups``: the first id keeps the union), and the preserved human records as they were."""
+    source=json.loads((args.pack/'pack.json').read_text())
+    groups=duplicate_groups(source['rows']);alias={i for g in groups for i in g['ids'][1:]};merged={g['ids'][0]:g for g in groups}
+    pages={p['id']:{'revisions':[],'deleted_revisions':[],'done':False} for p in source['pages']}
+    for row in source['rows']:
+        if row['id'] in alias:continue
+        page=pages[source['pages'][row['page']]['id']];record={k:v for k,v in row.items() if k!='page'}
+        if row['id'] in merged:
+            g=merged[row['id']];record.update(box=g['box'],region=g['region'],runs=g['runs'],merged_detection_ids=g['ids'])
+        page['deleted_revisions' if record.get('deleted') else 'revisions'].append(record)
+    out=make_output_dir(args.output_dir)
+    write_json(out/'export.json',{'schema':SCHEMA,'pack':source['id'],'task':source['task'],'model_revision':source['model_revision'],
+                                  'selected_checkpoint':source['selected_checkpoint'],'pages':pages})
+    summary={'pages':len(pages),'regions':sum(len(p['revisions']) for p in pages.values()),'merged_aliases':len(alias),
+             'human':sum(bool(r.get('preserved_manual')) for r in source['rows'])}
+    write_manifest(out,config=to_jsonable(args),inputs={str(args.pack/'pack.json'):digest(args.pack/'pack.json')},**summary)
+    print(json.dumps(summary),flush=True)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     i=sub.add_parser('infer')
@@ -177,7 +198,8 @@ def main():
     b=sub.add_parser('bundle');b.add_argument('--pack',type=Path,required=True);b.add_argument('--output-dir',type=Path,required=True)
     b.add_argument('--pages-per-part',type=int,default=20)
     b.add_argument('--title',default='全部涂改 · 筛选与精修')
-    args=p.parse_args();infer_all(args) if args.command=='infer' else bundle(args)
+    e=sub.add_parser('prefill-export');e.add_argument('--pack',type=Path,required=True);e.add_argument('--output-dir',type=Path,required=True)
+    args=p.parse_args();{'infer':infer_all,'bundle':bundle,'prefill-export':prefill_export}[args.command](args)
 
 
 if __name__=='__main__':main()

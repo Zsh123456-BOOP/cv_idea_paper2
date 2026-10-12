@@ -8,7 +8,7 @@ import subprocess
 import pytest
 from PIL import Image
 
-from revrender.tools.annotate.pixel_library import manual_records, overlap, bundle, duplicate_groups
+from revrender.tools.annotate.pixel_library import manual_records, overlap, bundle, duplicate_groups, prefill_export
 from revrender.tools.annotate.pixel_offline import EmbeddedReview
 
 HERE=Path(__file__).parents[1]/'revrender/tools/annotate'
@@ -162,3 +162,16 @@ def test_embedded_editors_save_through_the_single_library_origin():
       console.log(JSON.stringify({host:await host.ReviewLibraryStore.get('pixel-review-fixture-part'),child:await child.ReviewLibraryStore.get('pixel-review-fixture-part')}));})();
     '''.replace('SCRIPT',json.dumps((HERE/'library_store.js').read_text()))
     assert node(code)=={'host':{'human':'keep'},'child':{'human':'keep'}}
+
+
+def test_prefill_export_merges_duplicates_and_keeps_human_rows(tmp_path):
+    pack=tmp_path/'pack';pack.mkdir()
+    rows=[{'id':'p#det0000','page':0,'box':[0,0,10,10],'region':[[0,0],[10,0],[10,10],[0,10]],'runs':[[0,5]],'detector_index':0,'confirmed':False},
+          {'id':'p#det0001','page':0,'box':[0,0,10,10],'region':[[0,0],[10,0],[10,10],[0,10]],'runs':[[5,5]],'detector_index':1,'confirmed':False},
+          {'id':'p#r1','page':0,'box':[0,12,10,20],'region':[[0,12],[10,12],[10,20],[0,20]],'runs':[[0,1]],'confirmed':True,'preserved_manual':True}]
+    (pack/'pack.json').write_text(json.dumps({'id':'t','task':'strike_only','model_revision':'m','selected_checkpoint':'c','pages':[{'id':'p'}],'rows':rows}))
+    prefill_export(Namespace(pack=pack,output_dir=tmp_path/'out'))
+    revisions=json.loads((tmp_path/'out'/'export.json').read_text())['pages']['p']['revisions']
+    assert [r['id'] for r in revisions]==['p#det0000','p#r1']
+    assert revisions[0]['merged_detection_ids']==['p#det0000','p#det0001'] and revisions[0]['runs']==[[0,10]] and not revisions[0]['confirmed']
+    assert revisions[1]['confirmed']

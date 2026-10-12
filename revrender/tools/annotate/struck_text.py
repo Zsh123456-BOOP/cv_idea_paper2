@@ -57,12 +57,13 @@ CROP = (30, 12)        # a crop is the region's box and this margin (x, y), as p
 UNKNOWN_RUN = re.compile(r'\?{4,}')   # a reader that loops on unreadable characters starts as three of them
 
 
-def confirmed_regions(export):
-    """{page id: [revision]} of an export: the confirmed revisions that are not deleted."""
+def confirmed_regions(export, unconfirmed=False):
+    """{page id: [revision]} of an export: the confirmed revisions that are not deleted (all that are not deleted with
+    ``unconfirmed``: a model's prefill, ``pixel_library prefill-export``, to be annotated in one pass)."""
     require(export.get('schema') == SCHEMA, 'not a pixel review export')
     pages = {}
     for page, q in export['pages'].items():
-        kept = [r for r in q.get('revisions', []) if r.get('confirmed') and not r.get('deleted')]
+        kept = [r for r in q.get('revisions', []) if (unconfirmed or r.get('confirmed')) and not r.get('deleted')]
         if kept:
             pages[page] = kept
     return pages
@@ -85,7 +86,7 @@ def crops(args):
     export = json.loads(args.export.read_text())
     review = json.loads((args.review/'pack.json').read_text())
     split = {p['id']: p['split'] for p in review['pages']}
-    regions = confirmed_regions(export)
+    regions = confirmed_regions(export, args.unconfirmed)
     unknown = sorted(set(regions)-set(split))
     require(not unknown, f'{len(unknown)} page(s) of the export are not in the review pack, e.g. {unknown[:2]}')
     chosen = sorted(p for p in regions if split[p] in args.split)
@@ -148,7 +149,7 @@ def page(args):
     human = {r['id']: r for q in export['pages'].values() for r in q.get('revisions', [])}
     missing = [r['id'] for r in records if r['id'] not in human]
     require(not missing, f'{len(missing)} region(s) of the crops are not in the export, e.g. {missing[:2]}')
-    texts = read_readings(args.readings)
+    texts = read_readings(args.readings, args.condition)
     questions = {q['question_global_id']: q for q in map(json.loads, args.questions.read_text(encoding='utf-8').splitlines())}
     of = question_of(args.answer_groups)
     lost = sorted({r['page'] for r in records if of.get(r['page']) not in questions})
@@ -255,11 +256,13 @@ def main(argv=None):
     c.add_argument('--review', type=Path, required=True, help='the review pack directory (pack.json, images/)')
     c.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
     c.add_argument('--split', action='append', required=True, choices=('train', 'val', 'test'))
+    c.add_argument('--unconfirmed', action='store_true', help="also the regions nobody confirmed (a model's prefill)")
     c.add_argument('--output-dir', type=Path, required=True)
     p = sub.add_parser('page')
     p.add_argument('--crops', type=Path, required=True, help='the output of crops')
     p.add_argument('--export', type=Path, required=True, help='the pixel review export the crops were cut from')
     p.add_argument('--readings', type=Path, required=True, help='recognize_lines predictions on the crops (raw_struck)')
+    p.add_argument('--condition', default='raw_struck', help='the condition of the readings (erased_neutral for the erased crops)')
     p.add_argument('--questions', type=Path, required=True, help='questions_with_answers.jsonl (paper 1)')
     p.add_argument('--answer-groups', type=Path, required=True, help="answer_groups.jsonl of paper 1's response index")
     p.add_argument('--output-dir', type=Path, required=True)
