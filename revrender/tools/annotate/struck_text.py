@@ -90,8 +90,10 @@ def crops(args):
     unknown = sorted(set(regions)-set(split))
     require(not unknown, f'{len(unknown)} page(s) of the export are not in the review pack, e.g. {unknown[:2]}')
     chosen = sorted(p for p in regions if split[p] in args.split)
+    # with --unconfirmed the whole question is annotated: a page whose regions were all deleted stays, so a missed one can be added
+    empty = sorted(p for p in export['pages'] if args.unconfirmed and p in split and split[p] in args.split and p not in regions)
     require(chosen, 'no confirmed region on a page of the chosen splits')
-    scans = pages_module.page_files(args.pages, chosen)
+    scans = pages_module.page_files(args.pages, chosen+empty)
     out = make_output_dir(args.output_dir)
     for d in ('crops', 'pages'):
         (out/d).mkdir()
@@ -119,9 +121,15 @@ def crops(args):
                             'crop': list(box), 'mode': revision.get('annotationMode'), 'unreadable': bool(revision.get('unreadable')),
                             'images': {'clean': names['clean'], 'erased': names['erased'], 'page': f'pages/{page}.png'},
                             'page_size': [rgb.width, rgb.height]})
+    blank = []
+    for page in empty:
+        with Image.open(args.review/'images'/f'{page}.png') as opened:
+            opened.convert('L').save(out/'pages'/f'{page}.png')
+            blank.append({'page': page, 'split': split[page], 'page_size': list(opened.size), 'image': f'pages/{page}.png'})
     write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
     write_json(out/'regions.json', records)
-    summary = {'pages': len(chosen), 'regions': len(records), 'splits': {s: sum(r['split'] == s for r in records) for s in args.split},
+    write_json(out/'empty_pages.json', blank)
+    summary = {'pages': len(chosen), 'empty_pages': len(empty), 'regions': len(records), 'splits': {s: sum(r['split'] == s for r in records) for s in args.split},
                'left_out': sum(len(v) for p, v in regions.items() if split[p] not in args.split)}
     inputs = [args.export, args.review/'pack.json', *(args.review/'images'/f'{p}.png' for p in chosen), *(scans[p] for p in chosen)]
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in inputs}, **summary)
@@ -157,7 +165,17 @@ def page(args):
     out = make_output_dir(args.output_dir)
     (out/'pack'/'images').mkdir(parents=True)
     pages, index, rows, initial = [], {}, [], {}
-    for r in records:
+    empty = json.loads((args.crops/'empty_pages.json').read_text()) if (args.crops/'empty_pages.json').exists() else []
+    lost = sorted({e['page'] for e in empty if of.get(e['page']) not in questions})
+    require(not lost, f'{len(lost)} page(s) without an exam question, e.g. {lost[:2]}')
+    for r in sorted(records+[{**e, 'empty': True} for e in empty], key=lambda r: r['page']):
+        if r.get('empty'):
+            index[r['page']] = len(pages)
+            shutil.copyfile(args.crops/r['image'], out/'pack'/'images'/f'{r["page"]}.png')
+            pages.append({'id': r['page'], 'question': r['page'].split('_')[-2], 'image': f'images/{r["page"]}.png', 'size': r['page_size'],
+                          'split': r['split'], 'exam_question': of[r['page']]})
+            initial[r['page']] = {'revisions': [], 'done': False}
+            continue
         if r['page'] not in index:
             index[r['page']] = len(pages)
             source = args.crops/r['images']['page']
@@ -171,7 +189,7 @@ def page(args):
         rows.append({'id': r['id'], 'page': index[r['page']], 'box': h['box'], 'region': h['region'], 'runs': h['runs'], 'text': prefill,
                      'prefill': prefill})
         page_record = initial.setdefault(r['page'], {'revisions': [], 'done': False})
-        page_record['revisions'].append({**h, 'text': h.get('text') or prefill})
+        page_record['revisions'].append({**h, 'text': h['text'] if 'text' in h else prefill})   # the annotator's text, even empty
     used = sorted({p['exam_question'] for p in pages})
     exam = {q: {k: questions[q][k] for k in ('question_global_id', 'printed_problem_no', 'source_exam_title', 'problem_statement_markdown',
                                              'standard_solution_markdown', 'final_answer')} for q in used}

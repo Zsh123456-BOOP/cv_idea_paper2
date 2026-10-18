@@ -153,3 +153,26 @@ def test_update_carries_judgment_drafts_and_keeps_the_page(made, tmp_path):
     after = json.loads(EmbeddedReview((tmp_path/'new'/'标注.html').read_text()).values['review-pack'])
     assert (after['id'], after['image_revision'], after['rows']) == (before['id'], before['image_revision'], before['rows'])
     assert after['judgment_drafts'] == draft['judgments'] and after['judgment_values']['type'] == ['纠错']
+
+
+def test_one_pass_keeps_open_regions_the_annotators_text_and_pages_left_without_regions(made):
+    export = json.loads((made/'export.json').read_text())
+    export['pages']['w1_2_1']['revisions'][3]['text'] = ''                     # an open region whose text the annotator emptied
+    export['pages']['w3_4_1'] = {'revisions': [], 'deleted_revisions': [revision('w3_4_1#a', [55, 20, 140, 40], (slice(5, 8), slice(None)), deleted=True)]}
+    (made/'export.json').write_text(json.dumps(export))
+    S.main(['crops', '--export', str(made/'export.json'), '--review', str(made/'review'), '--pages', str(made/'scans'), '--split', 'train',
+            '--split', 'test', '--unconfirmed', '--output-dir', str(made/'crops')])
+    records = json.loads((made/'crops'/'regions.json').read_text())
+    assert [r['id'] for r in records] == ['w1_2_1#a', 'w1_2_1#open', 'w1_2_1#b']
+    assert [e['page'] for e in json.loads((made/'crops'/'empty_pages.json').read_text())] == ['w3_4_1']
+    (made/'predictions.jsonl').write_text('\n'.join(json.dumps({'condition': 'erased_neutral', 'id': r['id'], 'text': 'x'}) for r in records))
+    (made/'questions.jsonl').write_text(json.dumps({'question_global_id': 'q', 'printed_problem_no': 1, 'source_exam_title': 'e',
+                                                    'problem_statement_markdown': '', 'standard_solution_markdown': '', 'final_answer': ''}))
+    (made/'groups.jsonl').write_text(json.dumps({'question_global_id': 'q', 'image_ids': ['w1_2_1', 'w3_4_1']}))
+    S.main(['page', '--crops', str(made/'crops'), '--export', str(made/'export.json'), '--readings', str(made/'predictions.jsonl'),
+            '--condition', 'erased_neutral', '--questions', str(made/'questions.jsonl'), '--answer-groups', str(made/'groups.jsonl'),
+            '--output-dir', str(made/'page')])
+    pack = json.loads((made/'page'/'pack'/'pack.json').read_text())
+    assert [p['id'] for p in pack['pages']] == ['w1_2_1', 'w3_4_1']             # the page left without regions stays
+    initial = json.loads((made/'page'/'initial.json').read_text())['pages']
+    assert [r['text'] for r in initial['w1_2_1']['revisions']] == ['x', '', 'x'] and initial['w3_4_1']['revisions'] == []
