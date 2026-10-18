@@ -14,6 +14,7 @@ from ...data.clean_pages import review_clean
 from ...data.pixel_masks import SCHEMA, decode, encode
 from ...data.prior_annotations import twins, writer_splits
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
+from ...data.annotation_set import allowed_writers, refuse_outside
 from .page_prefill import corners, region_of
 from .pixel_offline import render_html, script_json
 
@@ -80,14 +81,25 @@ def infer_all(args):
     canon=lambda w:min(w,other.get(w,w))
     held={canon(r['group_uuid']) for r in json.loads(args.validation.read_text())}
     manual=manual_records(args.review_export)
-    ids=sorted(p.stem for p in args.detector.glob('*.json') if p.stem!='run_manifest' and (args.pages/(p.stem+'.png')).exists())
-    require(ids,'no detected pages');out=make_output_dir(args.output_dir);(out/'images').mkdir()
-    inputs={str(p):digest(p) for p in [args.selected,checkpoint,args.mapping,args.same_student,args.validation,*args.review_export,args.detector/'run_manifest.json',Path(__file__)]}
+    # A page is read from the first detector folder that has it and the first page folder with its cleaned png.
+    detector={};folder={}
+    for d in args.detector:
+        for f in d.glob('*.json'):
+            if f.stem!='run_manifest':detector.setdefault(f.stem,d)
+    for d in args.pages:
+        for f in d.glob('*.png'):folder.setdefault(f.stem,d)
+    wanted=set(args.ids.read_text().split()) if args.ids else None
+    ids=sorted(p for p in detector if p in folder and (wanted is None or p in wanted))
+    require(ids,'no detected pages');require(wanted is None or set(ids)==wanted,f'pages without detection or cleaned image: {sorted(wanted-set(ids))[:3]}')
+    refuse_outside(ids,allowed_writers(args.allowed_writers))
+    out=make_output_dir(args.output_dir);(out/'images').mkdir()
+    inputs={str(p):digest(p) for p in [args.selected,checkpoint,args.mapping,args.same_student,args.validation,args.allowed_writers,*args.review_export,
+                                       *(d/'run_manifest.json' for d in args.detector),*([args.ids] if args.ids else []),Path(__file__)]}
     pages=[];rows=[];coverage=[];scanned=0
     for page in ids:
-        record,instances=page_io.read_output(args.detector,page);scanned+=1
+        record,instances=page_io.read_output(detector[page],page);scanned+=1
         if not instances and not manual.get(page):continue
-        path=args.pages/(page+'.png')
+        path=folder[page]/(page+'.png')
         with Image.open(path) as im:grey=review_clean(np.asarray(im.convert('L')))
         h,w=grey.shape;require(record['size']==[w,h],'page dimensions differ')
         human=list(manual.get(page,{}).values());fresh=[];crops=[]
@@ -116,7 +128,7 @@ def infer_all(args):
         pages.append({'id':page,'question':page.split('_')[-2],'image':source,'size':[w,h],'split':role,'writer_group':canon(writer)})
         for row,mask in zip(fresh,masks):rows.append({**row,'page':pi,'runs':encode(mask),'model':selected['selected']})
         for row in human:rows.append({**row,'page':pi,'preserved_manual':True})
-        for f in (path,args.detector/(page+'.json'),args.detector/(page+'.npz')):inputs[str(f)]=digest(f)
+        for f in (path,detector[page]/(page+'.json'),detector[page]/(page+'.npz')):inputs[str(f)]=digest(f)
         if len(pages)%100==0:print(json.dumps({'scanned':scanned,'pages':len(pages),'regions':len(rows)}),flush=True)
     require(set(manual)<=set(ids),'manual pages missing from detector/image sources')
     pack={'id':args.name,'schema':'paper2-pixel-review-pack-v1','task':'strike_only','pages':pages,'rows':rows,
@@ -193,7 +205,10 @@ def prefill_export(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     i=sub.add_parser('infer')
-    for name in ('selected','pages','detector','mapping','same-student','validation','output-dir'):i.add_argument('--'+name,type=Path,required=True)
+    for name in ('selected','mapping','same-student','validation','allowed-writers','output-dir'):i.add_argument('--'+name,type=Path,required=True)
+    i.add_argument('--pages',type=Path,action='append',required=True,help='a folder of cleaned pages (repeatable)')
+    i.add_argument('--detector',type=Path,action='append',required=True,help='a folder of detections (repeatable)')
+    i.add_argument('--ids',type=Path,help='only these pages, one id per line')
     i.add_argument('--review-export',type=Path,action='append',default=[]);i.add_argument('--name',default='paper2-full-review')
     b=sub.add_parser('bundle');b.add_argument('--pack',type=Path,required=True);b.add_argument('--output-dir',type=Path,required=True)
     b.add_argument('--pages-per-part',type=int,default=20)

@@ -10,6 +10,10 @@ questions are taken in a fixed order (a hash of the image id, seed 42) one quest
 is drawn from before any is drawn twice, and a writer gives a second question only when every writer of the split has given one; a split
 stops at the first question that brings its lines to the target.  The first ``--pilot`` questions of the test split are the pilot.
 
+Only writers named in ``--allowed-writers`` are drawn (user 2026-10-18: the unlabeled set the user was given; the pages of a
+labmate's annotated set -- its 52 writers -- are never used, as paper 1 decided on 2026-10-15); ``--exclude`` leaves out the
+questions of earlier selections, and ``SPLIT=all`` takes every question that qualifies.
+
 OUT/selection.json lists the questions (image id, split, writer, question, lines, revised lines, pilot) and the counts per split; only ids
 and counts, no text.
 """
@@ -45,6 +49,19 @@ def candidates(catalogue, writers, min_lines, min_edited):
         if split and len(records) >= min_lines and edited >= min_edited:
             out[split].append({'image_id': image_id, 'writer': writer, 'question': question_of(image_id), 'lines': len(records), 'edited': edited})
     return dict(out)
+
+
+def allowed_writers(path):
+    """The writer ids (uuids, one per line) whose pages may be used."""
+    found = {x.strip() for x in Path(path).read_text().split() if x.strip()}
+    require(found, f'{path}: no writer')
+    return found
+
+
+def refuse_outside(pages, allowed, what='page'):
+    """Refuse any page whose writer (its id up to the first _) is not an allowed writer."""
+    outside = sorted(p for p in pages if p.split('_')[0] not in allowed)
+    require(not outside, f'{len(outside)} {what}(s) of writers outside the allowed set, e.g. {outside[:2]}')
 
 
 def rank(image_id, seed=SEED):
@@ -96,15 +113,21 @@ def main(argv=None):
     parser.add_argument('--min-lines', type=int, default=12)
     parser.add_argument('--min-edited', type=int, default=3)
     parser.add_argument('--pilot', type=int, default=5, help='the first N test questions are the pilot')
+    parser.add_argument('--allowed-writers', type=Path, required=True, help='uuids of the writers whose pages may be used, one per line')
+    parser.add_argument('--exclude', type=Path, action='append', default=[], help="an earlier selection.json whose questions are left out")
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
-    targets = {k: int(v) for k, v in (s.split('=') for s in args.lines)}
+    targets = {k: v for k, v in (s.split('=') for s in args.lines)}
     require(set(targets) <= set(SPLITS.values()), f'splits are {sorted(SPLITS.values())}')
     catalogue = lines_module.read_catalogue(args.catalogue) if args.catalogue else lines_module.default_catalogue()
     writers = writer_splits(args.mapping, args.same_student)
-    pools = candidates(catalogue, writers, args.min_lines, args.min_edited)
+    allowed = allowed_writers(args.allowed_writers)
+    excluded = {p['image_id'] for e in args.exclude for p in json.loads(e.read_text())['pages']}
+    pools = {split: [p for p in pool if p['image_id'].split('_')[0] in allowed and p['image_id'] not in excluded]
+             for split, pool in candidates(catalogue, writers, args.min_lines, args.min_edited).items()}
     pages = []
     for split, target in targets.items():
+        target = sum(p['lines'] for p in pools.get(split, [])) if target == 'all' else int(target)
         chosen = choose(pools.get(split, []), target)
         require(sum(p['lines'] for p in chosen) >= target, f'{split}: not enough questions for {target} lines')
         pages += [{**p, 'split': split, 'pilot': split == 'test' and n < args.pilot} for n, p in enumerate(chosen)]
@@ -118,7 +141,9 @@ def main(argv=None):
                for split in targets}
     out = make_output_dir(args.output_dir)
     write_json(out/'selection.json', {'pages': pages, 'summary': summary, 'min_lines': args.min_lines, 'min_edited': args.min_edited, 'seed': SEED})
-    write_manifest(out, config=to_jsonable(args), inputs={str(args.mapping): digest(args.mapping)}, summary=summary)
+    refuse_outside([p['image_id'] for p in pages], allowed, 'question')
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.mapping, args.allowed_writers, *args.exclude)},
+                   summary=summary)
     print(json.dumps(summary, ensure_ascii=False))
     return 0
 
