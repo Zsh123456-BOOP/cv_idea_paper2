@@ -71,8 +71,8 @@ if not LAB.exists():
     user = O/'paper2_test_text20261018_inputs'/'user_export_20261018.json'
     d = json.loads(user.read_text())
     write_json(out/'test_export_20261018.json', {**d, 'pages': {k: v for k, v in d['pages'].items() if allowed(k)}})
-    write_manifest(out, inputs={str(p): digest(p) for p in (src/'selection.json', src/name, user)},
-                   note='copies without a labmate page (user 2026-10-21); the originals are in the quarantine')
+    write_manifest(out, config={'note': 'copies without a labmate page (user 2026-10-21); the originals are in the quarantine'},
+                   inputs={str(p): digest(p) for p in (src/'selection.json', src/name, user)})
 PY
     mkdir -p "$Q/paper2_annotation_labels" "$Q/paper2_test_text20261018_inputs" "$Q/paper2_pixel_batch80_inputs20261007"
     for f in selection.json test_ids.txt 涂改标注_paper2-revision-boxes-test_2026-10-05-04-28.json; do
