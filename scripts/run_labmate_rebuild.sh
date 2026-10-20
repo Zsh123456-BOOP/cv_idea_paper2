@@ -55,24 +55,31 @@ if ! done_ quarantine; then
         mkdir "$VAL"; cp "$O/paper2_pixel_finetune_set20261007/validation_native.json" "$O/paper2_pixel_finetune_set20261007/validation_native.npz" "$VAL/"
         cmp "$VAL/validation_native.npz" "$O/paper2_pixel_finetune_set20261007/validation_native.npz"
     fi
-    "$PY" - "$O" "$LAB" <<'PY'
+    "$PY" - "$O" "$LAB" "$Q" <<'PY'
 import json, sys
 from pathlib import Path
 from revrender.data.allowed import allowed
 from revrender.util import digest, make_output_dir, write_json, write_manifest
-O, LAB = Path(sys.argv[1]), Path(sys.argv[2])
+O, LAB, Q = (Path(a) for a in sys.argv[1:4])
+def clean(v):
+    """The value without a labmate page: keys and records naming one are dropped, at any depth."""
+    if isinstance(v, dict):
+        return {k: clean(x) for k, x in v.items() if allowed(k) and allowed(v.get('image_id', ''))} if allowed(v.get('image_id', '')) else None
+    if isinstance(v, list):
+        return [c for c in (clean(x) for x in v) if c is not None]
+    return v
+def source(*parts):            # the original, or where the quarantine put it
+    p = O.joinpath(*parts)
+    return p if p.exists() else Q.joinpath(*parts)
 if not LAB.exists():
-    out = make_output_dir(LAB); src = O/'paper2_annotation_labels'; inputs = {}
-    sel = json.loads((src/'selection.json').read_text())
-    write_json(out/'selection.json', {**sel, 'pages': [p for p in sel['pages'] if allowed(p['image_id'])]})
-    for name in ('涂改标注_paper2-revision-boxes-test_2026-10-05-04-28.json',):
-        d = json.loads((src/name).read_text())
-        write_json(out/name, {**d, 'pages': {k: v for k, v in d['pages'].items() if allowed(k)}})
-    user = O/'paper2_test_text20261018_inputs'/'user_export_20261018.json'
-    d = json.loads(user.read_text())
-    write_json(out/'test_export_20261018.json', {**d, 'pages': {k: v for k, v in d['pages'].items() if allowed(k)}})
+    out = make_output_dir(LAB)
+    sel, box = source('paper2_annotation_labels', 'selection.json'), source('paper2_annotation_labels', '涂改标注_paper2-revision-boxes-test_2026-10-05-04-28.json')
+    user = source('paper2_test_text20261018_inputs', 'user_export_20261018.json')
+    for path, name in ((sel, 'selection.json'), (box, box.name), (user, 'test_export_20261018.json')):
+        write_json(out/name, clean(json.loads(path.read_text())))
+    src, name = sel.parent, box.name
     write_manifest(out, config={'note': 'copies without a labmate page (user 2026-10-21); the originals are in the quarantine'},
-                   inputs={str(p): digest(p) for p in (src/'selection.json', src/name, user)})
+                   inputs={str(p): digest(p) for p in (sel, box, user)})
 PY
     mkdir -p "$Q/paper2_annotation_labels" "$Q/paper2_test_text20261018_inputs" "$Q/paper2_pixel_batch80_inputs20261007"
     for f in selection.json test_ids.txt 涂改标注_paper2-revision-boxes-test_2026-10-05-04-28.json; do
@@ -93,7 +100,7 @@ lane_ours() {
     if ! done_ templates; then mkdir -p "${N}_page_templates"; "$PY" -m revrender.data.handwriting --pages "$UNL" --output "${N}_page_templates/templates.npz" > "$R/templates.log" 2>&1; mark templates; fi
     if ! done_ detect; then
         replay_gpu detect "$C1" 0 1 "$O/paper2_pages_clean_run_unlabeled3976" "${N}_pages_clean_run_unlabeled3976" \
-            --set "--checkpoint=$P1/formal/best.pt" --set "--checkpoint-sha=$P1_SHA" --set "--freeze=$P1/freeze.json"
+            --set="--checkpoint=$P1/formal/best.pt" --set="--checkpoint-sha=$P1_SHA" --set="--freeze=$P1/freeze.json"
         replay tighten "$O/paper2_pages_clean_run_unlabeled3976_tight" "${N}_pages_clean_run_unlabeled3976_tight"; mark detect; fi
     if ! done_ gold; then
         replay gold "$O/paper2_gold_pages" "${N}_gold_pages"
@@ -156,8 +163,8 @@ PY
         mark prefill; fi
     # the recognition pilot of 2026-10-03/04 on clean inputs, one card
     for item in line_pack_s0 line_pack_s0b; do
-        done_ "$item" || { replay_gpu "$item" "$C1" 0 1 "$O/paper2_$item" "${N}_$item" --set "--checkpoint=$P1/formal/best.pt" \
-            --set "--checkpoint-sha=$P1_SHA" --set "--freeze=$P1/freeze.json"; mark "$item"; }; done
+        done_ "$item" || { replay_gpu "$item" "$C1" 0 1 "$O/paper2_$item" "${N}_$item" --set="--checkpoint=$P1/formal/best.pt" \
+            --set="--checkpoint-sha=$P1_SHA" --set="--freeze=$P1/freeze.json"; mark "$item"; }; done
     for item in s0_qwen3vl8b s0b_qwen25vl7b s0b_qwen3vl2b s0b_qwen3vl4b s0b_qwen3vl8b tokens_qwen3vl2b tokens_qwen3vl8b \
                 reader_qwen3vl8b_strikes reader_qwen3vl8b_clean reader_qwen3vl2b_strikes reader_qwen3vl2b_clean reader_qwen3vl2b_clean_matched \
                 reader_qwen3vl2b_clean_whole reader_qwen3vl2b_all4 reader_qwen3vl2b_blank \
