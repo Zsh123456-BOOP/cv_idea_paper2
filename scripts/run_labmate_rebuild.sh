@@ -22,6 +22,7 @@ LAB=$O/paper2_annotation_labels_allowed20261021; VAL=$O/paper2_fixed_validation2
 C0=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0; C1=GPU-d0bcc564-5bd9-b943-f995-8536415088e3; C2=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0
 M=/home/zsh/hme/models
 mkdir -p "$R"
+exec 8>"$R/lock"; flock -n 8 || { echo 'another rebuild (or a lane left by one) is still running'; exit 1; }   # its lanes inherit the lock
 stamp() { echo "$* $(date -u +%FT%TZ)"; }
 done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
@@ -187,11 +188,12 @@ lane_baselines() {   # LANE CARD MODELS...: the restoration baselines on the new
 }
 mkdir -p "${N}_restoration_suite"
 ( lane_ours ) > "$R/lane_ours.log" 2>&1 & L1=$!
-( lane_baselines 0 0 COR-Generator Restormer Strikethrough-CycleGAN DocDiff ) > "$R/lane_b0.log" 2>&1 & L0=$!
-( lane_baselines 2 2 NAFNet DE-GAN
+# card 0 is taken by another user since 2026-10-20: cards 2 and 3 (3 only while nobody else is on it; the suite waits for that)
+( lane_baselines 2 2 NAFNet DE-GAN; lane_baselines 0 2 COR-Generator Restormer
   if ! done_ stainrestorer; then
-      bash "$ROOT/scripts/run_restoration_suite.sh" 2 "${N}_restoration_pairs20261007_v4" "$O/paper2_stainrestorer_resources20261009" \
-          "${N}_stainrestorer" formal 2 StainRestorer > "$R/stainrestorer.log" 2>&1; mark stainrestorer; fi ) > "$R/lane_b2.log" 2>&1 & L2=$!
+      bash "$ROOT/scripts/run_restoration_suite.sh" 2 "${N}_restoration_pairs20261007_v4" "$O/paper2_stainrestorer_resources20261009/upstream" \
+          "${N}_stainrestorer" formal 2 StainRestorer > "$R/stainrestorer.log" 2>&1; mark stainrestorer; fi ) > "$R/lane_b2.log" 2>&1 & L0=$!
+( lane_baselines 3 3 Strikethrough-CycleGAN DocDiff ) > "$R/lane_b3.log" 2>&1 & L2=$!
 wait $L1; wait $L0; wait $L2
 
 # ---- 2. two-card work last: the diagnostic study with the rebuilt models, and the 32B line reading ----------------------------------
