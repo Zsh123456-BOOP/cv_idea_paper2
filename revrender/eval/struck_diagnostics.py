@@ -158,6 +158,8 @@ def refuse_test_writers(regions, mapping, same_student):
 
 def build(args):
     cfg = load_config(args.config)
+    # a rebuilt detector or box remover (2026-10-21: the models trained without a labmate's data) replaces the configured one
+    cfg['data'].update({k: str(v) for k, v in (('detector', args.detector), ('box_remover', args.box_remover)) if v})
     data, images = cfg['data'], cfg['images']
     regions = pixel_regions(data)+box_regions(data)
     refuse_test_writers(regions, data['mapping'], data['same_student'])
@@ -442,6 +444,8 @@ def main(argv=None):
     b = sub.add_parser('build')
     b.add_argument('--config', type=Path, required=True)
     b.add_argument('--output-dir', type=Path, required=True)
+    b.add_argument('--detector', type=Path, help='page detections in place of [data] detector')
+    b.add_argument('--box-remover', type=Path, help='a box remover checkpoint in place of [data] box_remover')
     s = sub.add_parser('score')
     s.add_argument('--config', type=Path, required=True)
     s.add_argument('--build', type=Path, required=True)

@@ -32,7 +32,7 @@ for arm in "${ARMS[@]}"; do
     bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU" "$NUMA" "$OUT/${model}_${arm}" -- \
       "$RUNTIME" -m revrender.baselines.restoration --model "$model" --arm "$arm" \
       --data "$DATA" --upstream "$UPSTREAM" \
-      --human-validation /home/zsh/hme/outputs/paper2_pixel_finetune_set20261007/validation_native.json \
+      --human-validation /home/zsh/hme/outputs/paper2_fixed_validation20261007/validation_native.json \
       --output-dir "$OUT/${model}_${arm}" --steps "$STEPS" --batch-size 4 \
       --eval-every "$EVAL" --validation-limit "$VALIDATION" > "$OUT/${model}_${arm}.log" 2>&1
   done

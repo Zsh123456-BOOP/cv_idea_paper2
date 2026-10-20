@@ -54,7 +54,7 @@ for model in "${MODELS[@]}"; do
   bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU" "$NUMA" "$dest" -- \
     "$RUNTIME" -m revrender.baselines.restoration --model "$model" --arm gold_pixels \
     --protocol "$ROOT/configs/restoration.toml" --data "$DATA" --upstream "$UPSTREAM" \
-    --human-validation /home/zsh/hme/outputs/paper2_pixel_finetune_set20261007/validation_native.json \
+    --human-validation /home/zsh/hme/outputs/paper2_fixed_validation20261007/validation_native.json \
     --output-dir "$dest" "${EXTRA[@]}" > "$OUT/${model}.log" 2>&1
   # Reload the frozen inference checkpoint on validation pixels, not on test images.
   (hold_card "$GPU"; numactl --cpunodebind="$NUMA" --membind="$NUMA" "$RUNTIME" -m revrender.baselines.restoration_verify \

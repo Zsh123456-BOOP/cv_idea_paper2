@@ -16,7 +16,7 @@ mkdir "$OUT"
 trap 'code=$?; if [ "$code" -ne 0 ]; then touch "$OUT/FAILED"; fi' EXIT
 export ALLOW_GPU3=1 PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 IDLE=0; [ "$CARD" != 3 ] || IDLE=1
-HUMAN=/home/zsh/hme/outputs/paper2_pixel_finetune_set20261007/validation_native.json
+HUMAN=/home/zsh/hme/outputs/paper2_fixed_validation20261007/validation_native.json
 
 # Test training and checkpoint reload before committing to a long run.
 bash "$ROOT/scripts/run_restoration_suite.sh" "$CARD" "$DATA" "$UPSTREAM" "$OUT/smoke" smoke "$CARD" "$MODEL"

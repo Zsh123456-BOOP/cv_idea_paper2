@@ -15,7 +15,10 @@
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 OUT="$1"
-C1=GPU-d0bcc564-5bd9-b943-f995-8536415088e3; C2=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0; C3=$CARD3
+# Cards: one-card lane 1 (C1, index I1), one-card lane 2 (C2, I2), and the two-card models on PAIR (uuids) / PAIR_INDICES; the
+# defaults are cards 1, 2 and 2+3.  BUILD_ARGS adds options to the build (a rebuilt --detector or --box-remover).
+C1=${C1:-GPU-d0bcc564-5bd9-b943-f995-8536415088e3}; I1=${I1:-1}; C2=${C2:-GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0}; I2=${I2:-2}
+PAIR=${PAIR:-$C2,$CARD3}; PAIR_INDICES=${PAIR_INDICES:-2,3}
 M=/home/zsh/hme/models
 require_clean_source
 trap 'echo "pipeline failed at line $LINENO $(date -u +%FT%TZ)"; touch "$OUT.FAILED"' ERR
@@ -29,7 +32,7 @@ wait_for() {   # DIR: an earlier run's job still writing it
 
 if [ ! -e "${OUT}_build" ]; then
     stamp "1. build"
-    gpu $C1 0 "${OUT}_build" -- "$PY" -m revrender.eval.struck_diagnostics build --config "$ROOT/configs/struck_diagnostics.toml" --output-dir "${OUT}_build"
+    gpu $C1 0 "${OUT}_build" -- "$PY" -m revrender.eval.struck_diagnostics build --config "$ROOT/configs/struck_diagnostics.toml" ${BUILD_ARGS:-} --output-dir "${OUT}_build"
 fi
 
 parsed() {   # predictions.jsonl -> exit 0 when at least 95% of the raw outputs carry <transcription>
@@ -65,18 +68,18 @@ read_model() {   # NAME MODEL_DIR CARD_UUIDS NUMA CUDA_INDICES SUFFIX EXTRA_ARGS
 }
 
 stamp "2. models"
-( read_model qwen3vl8b $M/Qwen3-VL-8B-Instruct $C1 0 1 '' || true
-  read_model qwen3vl4b $M/Qwen3-VL-4B-Instruct $C1 0 1 _s1 || true
-  read_model internvl35_8b $M/InternVL3_5-8B $C1 0 1 '' --trust-remote-code || true
-  read_model minicpm $M/MiniCPM-V-4 $C1 0 1 '' --trust-remote-code || true
+( read_model qwen3vl8b $M/Qwen3-VL-8B-Instruct $C1 0 $I1 '' || true
+  read_model qwen3vl4b $M/Qwen3-VL-4B-Instruct $C1 0 $I1 _s1 || true
+  read_model internvl35_8b $M/InternVL3_5-8B $C1 0 $I1 '' --trust-remote-code || true
+  read_model minicpm $M/MiniCPM-V-4 $C1 0 $I1 '' --trust-remote-code || true
   touch "${OUT}_lane1.done" ) > "${OUT}_lane1.log" 2>&1 & L1=$!
-( read_model qwen25vl7b $M/Qwen2.5-VL-7B-Instruct $C2 1 2 _s1 || true
-  read_model qwen3vl2b $M/Qwen3-VL-2B-Instruct $C2 1 2 _s1 || true
-  read_model gemma3_12b $M/gemma-3-12b-it "$C2,$C3" 1 2,3 '' --tp 2 || true
-  read_model qwen3vl32b $M/Qwen3-VL-32B-Instruct-FP8 "$C2,$C3" 1 2,3 '' --tp 2 || true
+( read_model qwen25vl7b $M/Qwen2.5-VL-7B-Instruct $C2 1 $I2 _s1 || true
+  read_model qwen3vl2b $M/Qwen3-VL-2B-Instruct $C2 1 $I2 _s1 || true
+  read_model gemma3_12b $M/gemma-3-12b-it "$PAIR" 1 $PAIR_INDICES '' --tp 2 || true
+  read_model qwen3vl32b $M/Qwen3-VL-32B-Instruct-FP8 "$PAIR" 1 $PAIR_INDICES '' --tp 2 || true
   # the fourth primary family when MiniCPM fails its smoke; two cards, its cache does not fit next to the weights on one
   until [ -e "${OUT}_lane1.done" ]; do sleep 60; done
-  complete "${OUT}_read_minicpm_marked" || read_model glm41v $M/GLM-4.1V-9B-Thinking "$C2,$C3" 1 2,3 '' --tp 2 --trust-remote-code --max-new-tokens 2048 || true ) > "${OUT}_lane23.log" 2>&1 & L23=$!
+  complete "${OUT}_read_minicpm_marked" || read_model glm41v $M/GLM-4.1V-9B-Thinking "$PAIR" 1 $PAIR_INDICES '' --tp 2 --trust-remote-code --max-new-tokens 2048 || true ) > "${OUT}_lane23.log" 2>&1 & L23=$!
 wait $L1; wait $L23
 
 stamp "3. score"
