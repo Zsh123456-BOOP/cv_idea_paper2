@@ -25,14 +25,14 @@ def test_only_confirmed_regions_enter_tuning_without_inventing_page_completion(t
 
 def test_human_validation_writers_and_twins_are_excluded_from_replay(tmp_path,monkeypatch):
     rows=[{'id':str(i),'group_uuid':f'w{i}','page':f'w{i}_1','image':np.full((10,10),20,np.uint8),'mask':np.ones((10,10),np.uint8),'box':[0,0,10,10],'region':[[0,0],[10,0],[10,10],[0,10]]} for i in range(5)]
-    monkeypatch.setattr(R,'confirmed',lambda *a:(rows,{},2));monkeypatch.setattr(R,'twins',lambda *a:{'w0':'z0','z0':'w0'})
+    monkeypatch.setattr(R,'confirmed',lambda *a,**kw:(rows,{},2));monkeypatch.setattr(R,'twins',lambda *a:{'w0':'z0','z0':'w0'})
     monkeypatch.setattr(R,'writer_splits',lambda *a:{})
     records=[{'id':f's{i}','group_uuid':f's{i}','split':'train' if i<10 else 'val','revisions':2 if i<5 else 0} for i in range(14)]
     records.append({'id':'twin','group_uuid':'z0','split':'train','revisions':2})
     x=np.full((15,96,768),255,np.uint8);y=np.zeros_like(x);y[:5,20:23,20:30]=1;y[:5,25:28,20:30]=2;y[14]=y[0]
     monkeypatch.setattr(R,'read_set',lambda p:(records,x,y))
     replay=tmp_path/'replay';replay.mkdir();(replay/'run_manifest.json').write_text('{}')
-    args=SimpleNamespace(review_export=[],pages=[],mapping=None,same_student=None,validation_writers=1,replay=replay,replay_clean=4,validation_clean=4,output_dir=tmp_path/'out')
+    args=SimpleNamespace(review_export=[],pages=[],mapping=None,same_student=None,validation_writers=1,fixed_validation=None,replay=replay,replay_clean=4,validation_clean=4,output_dir=tmp_path/'out')
     R.build(args);result=json.loads((args.output_dir/'records.json').read_text())
     assert 'twin' not in {r['id'] for r in result}
     train={r['group_uuid'] for r in result if r['split']=='train'};val={r['group_uuid'] for r in result if r['split']=='val'}
@@ -76,3 +76,22 @@ def test_unused_training_writer_is_explicitly_allowed_but_test_twin_is_not(tmp_p
     monkeypatch.setattr(R,'writer_splits',lambda *a:{'twin':'test'})
     monkeypatch.setattr(R,'twins',lambda *a:{'new':'twin','twin':'new'})
     with pytest.raises(RefusedError,match='held-out'):R.confirmed([export],[tmp_path],mapping,mapping,allow_unused=True)
+
+
+def test_a_fresh_set_can_keep_an_earlier_frozen_validation_byte_for_byte(tmp_path,monkeypatch):
+    base=tmp_path/'base';base.mkdir()
+    (base/'validation_native.json').write_text(json.dumps([{'group_uuid':'w0','id':'0','page':'w0_1','box':[0,0,10,10],'region':[]}]))
+    np.savez(base/'validation_native.npz',image_0=np.full((10,10),77,np.uint8),mask_0=np.eye(10,dtype=np.uint8))
+    rows=[{'id':str(i),'group_uuid':f'w{i}','page':f'w{i}_1','image':np.full((10,10),20,np.uint8),'mask':np.ones((10,10),np.uint8),'box':[0,0,10,10],'region':[]} for i in range(4)]
+    monkeypatch.setattr(R,'confirmed',lambda *a,**kw:(rows,{},0));monkeypatch.setattr(R,'twins',lambda *a:{});monkeypatch.setattr(R,'writer_splits',lambda *a:{})
+    records=[{'id':f's{i}','group_uuid':f's{i}','split':'train' if i<10 else 'val','revisions':2 if i<5 else 0} for i in range(14)]
+    x=np.full((14,96,768),255,np.uint8);y=np.zeros_like(x);y[:5,20:23,20:30]=1;y[:5,25:28,40:50]=2
+    monkeypatch.setattr(R,'read_set',lambda p:(records,x,y))
+    replay=tmp_path/'replay';replay.mkdir();(replay/'run_manifest.json').write_text('{}')
+    args=SimpleNamespace(review_export=[],pages=[],mapping=None,same_student=None,validation_writers=3,fixed_validation=base,replay=replay,replay_clean=4,validation_clean=4,output_dir=tmp_path/'out')
+    R.build(args)
+    for name in ('validation_native.json','validation_native.npz'):
+        assert (base/name).read_bytes()==(args.output_dir/name).read_bytes()
+    result=json.loads((args.output_dir/'records.json').read_text())
+    assert {r['group_uuid'] for r in result if r['source']=='human_confirmed' and r['split']=='val'}=={'w0'}
+    assert sum(r['source']=='human_confirmed' and r['split']=='train' for r in result)==3

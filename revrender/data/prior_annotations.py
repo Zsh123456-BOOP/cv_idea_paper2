@@ -30,6 +30,7 @@ from statistics import median
 from ..config import expand, load_paths
 from ..eval.coverage import coverage, prepare, similarity
 from ..util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
+from .allowed import allowed
 
 FILES = {
     'pair_key': 'outputs/revision_pair_annotation_20260822_v1/key.jsonl',
@@ -55,6 +56,8 @@ def read_pairs(root):
     out = {}
 
     def add(line_id, image_id, source, **fields):
+        if not allowed(image_id):                     # a labmate's line (data.allowed): left out
+            return
         record = out.setdefault(line_id, {'line_id': line_id, 'image_id': image_id, 'sources': []})
         record['sources'].append(source)
         record.update({k: v for k, v in fields.items() if v is not None})

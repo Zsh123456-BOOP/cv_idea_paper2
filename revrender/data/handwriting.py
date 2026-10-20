@@ -21,6 +21,7 @@ from scipy import ndimage
 
 from ..eval.ink import INK_BELOW
 from ..util import require
+from .allowed import allowed
 
 PRINTED_SHARE = .5         # a pixel is printed if at least this share of the group's pages have ink there
 TEMPLATE_PAD = 5           # thickening of the printed mask: scans of one sheet differ by a pixel or two
@@ -219,6 +220,8 @@ def main(argv=None):
     groups = defaultdict(list)
     for directory in args.pages:
         for path in sorted(Path(directory).glob('*.jpg')):
+            if not allowed(path.stem):                # a labmate's page (data.allowed)
+                continue
             with Image.open(path) as opened:
                 groups[group_key(path.stem, opened.size)].append(path)
     templates = printed_templates(groups)

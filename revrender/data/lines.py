@@ -13,14 +13,16 @@ from pathlib import Path
 
 from ..config import expand, load_paths
 from ..util import digest, require
+from .allowed import allowed
 
 
 def read_catalogue(path, expected_sha=None):
-    """All records, in file order."""
+    """All records of allowed writers (``data.allowed``: never a labmate's lines), in file order."""
     path = Path(path).expanduser()
     if expected_sha is not None:
         require(digest(path) == expected_sha, 'line catalogue changed')
-    return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line]
+    records = (json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line)
+    return [r for r in records if allowed(r['image_id'])]
 
 
 def default_catalogue(paths=None):

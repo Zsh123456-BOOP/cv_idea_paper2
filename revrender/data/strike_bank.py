@@ -32,6 +32,7 @@ from PIL import Image, ImageDraw
 from scipy import ndimage
 
 from .. import pages as pages_module
+from .allowed import allowed as allowed_page
 from ..eval.ink import INK_BELOW
 from ..tighten import non_white
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
@@ -157,7 +158,8 @@ def main(argv=None):
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
     allowed = training_writers(args.mapping, args.same_student)
-    ids = sorted(p.stem for p in args.gold.glob('*.json') if p.stem not in ('run_manifest', 'summary') and p.stem.split('_')[0] in allowed)
+    ids = sorted(p.stem for p in args.gold.glob('*.json') if p.stem not in ('run_manifest', 'summary') and p.stem.split('_')[0] in allowed
+                 and allowed_page(p.stem))                                   # never a labmate's page (data.allowed)
     require(ids, 'no gold page of a training writer')
     scans = pages_module.page_files(args.pages, ids)
     bank, pieces, left_out, left_windows = {}, [], [], []

@@ -47,9 +47,26 @@ def held_writers(rows,count):
     return set(writers[:count])
 
 
+def fixed_validation(base,rows):
+    """The frozen validation of an earlier set: its writers, and its native crops in place of re-cut ones (so the files stay identical)."""
+    native=json.loads((base/'validation_native.json').read_text());arrays=np.load(base/'validation_native.npz')
+    crops={r['id']:(arrays[f'image_{i}'],arrays[f'mask_{i}']) for i,r in enumerate(native)}
+    held={r['group_uuid'] for r in native}
+    require({r['id'] for r in rows if r['group_uuid'] in held}<=set(crops),'a validation writer has a region the frozen validation lacks')
+    kept=[r for r in rows if r['group_uuid'] not in held]
+    for r in native:
+        image,mask=crops[r['id']];kept.append({**r,'image':image,'mask':mask})
+    return held,kept
+
+
 def build(args):
-    rows,inputs,skipped=confirmed(args.review_export,args.pages,args.mapping,args.same_student)
-    held=held_writers(rows,args.validation_writers);other=twins(args.same_student)
+    rows,inputs,skipped=confirmed(args.review_export,args.pages,args.mapping,args.same_student,allow_unused=args.fixed_validation is not None)
+    if args.fixed_validation:
+        held,rows=fixed_validation(args.fixed_validation,rows)
+        for name in ('validation_native.json','validation_native.npz'):inputs[str(args.fixed_validation/name)]=digest(args.fixed_validation/name)
+    else:
+        held=held_writers(rows,args.validation_writers)
+    other=twins(args.same_student)
     canonical=lambda w:min(w,other.get(w,w))
     # Also exclude the review validation writers from every replay row.
     records,images,labels=read_set(args.replay)
@@ -87,8 +104,13 @@ def build(args):
     require(not train&val,'writer leakage between fine-tuning and validation')
     out=make_output_dir(args.output_dir)
     np.save(out/'images.npy',np.stack(data_images));np.save(out/'labels.npy',np.stack(data_labels))
-    np.savez_compressed(out/'validation_native.npz',**native)
-    write_json(out/'validation_native.json',val_records);write_json(out/'records.json',data_records)
+    if args.fixed_validation:
+        for name in ('validation_native.json','validation_native.npz'):
+            shutil.copyfile(args.fixed_validation/name,out/name)
+    else:
+        np.savez_compressed(out/'validation_native.npz',**native)
+        write_json(out/'validation_native.json',val_records)
+    write_json(out/'records.json',data_records)
     inputs[str(args.replay/'run_manifest.json')]=digest(args.replay/'run_manifest.json')
     summary={'confirmed':len(rows),'skipped_unconfirmed':skipped,'human_train':sum(r['group_uuid'] not in held for r in rows),
              'human_validation':len(val_records),'validation_writers':sorted(held),
@@ -147,6 +169,7 @@ def main(argv=None):
     source.add_argument('--replay',type=Path)
     source.add_argument('--base-set',type=Path,help='extend an existing set; keep its validation and replay unchanged')
     p.add_argument('--validation-writers',type=int,default=3)
+    p.add_argument('--fixed-validation',type=Path,help='with --replay: keep this earlier set\'s validation writers and native files as they are')
     p.add_argument('--replay-clean',type=int,default=96);p.add_argument('--validation-clean',type=int,default=16)
     p.add_argument('--output-dir',type=Path,required=True)
     args=p.parse_args(argv)

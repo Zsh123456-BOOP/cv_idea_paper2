@@ -39,20 +39,16 @@ def test_the_tool_writes_the_selection_with_a_pilot_and_one_split_per_writer(tmp
     mapping = tmp_path/'index_manifest.json'
     mapping.write_text(json.dumps({'rows': [{'group_uuid': f't{w}', 'split': 'test'} for w in range(4)] + [{'group_uuid': f'v{w}', 'split': 'dev'} for w in range(3)]
                                    + [{'group_uuid': f'r{w}', 'split': 'train'} for w in range(3)]}))
-    allowed = tmp_path/'allowed.txt'
-    allowed.write_text('\n'.join([f't{w}' for w in range(4)]+[f'v{w}' for w in range(3)]+[f'r{w}' for w in range(3)]))
     out = tmp_path/'out'
-    assert A.main(['--catalogue', str(path), '--mapping', str(mapping), '--allowed-writers', str(allowed), '--lines', 'test=50', 'val=26', 'train=26', '--pilot', '2', '--output-dir', str(out)]) == 0
+    assert A.main(['--catalogue', str(path), '--mapping', str(mapping), '--lines', 'test=50', 'val=26', 'train=26', '--pilot', '2', '--output-dir', str(out)]) == 0
     selection = json.loads((out/'selection.json').read_text())
     assert selection['summary']['test']['lines'] == 52 and selection['summary']['val']['questions'] == 2 and selection['summary']['train']['questions'] == 2
     assert sum(p['pilot'] for p in selection['pages']) == 2 and all(p['split'] == 'test' for p in selection['pages'] if p['pilot'])
     with pytest.raises(Exception, match='not enough'):
-        A.main(['--catalogue', str(path), '--mapping', str(mapping), '--allowed-writers', str(allowed), '--lines', 'test=5000', '--output-dir', str(tmp_path/'too_many')])
-    # a labmate's writer (not in the allowed set) is never drawn; earlier selections are left out; all takes the rest
-    allowed.write_text('\n'.join(['t0', 't1', 't2']))
-    assert A.main(['--catalogue', str(path), '--mapping', str(mapping), '--allowed-writers', str(allowed), '--exclude', str(out/'selection.json'),
+        A.main(['--catalogue', str(path), '--mapping', str(mapping), '--lines', 'test=5000', '--output-dir', str(tmp_path/'too_many')])
+    # earlier selections are left out; all takes the rest
+    assert A.main(['--catalogue', str(path), '--mapping', str(mapping), '--exclude', str(out/'selection.json'),
                    '--lines', 'test=all', '--output-dir', str(tmp_path/'rest')]) == 0
     rest = json.loads((tmp_path/'rest'/'selection.json').read_text())['pages']
     first = {p['image_id'] for p in selection['pages']}
-    assert rest and all(p['writer'] != 't3' and p['image_id'] not in first for p in rest)
-    assert {p['image_id'] for p in rest} | (first & {f't{w}_{q}_1' for w in range(3) for q in (3, 4)}) == {f't{w}_{q}_1' for w in range(3) for q in (3, 4)}
+    assert {p['image_id'] for p in rest} == {f't{w}_{q}_1' for w in range(4) for q in (3, 4)} - first

@@ -30,6 +30,7 @@ from .data import lines as lines_module
 from .data import ocr_lines
 from .data.gold import CANVAS, letterbox, unletterbox
 from .eval.freeze import frozen_point
+from .data.allowed import allowed, refuse_outside
 from .util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 STRIP_H, STRIP_W = CANVAS
@@ -164,12 +165,16 @@ def read_ocr_text(files):
 
 
 def page_files(directories, ids=None):
-    """{image_id: file} for the ids (default: every page) found in the directories: a page is a jpg (the scan) or a png (a cleaned page)."""
+    """{image_id: file} for the ids (default: every page) found in the directories: a page is a jpg (the scan) or a png (a cleaned page).
+    Pages of writers outside the allowed set (``data.allowed``: a labmate's data) are never listed and refused when asked for."""
+    if ids is not None:
+        refuse_outside(ids)
     found = {}
     for directory in directories:
         for suffix in ('*.jpg', '*.png'):
             for path in sorted(Path(directory).glob(suffix)):
-                found.setdefault(path.stem, path)
+                if allowed(path.stem):
+                    found.setdefault(path.stem, path)
     if ids is None:
         return found
     missing = [i for i in ids if i not in found]

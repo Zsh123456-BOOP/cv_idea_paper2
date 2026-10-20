@@ -18,6 +18,7 @@ from PIL import Image
 from .. import pages
 from ..util import digest, make_output_dir, require, to_jsonable, write_manifest
 from . import lines as lines_module
+from .allowed import allowed
 from .bundle import load_bundle
 from .gold import unletterbox
 
@@ -51,6 +52,8 @@ def main(argv=None):
     rows = defaultdict(list)
     for split in splits:
         for row in bundle[split]:
+            if not allowed(row['image_id']):          # a labmate's page (data.allowed): left out
+                continue
             require(row['line_id'] in index, f'{row["line_id"]} is not in the catalogue')
             rows[row['image_id']].append(row)
     ids = sorted(rows)

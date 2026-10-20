@@ -14,7 +14,7 @@ from ...data.clean_pages import review_clean
 from ...data.pixel_masks import SCHEMA, decode, encode
 from ...data.prior_annotations import twins, writer_splits
 from ...util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
-from ...data.annotation_set import allowed_writers, refuse_outside
+from ...data.allowed import refuse_outside
 from .page_prefill import corners, region_of
 from .pixel_offline import render_html, script_json
 
@@ -91,9 +91,9 @@ def infer_all(args):
     wanted=set(args.ids.read_text().split()) if args.ids else None
     ids=sorted(p for p in detector if p in folder and (wanted is None or p in wanted))
     require(ids,'no detected pages');require(wanted is None or set(ids)==wanted,f'pages without detection or cleaned image: {sorted(wanted-set(ids))[:3]}')
-    refuse_outside(ids,allowed_writers(args.allowed_writers))
+    refuse_outside(ids)
     out=make_output_dir(args.output_dir);(out/'images').mkdir()
-    inputs={str(p):digest(p) for p in [args.selected,checkpoint,args.mapping,args.same_student,args.validation,args.allowed_writers,*args.review_export,
+    inputs={str(p):digest(p) for p in [args.selected,checkpoint,args.mapping,args.same_student,args.validation,*args.review_export,
                                        *(d/'run_manifest.json' for d in args.detector),*([args.ids] if args.ids else []),Path(__file__)]}
     pages=[];rows=[];coverage=[];scanned=0
     for page in ids:
@@ -205,7 +205,7 @@ def prefill_export(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     i=sub.add_parser('infer')
-    for name in ('selected','mapping','same-student','validation','allowed-writers','output-dir'):i.add_argument('--'+name,type=Path,required=True)
+    for name in ('selected','mapping','same-student','validation','output-dir'):i.add_argument('--'+name,type=Path,required=True)
     i.add_argument('--pages',type=Path,action='append',required=True,help='a folder of cleaned pages (repeatable)')
     i.add_argument('--detector',type=Path,action='append',required=True,help='a folder of detections (repeatable)')
     i.add_argument('--ids',type=Path,help='only these pages, one id per line')
