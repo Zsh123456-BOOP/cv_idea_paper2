@@ -36,8 +36,10 @@ MAPS=(--map "$O/paper2_reader_corpus_main=${N}_reader_corpus" --map "$O/paper2_r
       --map "/home/zsh/hme/work/revision_tune880_v1/control=$P1")
 for old in $(cat "$R/quarantine.txt" 2>/dev/null) paper2_pages_clean_run_unlabeled3976 paper2_pages_clean_run_unlabeled3976_tight; do
     MAPS+=(--map "$O/$old=${N}_${old#paper2_}"); done
-replay() {   # NAME OLD NEW [--set ...]: replay OLD's recorded command into NEW (the old one now sits in the quarantine if it held her pages)
+replay() {   # NAME OLD NEW [--set ...]: replay OLD's recorded command into NEW (the old one now sits in the quarantine if it held her pages);
+             # a NEW that is already complete (its run_manifest.json written) is kept
     local name="$1" old="$2" new="$3"; shift 3
+    [ ! -e "$new/run_manifest.json" ] || { stamp "kept $new"; return 0; }
     [ -d "$Q/$(basename "$old")" ] && old="$Q/$(basename "$old")"
     "$PY" -m revrender.tools.replay --from "$old" --to "$new" "${MAPS[@]}" "$@" > "$R/$name.log" 2>&1
 }
@@ -106,10 +108,11 @@ lane_ours() {
     if ! done_ gold; then
         replay gold "$O/paper2_gold_pages" "${N}_gold_pages"
         replay gold_tight "$O/paper2_gold_pages_tight_connected" "${N}_gold_pages_tight_connected"
-        replay bank "$O/paper2_strike_bank" "${N}_strike_bank"
+        # the first synthetic stage's bank and lines were made before blots left the bank (2026-10-05): their own code snapshots
+        replay bank "$O/paper2_strike_bank" "${N}_strike_bank" --original-code
         replay bank_strokes "$O/paper2_strike_bank_strokes" "${N}_strike_bank_strokes"; mark gold; fi
     if ! done_ synthetic; then
-        replay synthetic_strokes "$O/paper2_synthetic_strokes" "${N}_synthetic_strokes"
+        replay synthetic_strokes "$O/paper2_synthetic_strokes" "${N}_synthetic_strokes" --original-code
         replay synthetic_boxes "$O/paper2_synthetic_boxes" "${N}_synthetic_boxes"; mark synthetic; fi
     if ! done_ pairs; then
         replay pairs "$O/paper2_restoration_pairs20261007_v3" "${N}_restoration_pairs20261007_v3"
@@ -182,6 +185,8 @@ lane_baselines() {   # LANE CARD MODELS...: the restoration baselines on the new
     local lane="$1" card="$2"; shift 2
     until done_ pairs; do sleep 300; done
     done_ "baselines_$lane" && return 0
+    if [ -e "${N}_restoration_suite/lane$lane" ]; then   # another runner has this lane: wait for it
+        until done_ "baselines_$lane" || [ -e "${N}_restoration_suite/lane$lane/FAILED" ]; do sleep 600; done; done_ "baselines_$lane"; return; fi
     bash "$ROOT/scripts/run_restoration_suite.sh" "$lane" "${N}_restoration_pairs20261007_v4" "$O/paper2_restoration_sources20261008" \
         "${N}_restoration_suite/lane$lane" formal "$card" "$@" > "$R/baselines_$lane.log" 2>&1
     mark "baselines_$lane"
@@ -190,7 +195,9 @@ mkdir -p "${N}_restoration_suite"
 ( lane_ours ) > "$R/lane_ours.log" 2>&1 & L1=$!
 # card 0 is taken by another user since 2026-10-20: cards 2 and 3 (3 only while nobody else is on it; the suite waits for that)
 ( lane_baselines 2 2 NAFNet DE-GAN; lane_baselines 0 2 COR-Generator Restormer
-  if ! done_ stainrestorer; then
+  if ! done_ stainrestorer && [ -e "${N}_stainrestorer" ]; then
+      until done_ stainrestorer || [ -e "${N}_stainrestorer/FAILED" ]; do sleep 600; done; done_ stainrestorer
+  elif ! done_ stainrestorer; then
       bash "$ROOT/scripts/run_restoration_suite.sh" 2 "${N}_restoration_pairs20261007_v4" "$O/paper2_stainrestorer_resources20261009/upstream" \
           "${N}_stainrestorer" formal 2 StainRestorer > "$R/stainrestorer.log" 2>&1; mark stainrestorer; fi ) > "$R/lane_b2.log" 2>&1 & L0=$!
 ( lane_baselines 3 3 Strikethrough-CycleGAN DocDiff ) > "$R/lane_b3.log" 2>&1 & L2=$!

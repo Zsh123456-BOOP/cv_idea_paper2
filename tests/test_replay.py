@@ -16,3 +16,7 @@ def test_the_recorded_command_is_remapped_without_the_labmate_folders(tmp_path):
     assert args == ['--corpus', '/o/clean_corpus/corpus.jsonl', '--pages', '/d/unlabeled_v1/images', '--copies', '2', '--output-dir', '/o/new']
     with pytest.raises(RefusedError, match='labmate'):
         R.rewrite(['x/revrender/a.py', '--bank', '/d/full1026_v1/bank', '--output-dir', 'o'], 'n')
+
+
+def test_the_original_snapshot_is_where_the_recorded_script_sits():
+    assert str(R.snapshot_of('/home/zsh/hme/code_paper2_6b2addde/revrender/data/strike_bank.py')) == '/home/zsh/hme/code_paper2_6b2addde'
