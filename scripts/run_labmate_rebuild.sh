@@ -198,8 +198,9 @@ mkdir -p "${N}_restoration_suite"
   if ! done_ stainrestorer && [ -e "${N}_stainrestorer" ]; then
       until done_ stainrestorer || [ -e "${N}_stainrestorer/FAILED" ]; do sleep 600; done; done_ stainrestorer
   elif ! done_ stainrestorer; then
-      bash "$ROOT/scripts/run_restoration_suite.sh" 2 "${N}_restoration_pairs20261007_v4" "$O/paper2_stainrestorer_resources20261009/upstream" \
-          "${N}_stainrestorer" formal 2 StainRestorer > "$R/stainrestorer.log" 2>&1; mark stainrestorer; fi ) > "$R/lane_b2.log" 2>&1 & L0=$!
+      # its torchmetrics lives in a side folder, as in the original run
+      PYTHONPATH=/home/zsh/hme/envs/paper2_stain_deps bash "$ROOT/scripts/run_restoration_suite.sh" 3 "${N}_restoration_pairs20261007_v4" "$O/paper2_stainrestorer_resources20261009/upstream" \
+          "${N}_stainrestorer" formal 3 StainRestorer > "$R/stainrestorer.log" 2>&1; mark stainrestorer; fi ) > "$R/lane_b2.log" 2>&1 & L0=$!
 ( lane_baselines 3 3 Strikethrough-CycleGAN DocDiff ) > "$R/lane_b3.log" 2>&1 & L2=$!
 wait $L1; wait $L0; wait $L2
 
