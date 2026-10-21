@@ -47,9 +47,8 @@ replay() {   # NAME OLD NEW [--set ...]: replay OLD's recorded command into NEW 
 replay_gpu() {   # NAME CARD NUMA INDEX OLD NEW [--set ...]
     local name="$1" card="$2" numa="$3" index="$4" old="$5" new="$6"; shift 6
     [ -d "$Q/$(basename "$old")" ] && old="$Q/$(basename "$old")"
-    # expandable segments: the 8B transformers readings ran out of memory on fragmentation alone (2 GB reserved, unused); allocation only
     gpu "$card" "$numa" "$new" -- env -u OMP_NUM_THREADS -u MKL_NUM_THREADS -u OPENBLAS_NUM_THREADS HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+        ${READ_ALLOC:+PYTORCH_CUDA_ALLOC_CONF=$READ_ALLOC} \
         CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.tools.replay --from "$old" --to "$new" "${MAPS[@]}" "$@" > "$R/$name.log" 2>&1
 }
 trap 'stamp "rebuild failed at line $LINENO"; touch "$R/FAILED"' ERR
@@ -195,6 +194,9 @@ sweep() {   # ITEM CARD NUMA INDEX: one recorded command per setting
 }
 lane_card3() {   # the 8B readings on the plain transformers backend need a whole card (cards 1 and 2 carry another user's small jobs)
     export ALLOW_GPU3=1
+    # expandable segments: an 8B sweep setting ran out of memory on fragmentation alone (2 GB reserved, unused); allocation only, and
+    # only here (transformers backend; vLLM's own allocator is left alone)
+    export READ_ALLOC=expandable_segments:True
     until done_ line_pack_s0b && done_ reader_qwen3vl8b_strikes; do sleep 300; done
     for item in tokens_qwen3vl8b readeval_8b_strikes; do
         done_ "$item" || { wait_for_gpu_memory "$CARD3" 22000 1; replay_gpu "$item" "$CARD3" 1 3 "$O/paper2_$item" "${N}_$item"; mark "$item"; }; done
