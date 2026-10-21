@@ -47,7 +47,9 @@ replay() {   # NAME OLD NEW [--set ...]: replay OLD's recorded command into NEW 
 replay_gpu() {   # NAME CARD NUMA INDEX OLD NEW [--set ...]
     local name="$1" card="$2" numa="$3" index="$4" old="$5" new="$6"; shift 6
     [ -d "$Q/$(basename "$old")" ] && old="$Q/$(basename "$old")"
+    # expandable segments: the 8B transformers readings ran out of memory on fragmentation alone (2 GB reserved, unused); allocation only
     gpu "$card" "$numa" "$new" -- env -u OMP_NUM_THREADS -u MKL_NUM_THREADS -u OPENBLAS_NUM_THREADS HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         CUDA_VISIBLE_DEVICES="$index" "$PY" -m revrender.tools.replay --from "$old" --to "$new" "${MAPS[@]}" "$@" > "$R/$name.log" 2>&1
 }
 trap 'stamp "rebuild failed at line $LINENO"; touch "$R/FAILED"' ERR
