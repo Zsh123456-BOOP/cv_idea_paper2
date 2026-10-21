@@ -75,6 +75,8 @@ stamp "2. models"
   touch "${OUT}_lane1.done" ) > "${OUT}_lane1.log" 2>&1 & L1=$!
 ( read_model qwen25vl7b $M/Qwen2.5-VL-7B-Instruct $C2 1 $I2 _s1 || true
   read_model qwen3vl2b $M/Qwen3-VL-2B-Instruct $C2 1 $I2 _s1 || true
+  # a pair that shares lane 1's card waits for lane 1 (each reading takes .85 of a card)
+  case ",$PAIR," in *",$C1,"*) until [ -e "${OUT}_lane1.done" ]; do sleep 60; done ;; esac
   read_model gemma3_12b $M/gemma-3-12b-it "$PAIR" 1 $PAIR_INDICES '' --tp 2 || true
   read_model qwen3vl32b $M/Qwen3-VL-32B-Instruct-FP8 "$PAIR" 1 $PAIR_INDICES '' --tp 2 || true
   # the fourth primary family when MiniCPM fails its smoke; two cards, its cache does not fit next to the weights on one

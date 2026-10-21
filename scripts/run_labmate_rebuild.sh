@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Rebuild everything a labmate's data reached (user 2026-10-21), unattended and resumable.
-#   run_labmate_rebuild.sh            (cards 0, 1, 2; card 3 only when nobody else is on it)
+#   run_labmate_rebuild.sh            (cards 1, 2; card 3 only when nobody else is on it; card 0 is another user's since 2026-10-20)
 # 0. Copy the frozen validation out, write filtered copies of the labels that named her pages, and move every output holding her
 #    pages, and every model trained on them, to paper2_quarantine_labmate20261021 (nothing is deleted; QUARANTINE lists them).
 # 1. Card 1: print templates, paper 1's retrained RevRender (945, no labmate page) on the unlabeled pages, tighten; paper 1's gold
 #    put back on allowed pages, the two stroke banks, the synthetic line and box sets, the restoration pairs; then our model:
 #    synthetic lines -> synthetic boxes -> the step chosen on the 41 validation strikes -> the 201 human regions -> the full
-#    library's prefill.  Cards 0 and 2: the seven restoration baselines on the new pairs.  Card 1 afterwards: the recognition
-#    pilot (line packs, VLM readings, token hiding, reader LoRAs and their evaluations) replayed on clean inputs.
-# 2. Last, on cards 0-2: the struck-content diagnostic study with the new detector and box remover, and the 32B line reading.
+#    library's prefill, then the reader LoRAs and their evaluations.  Cards 2 and 3: the seven restoration baselines on the new
+#    pairs; card 2 afterwards: the rest of the recognition pilot (line packs, VLM readings, token hiding) replayed on clean inputs.
+# 2. Last, on cards 1 and 2: the struck-content diagnostic study with the new detector and box remover, and the 32B line reading.
 # Every new output is paper2_clean_<old name>; a step whose marker exists in paper2_rebuild20261021 is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
@@ -98,7 +98,7 @@ PY
     mark quarantine
 fi
 
-# ---- 1. card 1: detections, data, our model; cards 0 and 2: baselines; card 1 after: the recognition pilot --------------------------
+# ---- 1. card 1: detections, data, our model, then the reader LoRAs; cards 2 and 3: baselines; card 2 after: the recognition pilot --------------------------
 lane_ours() {
     if ! done_ templates; then mkdir -p "${N}_page_templates"; "$PY" -m revrender.data.handwriting --pages "$UNL" --output "${N}_page_templates/templates.npz" > "$R/templates.log" 2>&1; mark templates; fi
     if ! done_ detect; then
@@ -165,20 +165,25 @@ PY
             --name paper2-full-review --output-dir "${N}_full_review_prefill" > "$R/prefill.log" 2>&1
         "$PY" -m revrender.tools.annotate.pixel_library bundle --pack "${N}_full_review_prefill" --pages-per-part 20 --output-dir "${N}_full_review_prefill_site" >> "$R/prefill.log" 2>&1
         mark prefill; fi
-    # the recognition pilot of 2026-10-03/04 on clean inputs, one card
-    for item in line_pack_s0 line_pack_s0b; do
-        done_ "$item" || { replay_gpu "$item" "$C1" 0 1 "$O/paper2_$item" "${N}_$item" --set="--checkpoint=$P1/formal/best.pt" \
-            --set="--checkpoint-sha=$P1_SHA" --set="--freeze=$P1/freeze.json"; mark "$item"; }; done
-    for item in s0_qwen3vl8b s0b_qwen25vl7b s0b_qwen3vl2b s0b_qwen3vl4b s0b_qwen3vl8b tokens_qwen3vl2b tokens_qwen3vl8b \
-                reader_qwen3vl8b_strikes reader_qwen3vl8b_clean reader_qwen3vl2b_strikes reader_qwen3vl2b_clean reader_qwen3vl2b_clean_matched \
-                reader_qwen3vl2b_clean_whole reader_qwen3vl2b_all4 reader_qwen3vl2b_blank \
-                readeval_8b_base readeval_8b_clean readeval_8b_strikes readeval_2b_base readeval_2b_clean readeval_2b_strikes \
+    # then the reader LoRAs of the recognition pilot (they train on the corpus, no pack needed), and their readings once the pack is there
+    for item in reader_qwen3vl8b_strikes reader_qwen3vl8b_clean reader_qwen3vl2b_strikes reader_qwen3vl2b_clean reader_qwen3vl2b_clean_matched \
+                reader_qwen3vl2b_clean_whole reader_qwen3vl2b_all4 reader_qwen3vl2b_blank; do
+        done_ "$item" || { replay_gpu "$item" "$C1" 0 1 "$O/paper2_$item" "${N}_$item"; mark "$item"; }; done
+    until done_ line_pack_s0b; do sleep 300; done
+    for item in readeval_8b_base readeval_8b_clean readeval_8b_strikes readeval_2b_base readeval_2b_clean readeval_2b_strikes \
                 readeval_2b_clean_matched readeval_2b_clean_whole readeval_2b_all4 readeval_2b_blank; do
         done_ "$item" || { replay_gpu "$item" "$C1" 0 1 "$O/paper2_$item" "${N}_$item"; mark "$item"; }; done
+}
+lane_recognition() {   # card 2 once its baselines are done: the recognition pilot of 2026-10-03/04 on clean inputs (packs, VLMs, tokens)
+    for item in line_pack_s0 line_pack_s0b; do
+        done_ "$item" || { replay_gpu "$item" "$C2" 1 2 "$O/paper2_$item" "${N}_$item" --set="--checkpoint=$P1/formal/best.pt" \
+            --set="--checkpoint-sha=$P1_SHA" --set="--freeze=$P1/freeze.json"; mark "$item"; }; done
+    for item in s0_qwen3vl8b s0b_qwen25vl7b s0b_qwen3vl2b s0b_qwen3vl4b s0b_qwen3vl8b tokens_qwen3vl2b tokens_qwen3vl8b; do
+        done_ "$item" || { replay_gpu "$item" "$C2" 1 2 "$O/paper2_$item" "${N}_$item"; mark "$item"; }; done
     for item in tokens_qwen3vl2b_sweep tokens_qwen3vl8b_sweep; do   # one recorded command per setting
         if ! done_ "$item"; then
             src="$Q/paper2_$item"; mkdir -p "${N}_$item"
-            for sub in "$src"/*/; do s=$(basename "$sub"); [ -e "${N}_$item/$s/complete.json" ] || replay_gpu "${item}_$s" "$C1" 0 1 "$sub" "${N}_$item/$s"; done
+            for sub in "$src"/*/; do s=$(basename "$sub"); [ -e "${N}_$item/$s/complete.json" ] || replay_gpu "${item}_$s" "$C2" 1 2 "$sub" "${N}_$item/$s"; done
             mark "$item"; fi; done
 }
 lane_baselines() {   # LANE CARD MODELS...: the restoration baselines on the new pairs (protocol unchanged)
@@ -193,22 +198,23 @@ lane_baselines() {   # LANE CARD MODELS...: the restoration baselines on the new
 }
 mkdir -p "${N}_restoration_suite"
 ( lane_ours ) > "$R/lane_ours.log" 2>&1 & L1=$!
-# card 0 is taken by another user since 2026-10-20: cards 2 and 3 (3 only while nobody else is on it; the suite waits for that)
-( lane_baselines 2 2 NAFNet DE-GAN; lane_baselines 0 2 COR-Generator Restormer
+# card 0 is taken by another user since 2026-10-20: baselines on cards 2 and 3 (3 only while nobody else is on it; the suite waits for that),
+# then card 2 takes the recognition pilot
+( lane_baselines 2 2 NAFNet DE-GAN; lane_baselines 0 2 COR-Generator Restormer; lane_recognition ) > "$R/lane_b2.log" 2>&1 & L0=$!
+( lane_baselines 3 3 Strikethrough-CycleGAN DocDiff
   if ! done_ stainrestorer && [ -e "${N}_stainrestorer" ]; then
       until done_ stainrestorer || [ -e "${N}_stainrestorer/FAILED" ]; do sleep 600; done; done_ stainrestorer
   elif ! done_ stainrestorer; then
       # its torchmetrics lives in a side folder, as in the original run
       PYTHONPATH=/home/zsh/hme/envs/paper2_stain_deps bash "$ROOT/scripts/run_restoration_suite.sh" 3 "${N}_restoration_pairs20261007_v4" "$O/paper2_stainrestorer_resources20261009/upstream" \
-          "${N}_stainrestorer" formal 3 StainRestorer > "$R/stainrestorer.log" 2>&1; mark stainrestorer; fi ) > "$R/lane_b2.log" 2>&1 & L0=$!
-( lane_baselines 3 3 Strikethrough-CycleGAN DocDiff ) > "$R/lane_b3.log" 2>&1 & L2=$!
+          "${N}_stainrestorer" formal 3 StainRestorer > "$R/stainrestorer.log" 2>&1; mark stainrestorer; fi ) > "$R/lane_b3.log" 2>&1 & L2=$!
 wait $L1; wait $L0; wait $L2
 
 # ---- 2. two-card work last: the diagnostic study with the rebuilt models, and the 32B line reading ----------------------------------
 BOX=$("$PY" -c "import json; print(json.load(open('$R/selected_box_step.json'))['checkpoint'])")
 if ! done_ s0b_qwen3vl32b; then replay_gpu s0b_qwen3vl32b "$C1,$C2" 0 1,2 "$O/paper2_s0b_qwen3vl32b" "${N}_s0b_qwen3vl32b"; mark s0b_qwen3vl32b; fi
 if ! done_ diagnostics; then
-    C1=$C1 I1=1 C2=$C0 I2=0 PAIR="$C0,$C2" PAIR_INDICES=0,2 BUILD_ARGS="--detector ${N}_pages_clean_run_unlabeled3976_tight --box-remover $BOX" \
+    C1=$C1 I1=1 C2=$C2 I2=2 PAIR="$C1,$C2" PAIR_INDICES=1,2 BUILD_ARGS="--detector ${N}_pages_clean_run_unlabeled3976_tight --box-remover $BOX" \
         bash "$ROOT/scripts/run_struck_diagnostics.sh" "${N}_struck_diag" > "$R/diagnostics.log" 2>&1
     mark diagnostics; fi
 touch "$R/COMPLETE"; stamp "rebuild complete"
