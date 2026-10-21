@@ -90,7 +90,8 @@ def infer_all(args):
         for f in d.glob('*.png'):folder.setdefault(f.stem,d)
     wanted=set(args.ids.read_text().split()) if args.ids else None
     ids=sorted(p for p in detector if p in folder and (wanted is None or p in wanted))
-    require(ids,'no detected pages');require(wanted is None or set(ids)==wanted,f'pages without detection or cleaned image: {sorted(wanted-set(ids))[:3]}')
+    require(ids,'no detected pages')
+    if wanted is not None:require(set(ids)==wanted,f'pages without detection or cleaned image: {sorted(wanted-set(ids))[:3]}')
     refuse_outside(ids)
     out=make_output_dir(args.output_dir);(out/'images').mkdir()
     inputs={str(p):digest(p) for p in [args.selected,checkpoint,args.mapping,args.same_student,args.validation,*args.review_export,
