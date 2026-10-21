@@ -7,8 +7,9 @@
 #    put back on allowed pages, the two stroke banks, the synthetic line and box sets, the restoration pairs; then our model:
 #    synthetic lines -> synthetic boxes -> the step chosen on the 41 validation strikes -> the 201 human regions -> the full
 #    library's prefill, then the reader LoRAs and their evaluations.  Cards 2 and 3: the seven restoration baselines on the new
-#    pairs; card 2 afterwards: the rest of the recognition pilot (line packs, VLM readings, token hiding) replayed on clean inputs.
-# 2. Last, on cards 1 and 2: the struck-content diagnostic study with the new detector and box remover, and the 32B line reading.
+#    pairs; card 2 afterwards: the rest of the recognition pilot (line packs, VLM readings, token hiding) replayed on clean inputs,
+#    its 8B readings on the transformers backend on card 3 while nobody else is on it (they need the whole card).
+# 2. Last, on card 1 with card 2 (or card 3 when nobody is on it): the struck-content diagnostic study with the new detector and box remover, and the 32B line reading.
 # Every new output is paper2_clean_<old name>; a step whose marker exists in paper2_rebuild20261021 is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
@@ -170,7 +171,7 @@ PY
                 reader_qwen3vl2b_clean_whole reader_qwen3vl2b_all4 reader_qwen3vl2b_blank; do
         done_ "$item" || { replay_gpu "$item" "$C1" 0 1 "$O/paper2_$item" "${N}_$item"; mark "$item"; }; done
     until done_ line_pack_s0b; do sleep 300; done
-    for item in readeval_8b_base readeval_8b_clean readeval_8b_strikes readeval_2b_base readeval_2b_clean readeval_2b_strikes \
+    for item in readeval_8b_base readeval_8b_clean readeval_2b_base readeval_2b_clean readeval_2b_strikes \
                 readeval_2b_clean_matched readeval_2b_clean_whole readeval_2b_all4 readeval_2b_blank; do
         done_ "$item" || { replay_gpu "$item" "$C1" 0 1 "$O/paper2_$item" "${N}_$item"; mark "$item"; }; done
 }
@@ -178,13 +179,34 @@ lane_recognition() {   # card 2 once its baselines are done: the recognition pil
     for item in line_pack_s0 line_pack_s0b; do
         done_ "$item" || { replay_gpu "$item" "$C2" 1 2 "$O/paper2_$item" "${N}_$item" --set="--checkpoint=$P1/formal/best.pt" \
             --set="--checkpoint-sha=$P1_SHA" --set="--freeze=$P1/freeze.json"; mark "$item"; }; done
-    for item in s0_qwen3vl8b s0b_qwen25vl7b s0b_qwen3vl2b s0b_qwen3vl4b s0b_qwen3vl8b tokens_qwen3vl2b tokens_qwen3vl8b; do
+    for item in s0_qwen3vl8b s0b_qwen25vl7b s0b_qwen3vl2b s0b_qwen3vl4b s0b_qwen3vl8b tokens_qwen3vl2b; do
         done_ "$item" || { replay_gpu "$item" "$C2" 1 2 "$O/paper2_$item" "${N}_$item"; mark "$item"; }; done
-    for item in tokens_qwen3vl2b_sweep tokens_qwen3vl8b_sweep; do   # one recorded command per setting
-        if ! done_ "$item"; then
-            src="$Q/paper2_$item"; mkdir -p "${N}_$item"
-            for sub in "$src"/*/; do s=$(basename "$sub"); [ -e "${N}_$item/$s/complete.json" ] || replay_gpu "${item}_$s" "$C2" 1 2 "$sub" "${N}_$item/$s"; done
-            mark "$item"; fi; done
+    sweep tokens_qwen3vl2b_sweep "$C2" 1 2
+}
+sweep() {   # ITEM CARD NUMA INDEX: one recorded command per setting
+    local item="$1" card="$2" numa="$3" index="$4" sub s
+    done_ "$item" && return 0
+    mkdir -p "${N}_$item"
+    for sub in "$Q/paper2_$item"/*/; do s=$(basename "$sub")
+        [ -e "${N}_$item/$s/complete.json" ] || { [ "$index" != 3 ] || wait_for_gpu_memory "$CARD3" 22000 1; replay_gpu "${item}_$s" "$card" "$numa" "$index" "$sub" "${N}_$item/$s"; }; done
+    mark "$item"
+}
+lane_card3() {   # the 8B readings on the plain transformers backend need a whole card (cards 1 and 2 carry another user's small jobs)
+    export ALLOW_GPU3=1
+    until done_ line_pack_s0b && done_ reader_qwen3vl8b_strikes; do sleep 300; done
+    for item in tokens_qwen3vl8b readeval_8b_strikes; do
+        done_ "$item" || { wait_for_gpu_memory "$CARD3" 22000 1; replay_gpu "$item" "$CARD3" 1 3 "$O/paper2_$item" "${N}_$item"; mark "$item"; }; done
+    sweep tokens_qwen3vl8b_sweep "$CARD3" 1 3
+}
+second_card() {   # the card to pair with card 1: card 2 when it has room, else card 3 when nobody is on it -> "UUID INDEX"
+    local free
+    while true; do
+        free=$(nvidia-smi -i "$C2" --query-gpu=memory.free --format=csv,noheader,nounits)
+        [ "$free" -lt 21500 ] || { echo "$C2 2"; return; }
+        free=$(nvidia-smi -i "$CARD3" --query-gpu=memory.free --format=csv,noheader,nounits)
+        [ "$free" -lt 21500 ] || [ -n "$(nvidia-smi -i "$CARD3" --query-compute-apps=pid --format=csv,noheader)" ] || { echo "$CARD3 3"; return; }
+        sleep 60
+    done
 }
 lane_baselines() {   # LANE CARD MODELS...: the restoration baselines on the new pairs (protocol unchanged)
     local lane="$1" card="$2"; shift 2
@@ -208,13 +230,16 @@ mkdir -p "${N}_restoration_suite"
       # its torchmetrics lives in a side folder, as in the original run
       PYTHONPATH=/home/zsh/hme/envs/paper2_stain_deps bash "$ROOT/scripts/run_restoration_suite.sh" 3 "${N}_restoration_pairs20261007_v4" "$O/paper2_stainrestorer_resources20261009/upstream" \
           "${N}_stainrestorer" formal 3 StainRestorer > "$R/stainrestorer.log" 2>&1; mark stainrestorer; fi ) > "$R/lane_b3.log" 2>&1 & L2=$!
-wait $L1; wait $L0; wait $L2
+( lane_card3 ) > "$R/lane_c3.log" 2>&1 & L3=$!
+wait $L1; wait $L0; wait $L2; wait $L3
 
-# ---- 2. two-card work last: the diagnostic study with the rebuilt models, and the 32B line reading ----------------------------------
+# ---- 2. two-card work last (card 1 with card 2, or card 3 when nobody is on it): the diagnostic study with the rebuilt models, and the 32B line reading ----------------------------------
 BOX=$("$PY" -c "import json; print(json.load(open('$R/selected_box_step.json'))['checkpoint'])")
-if ! done_ s0b_qwen3vl32b; then replay_gpu s0b_qwen3vl32b "$C1,$C2" 0 1,2 "$O/paper2_s0b_qwen3vl32b" "${N}_s0b_qwen3vl32b"; mark s0b_qwen3vl32b; fi
-if ! done_ diagnostics; then
-    C1=$C1 I1=1 C2=$C2 I2=2 PAIR="$C1,$C2" PAIR_INDICES=1,2 BUILD_ARGS="--detector ${N}_pages_clean_run_unlabeled3976_tight --box-remover $BOX" \
+export ALLOW_GPU3=1
+if ! done_ s0b_qwen3vl32b; then read -r CB IB <<< "$(second_card)"
+    replay_gpu s0b_qwen3vl32b "$C1,$CB" 0 "1,$IB" "$O/paper2_s0b_qwen3vl32b" "${N}_s0b_qwen3vl32b"; mark s0b_qwen3vl32b; fi
+if ! done_ diagnostics; then read -r CB IB <<< "$(second_card)"
+    C1=$C1 I1=1 C2=$CB I2=$IB PAIR="$C1,$CB" PAIR_INDICES="1,$IB" BUILD_ARGS="--detector ${N}_pages_clean_run_unlabeled3976_tight --box-remover $BOX" \
         bash "$ROOT/scripts/run_struck_diagnostics.sh" "${N}_struck_diag" > "$R/diagnostics.log" 2>&1
     mark diagnostics; fi
 touch "$R/COMPLETE"; stamp "rebuild complete"
