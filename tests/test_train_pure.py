@@ -47,6 +47,12 @@ def test_learning_rows_take_two_single_two_multi_and_four_clean_lines():
         train.learning_rows(rows[:4])
 
 
+def test_a_set_without_any_two_revision_row_learns_on_four_single_rows_and_needs_no_multi_hits():
+    rows = [row(1)]*5+[row(0)]*4
+    assert [len(r['instances']) for r in train.learning_rows(rows)] == [1, 1, 1, 1, 0, 0, 0, 0]
+    assert train.learning_gate(100, 50, 4, 0, 4, 0, 0, multi_needed=0) and not train.learning_gate(100, 50, 4, 0, 4, 0, 0)
+
+
 def test_union_learning_gate_still_covers_two_distinct_multistroke_crops():
     rows=[{**row(1),'source_instances':n} for n in (1,1,2,3)]+[row(0) for _ in range(4)]
     picked=train.learning_rows(rows)

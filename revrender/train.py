@@ -54,16 +54,17 @@ def grey(row):
 
 
 def learning_rows(rows):
-    """2 single-source, 2 multi-source and 4 clean rows; union masks retain their source count."""
-    single = [r for r in rows if r.get('source_instances',len(r['instances'])) == 1][:2]
+    """2 single-source, 2 multi-source and 4 clean rows; union masks retain their source count.  A set with no row of two
+    revisions at all (one cut from one-strike pairs, ``data.restoration_pairs boxes``) gives 4 single-source rows instead."""
     multi = [r for r in rows if r.get('source_instances',len(r['instances'])) >= 2][:2]
+    single = [r for r in rows if r.get('source_instances',len(r['instances'])) == 1][:2 if multi else 4]
     clean = [r for r in rows if len(r['instances']) == 0][:4]
-    require(list(map(len, (single, multi, clean))) == [2, 2, 4], 'missing TRAIN learning strata')
+    require(list(map(len, (single, multi, clean))) in ([2, 2, 4], [4, 0, 4]), 'missing TRAIN learning strata')
     return single+multi+clean
 
 
-def learning_gate(initial, final, tp, fp, gold, multi_tp, clean_fired):
-    return (final < .7*initial and tp >= int(np.ceil(.7*gold)) and tp/max(1, tp+fp) >= .7 and multi_tp >= 2
+def learning_gate(initial, final, tp, fp, gold, multi_tp, clean_fired, multi_needed=2):
+    return (final < .7*initial and tp >= int(np.ceil(.7*gold)) and tp/max(1, tp+fp) >= .7 and multi_tp >= multi_needed
             and clean_fired <= 1)
 
 
@@ -391,7 +392,8 @@ def run(args):
                 clean_fired += int(len(keep) > 0) if not len(gold) else 0
             initial_loss, final_loss = float(np.mean(losses[:16])), float(np.mean(losses[-16:]))
             gold_total = sum(map(len, truths))
-            passed = learning_gate(initial_loss, final_loss, tp, fp, gold_total, multi_tp, clean_fired)
+            multi_needed = 2 if any(r.get('source_instances', len(r['instances'])) >= 2 for r in selected) else 0
+            passed = learning_gate(initial_loss, final_loss, tp, fp, gold_total, multi_tp, clean_fired, multi_needed)
             summary.update(initial_loss=initial_loss, final_loss=final_loss, tp=tp, fp=fp, fn=gold_total-tp,
                            multi_tp=multi_tp, clean_fired=clean_fired, passed=passed, training_only=True)
         write_json(out/'trace.json', trace)
