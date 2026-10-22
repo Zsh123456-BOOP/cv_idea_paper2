@@ -16,7 +16,7 @@
 - 选版统一按读回（用户定）：每个模型的候选 = 在 16 处固定验证上像素 F1 比之前都高的版本和最后一版（基线训练本来就这样存，我们的每 2,000 步一版），再取 41 处验证划线读回最高的，同分取早的（`unified_restoration choose`）。
 - 同一批真实标注：201 处人工区域 + 同一批合成回放（`review_set --replay` 用上面的条带；`restoration_pairs human` 把同一批区域按基线的 256 分块切、回放取原来的那几对），每个模型从选出的合成版微调（`restoration.toml [finetune]`：与我们的微调同样遍数、各自学习率的十分之一、四次验证；我们的照 `revrender_strokes_human.toml`），再按同一规则选版。
 - 判定标准（2026-10-22 读数之前写下）：**有用** = 8 个模型里至少 6 个读回变高，且 8 个模型配对差的平均（`compare` 的 `_all`，书写者一起重抽样）的 95% 区间在 0 以上；**方向一致但未定** = 多数（5 个以上）变高、平均区间跨 0（验证集太小，等扩大的验证集和测试集）；**没用** = 不到一半变高。像素 F1 另报每处平均，不参与判定。测试集不参与。
-- 学习曲线（`scripts/run_learning_curve.sh`，标记 `paper2_learning_curve20261022/`）：我们的模型和微调后最强的两个基线（DE-GAN、Restormer）在 50 / 100 处真实区域上同样微调（`review_set --training-regions N`：整个书写者按种子 42 的固定顺序取到 N 处为止，小的子集在大的里面），0 与 201 处两点用上一个实验的。
+- 学习曲线（`scripts/run_learning_curve.sh`，标记 `paper2_learning_curve20261022/`）：我们的模型和全部七个基线在 50 / 100 处真实区域上同样微调（`review_set --training-regions N`：整个书写者按种子 42 的固定顺序取到 N 处为止，小的子集在大的里面），0 与 201 处两点用上一个实验的。
 - 合成 v2（`scripts/run_realistic_synthesis.sh`，标记 `paper2_synthetic_v2_20261022/`）：宿主、份数、种子同 v1，素材按真实大小对着宿主的字贴（`restoration_pairs --real-geometry`），长 1.6 倍、来回至多 3 道、弯曲至多 0.15 字高、粗 1.3 倍、比字的中位灰度深 20；这组参数是对 201 处训练区域划线统计最接近的一组（只用训练区域，不看验证）。我们的模型、NAFNet、DE-GAN 用 v1 的预算在 v2 上训练，同规则选版，与 v1 比读回和错误分区。共用的步骤在 `scripts/_restorers.sh`，候选版本列表 `unified_restoration candidates`。
 - `unified_restoration compare` 给每个模型微调前后读回的配对差（按书写者重抽样的 95% 区间）；`eval.restoration_errors` 给错误落在哪（压字处 / 远离处、条带放大 / 缩小）和真实与合成划线的统计（笔宽比、碰字比例、深浅、长度、直度）。只用验证集。
 
