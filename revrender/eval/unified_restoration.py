@@ -281,6 +281,19 @@ def compare(args):
         result[family] = dict(before=float(np.mean([x[l] for l in lines])), after=float(np.mean([y[l] for l in lines])),
                               difference=diff(lines), interval=[float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))],
                               strikes=len(lines), writers=len(writers))
+    # every family together: the mean of the families' paired differences, writers resampled jointly (the decision rule's pooled test)
+    families = sorted(result); lines = {f: sorted(set(a_scores[before[f]['chosen']['name']]) & set(b_scores[after[f]['chosen']['name']])) for f in families}
+    writers = sorted({l.split('_')[0] for f in families for l in lines[f]})
+    def pooled(chosen_writers):
+        diffs = []
+        for f in families:
+            x = a_scores[before[f]['chosen']['name']]; y = b_scores[after[f]['chosen']['name']]
+            ls = [l for w in chosen_writers for l in lines[f] if l.startswith(w+'_')]
+            if ls: diffs.append(np.mean([y[l]-x[l] for l in ls]))
+        return float(np.mean(diffs))
+    draws = [pooled(rng.choice(writers, len(writers))) for _ in range(1000)]
+    result['_all'] = dict(difference=pooled(writers), interval=[float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))],
+                          families=len(families), improved=sum(result[f]['difference'] > 0 for f in families), writers=len(writers))
     out = make_output_dir(args.output_dir); write_json(out/'comparison.json', result)
     write_manifest(out, config={'before': str(args.before), 'after': str(args.after)}, inputs={str(p/'selection.json'): digest(p/'selection.json') for p in (args.before, args.after)})
     print(json.dumps(result), flush=True)
