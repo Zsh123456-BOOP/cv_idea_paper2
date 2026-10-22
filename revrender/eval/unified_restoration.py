@@ -229,6 +229,32 @@ def merge(args):
     write_manifest(out, config=to_jsonable(args), inputs={str(args.inputs/'models.json'):digest(args.inputs/'models.json')}, rows=len(rows))
 
 
+def candidates(args):
+    """The versions to choose from, as a model list for ``eval_unified_restoration.sh``: a box remover's kept checkpoints (``--own``,
+    every ``--every`` steps and the last, as a restorer keeps one each evaluation it improves; all of them without ``--every``) and every
+    step directory a restorer's run kept (``--run FAMILY=RUN``)."""
+    import re
+    def step_of(name):          # step_<n>[_raw|_ema]: an EMA version after the raw one of its step
+        m = re.fullmatch(r'step_(\d+)(?:_(raw|ema))?(?:\.pt)?', name); return int(m[1])*10+(m[2] == 'ema')
+    label = lambda n: f'{n//10}'+('ema' if n % 10 else '')
+    specs = []
+    for own in args.own or []:
+        family, folder = own.split('=', 1)
+        mine = sorted(Path(folder).glob('step_*.pt'), key=lambda p: step_of(p.name))
+        if args.every:
+            mine = [p for p in mine if step_of(p.name)//10 % args.every == 0] + [mine[-1]]*(step_of(mine[-1].name)//10 % args.every != 0)
+        specs += [dict(name=f'{family}-s{label(step_of(p.name))}', family=family, step=step_of(p.name), type='own', checkpoint=str(p)) for p in mine]
+    for run in args.run or []:
+        family, folder = run.split('=', 1); root = Path(folder)
+        model = json.loads((root/'run_manifest.json').read_text())['config']['model']
+        upstream = args.stain_upstream if model == 'StainRestorer' else args.upstream
+        for d in sorted((d for d in root.glob('step_*') if d.is_dir()), key=lambda d: step_of(d.name)):
+            specs.append(dict(name=f'{family}-s{label(step_of(d.name))}', family=family, step=step_of(d.name), type='baseline',
+                              run=str(root), upstream=str(upstream), checkpoint=d.name))
+    require(specs, 'no versions'); require(not args.output.exists(), 'output exists')
+    write_json(args.output, specs); print(len(specs), 'versions', flush=True)
+
+
 def row_scores(root):
     """Per model, {line_id: share of the struck characters held} on the validation lines (``eval.revision_boxes.held``)."""
     from .revision_boxes import held
@@ -312,12 +338,16 @@ def main(argv=None):
     for key in ('inputs','runs','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     p = sub.add_parser('extend')
     for key in ('base','models','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p = sub.add_parser('candidates')
+    p.add_argument('--own', action='append', help='FAMILY=FOLDER of step_<n>.pt'); p.add_argument('--every', type=int)
+    p.add_argument('--run', action='append', help="FAMILY=RUN of a restorer (its kept step_<n> directories)")
+    for key in ('upstream', 'stain-upstream', 'output'): p.add_argument('--'+key, type=Path, required=key == 'output')
     p = sub.add_parser('choose')
     for key in ('evaluation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     p = sub.add_parser('compare')
     for key in ('before','after','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     args = parser.parse_args(argv)
-    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs,'choose':choose,'compare':compare}[args.command](args)
+    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs,'candidates':candidates,'choose':choose,'compare':compare}[args.command](args)
 
 
 if __name__ == '__main__': main()

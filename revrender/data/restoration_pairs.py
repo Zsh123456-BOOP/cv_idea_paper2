@@ -123,6 +123,33 @@ def placement(clean, rng):
     return [max(0,min(SIZE-w,cx-w//2)),max(0,min(SIZE-h,cy-h//2)),w,h]
 
 
+def real_placement(clean, rng, bank, stretch=1., passes=1, wave=0., thicken=1.):
+    """(placement, opacity, piece id) of a bank piece at its own size against the writing it struck (its line's height to this host's
+    writing), ``stretch`` times as long and ``thicken`` times as thick, drawn back and forth up to ``passes`` times a little apart, its
+    path bent by a wave of up to ``wave`` writing heights, across the middle of the host's writing round a point of its ink."""
+    ys,xs=np.nonzero(clean<200);height=int(ys.max()-ys.min()+1)
+    piece=bank.pieces[rng.randrange(len(bank.pieces))];scale=height/max(1,piece['line_height'])
+    w=int(np.clip(round(piece['size'][0]*scale*stretch),8,SIZE-12));h=int(np.clip(round(piece['size'][1]*scale*thicken),2,SIZE-12))
+    patch=gold_piece(bank,piece,rng,(w,h))
+    amplitude=int(round(rng.uniform(0,wave)*height))
+    if amplitude:
+        period=rng.uniform(.6,1.5)*height;phase=rng.uniform(0,2*np.pi);bent=np.zeros((h+2*amplitude,w),np.float32)
+        for x in range(w):
+            dy=amplitude+int(round(amplitude*np.sin(2*np.pi*x/period+phase)));bent[dy:dy+h,x]=patch[:,x]
+        patch=bent
+    count=rng.randint(1,max(1,passes))
+    if count>1:
+        gap=max(2,int(round(rng.uniform(.15,.35)*height)));ph,pw=patch.shape;many=np.zeros((ph+gap*(count-1),pw),np.float32)
+        for k in range(count):many[k*gap:k*gap+ph]=np.maximum(many[k*gap:k*gap+ph],patch[:, ::-1] if k%2 else patch)
+        patch=many
+    patch=patch[:SIZE-12,:SIZE-12];h,w=patch.shape
+    # through the middle of the writing under it, as a student strikes a word out, not along its top or bottom edge
+    index=rng.randrange(len(xs));cx=int(xs[index]);under=(xs>=cx-w//2)&(xs<cx+w-w//2);cy=int(np.median(ys[under]))
+    l,t=max(0,min(SIZE-w,cx-w//2)),max(0,min(SIZE-h,cy-h//2))
+    alpha=np.zeros((SIZE,SIZE),np.float32);alpha[t:t+h,l:l+w]=patch
+    return [l,t,w,h],alpha,piece['id']
+
+
 def material_alpha(bank, rng, place):
     p=bank.pieces[rng.randrange(len(bank.pieces))];l,t,w,h=place
     # Fit identical placement canvas in paired pixel/traced material arms.
@@ -168,7 +195,12 @@ def build(args):
             seed=int(hashlib.sha256(f'{SEED}:{r["line_id"]}:{copy}'.encode()).hexdigest()[:8],16)
             rng=random.Random(seed);result=host_canvas(grey,rng)
             if result is None:continue
-            clean,crop=result;place=placement(clean,rng);is_clean=(copy==0);level=float(np.percentile(clean[clean<200],30))
+            clean,crop=result;is_clean=(copy==0)
+            if args.real_geometry:      # v2: real size and a level lighter than the writing (data.restoration_pairs --real-geometry)
+                place,real_alpha,real_id=real_placement(clean,rng,gold,args.stretch,args.passes,args.wave,args.thicken)
+                level=float(np.clip(np.median(clean[clean<200])+args.lighter,0,250))
+            else:
+                place=placement(clean,rng);level=float(np.percentile(clean[clean<200],30))
             ids={}
             for arm,bank in banks.items():
                 # Validation is identical for all arms and uses procedural, separately generated strokes.
@@ -176,6 +208,7 @@ def build(args):
                     lay=Image.new('L',(SIZE,SIZE),0);draw=ImageDraw.Draw(lay);l,t,w,h=place
                     draw.line([(l,t+h//2),(l+w//2,t),(l+w-1,t+h-1)],fill=255,width=max(2,h//4))
                     alpha=np.asarray(lay,dtype=np.float32)/255;pid='procedural_validation'
+                elif args.real_geometry and arm=='gold_pixels':alpha,pid=real_alpha.copy(),real_id
                 else:alpha,pid=material_alpha(bank,random.Random(seed),place)
                 if is_clean:alpha[:]=0
                 image,target=draw_pair(clean,alpha,level);data[arm].append(image);ids[arm]=pid
@@ -330,6 +363,12 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('corpus','mapping','same-student','human-validation','gold-bank','detections','templates','output-dir'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--copies',type=int,default=4);p.add_argument('--min-score',type=float,default=.8)
+    p.add_argument('--real-geometry',action='store_true',help='v2: gold pieces at their real size against the writing, not squeezed into a strip')
+    p.add_argument('--lighter',type=float,default=0.,help='with --real-geometry: the strike this many grey levels above the writing\'s median')
+    for name,help_ in (('stretch','length'),('thicken','thickness')):
+        p.add_argument('--'+name,type=float,default=1.,help=f'with --real-geometry: times the piece\'s real {help_}')
+    p.add_argument('--passes',type=int,default=1,help='with --real-geometry: drawn back and forth up to this many times')
+    p.add_argument('--wave',type=float,default=0.,help='with --real-geometry: its path bent by up to this many writing heights')
     build(p.parse_args(argv))
 
 

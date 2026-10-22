@@ -13,7 +13,8 @@ every model's read-back per validation strike beside the scan's.
 sample of the synthetic pairs (``data.restoration_pairs``: the pixels the strike darkened by more than ``REMOVED``): its width and the
 writing's (twice the distance to the background along the ridge of each mask), the width ratio, the share of its pixels touching
 writing, how much darker it is than the writing, its length in heights of the writing, and its straightness (the minor over the major
-axis of its pixels).  Ratios are scale-free, so a pair drawn on an enlarged host compares with a native crop.  Nothing is trained.
+axis of its pixels).  The ratios are scale-free, so a pair drawn on an enlarged host compares with a native crop -- except the share
+touching writing, counted within one pixel (an enlarged host shows less of it).  Nothing is trained.
 """
 import argparse
 import json

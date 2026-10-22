@@ -108,3 +108,14 @@ def test_choose_reads_back_only_among_pixel_improvements_and_the_last_version(tm
     chosen=json.loads((tmp_path/'chosen'/'selection.json').read_text())['A']
     assert [v['candidate'] for v in chosen['versions']]==[True,False,True,True]
     assert chosen['chosen']['name']=='A3'      # A2 reads best but never improved the pixel F1
+
+
+def test_candidates_list_a_remover_every_n_steps_and_a_restorers_kept_versions(tmp_path):
+    from revrender.eval.unified_restoration import candidates
+    own=tmp_path/'own';own.mkdir()
+    for s in (500,2000,2500,4000,4300):(own/f'step_{s}.pt').write_text('')
+    run=tmp_path/'run';run.mkdir();(run/'run_manifest.json').write_text(json.dumps({'config':{'model':'DocDiff'}}))
+    for d in ('step_5000_raw','step_100000_raw','step_100000_ema'):(run/d).mkdir()
+    candidates(SimpleNamespace(own=[f'Ours={own}'],every=2000,run=[f'DocDiff={run}'],upstream=tmp_path,stain_upstream=None,output=tmp_path/'c.json'))
+    specs=json.loads((tmp_path/'c.json').read_text())
+    assert [s['name'] for s in specs]==['Ours-s2000','Ours-s4000','Ours-s4300','DocDiff-s5000','DocDiff-s100000','DocDiff-s100000ema']

@@ -32,7 +32,7 @@ def test_human_validation_writers_and_twins_are_excluded_from_replay(tmp_path,mo
     x=np.full((15,96,768),255,np.uint8);y=np.zeros_like(x);y[:5,20:23,20:30]=1;y[:5,25:28,20:30]=2;y[14]=y[0]
     monkeypatch.setattr(R,'read_set',lambda p:(records,x,y))
     replay=tmp_path/'replay';replay.mkdir();(replay/'run_manifest.json').write_text('{}')
-    args=SimpleNamespace(review_export=[],pages=[],mapping=None,same_student=None,validation_writers=1,fixed_validation=None,replay=replay,replay_clean=4,validation_clean=4,output_dir=tmp_path/'out')
+    args=SimpleNamespace(review_export=[],pages=[],mapping=None,same_student=None,validation_writers=1,fixed_validation=None,replay=replay,replay_clean=4,validation_clean=4,training_regions=None,output_dir=tmp_path/'out')
     R.build(args);result=json.loads((args.output_dir/'records.json').read_text())
     assert 'twin' not in {r['id'] for r in result}
     train={r['group_uuid'] for r in result if r['split']=='train'};val={r['group_uuid'] for r in result if r['split']=='val'}
@@ -88,10 +88,17 @@ def test_a_fresh_set_can_keep_an_earlier_frozen_validation_byte_for_byte(tmp_pat
     x=np.full((14,96,768),255,np.uint8);y=np.zeros_like(x);y[:5,20:23,20:30]=1;y[:5,25:28,40:50]=2
     monkeypatch.setattr(R,'read_set',lambda p:(records,x,y))
     replay=tmp_path/'replay';replay.mkdir();(replay/'run_manifest.json').write_text('{}')
-    args=SimpleNamespace(review_export=[],pages=[],mapping=None,same_student=None,validation_writers=3,fixed_validation=base,replay=replay,replay_clean=4,validation_clean=4,output_dir=tmp_path/'out')
+    args=SimpleNamespace(review_export=[],pages=[],mapping=None,same_student=None,validation_writers=3,fixed_validation=base,replay=replay,replay_clean=4,validation_clean=4,training_regions=None,output_dir=tmp_path/'out')
     R.build(args)
     for name in ('validation_native.json','validation_native.npz'):
         assert (base/name).read_bytes()==(args.output_dir/name).read_bytes()
     result=json.loads((args.output_dir/'records.json').read_text())
     assert {r['group_uuid'] for r in result if r['source']=='human_confirmed' and r['split']=='val'}=={'w0'}
     assert sum(r['source']=='human_confirmed' and r['split']=='train' for r in result)==3
+
+
+def test_training_subsets_take_whole_writers_and_nest():
+    rows=[{'group_uuid':f'w{i%7}','id':str(i)} for i in range(40)]
+    small,large=R.training_subset(rows,10),R.training_subset(rows,25)
+    assert len(small)>=10 and len(large)>=25 and {r['id'] for r in small}<={r['id'] for r in large}
+    assert all(sum(r['group_uuid']==w for r in small)==sum(r['group_uuid']==w for r in rows) for w in {r['group_uuid'] for r in small})

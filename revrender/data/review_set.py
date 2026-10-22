@@ -41,6 +41,16 @@ def confirmed(paths, folders, mapping, same_student, allow_unused=False):
     return rows,inputs,skipped
 
 
+def training_subset(rows,count):
+    """Whole training writers in one seeded order until ``count`` regions: a smaller count's subset lies inside a larger one's."""
+    writers=sorted({r['group_uuid'] for r in rows});random.Random(SEED).shuffle(writers)
+    kept=set();total=0
+    for w in writers:
+        if total>=count:break
+        kept.add(w);total+=sum(r['group_uuid']==w for r in rows)
+    return [r for r in rows if r['group_uuid'] in kept]
+
+
 def held_writers(rows,count):
     writers=sorted({r['group_uuid'] for r in rows});random.Random(SEED).shuffle(writers)
     require(0<count<len(writers),'need separate review training and validation writers')
@@ -66,6 +76,8 @@ def build(args):
         for name in ('validation_native.json','validation_native.npz'):inputs[str(args.fixed_validation/name)]=digest(args.fixed_validation/name)
     else:
         held=held_writers(rows,args.validation_writers)
+    if args.training_regions:
+        rows=[r for r in rows if r['group_uuid'] in held]+training_subset([r for r in rows if r['group_uuid'] not in held],args.training_regions)
     other=twins(args.same_student)
     canonical=lambda w:min(w,other.get(w,w))
     # Also exclude the review validation writers from every replay row.
@@ -178,6 +190,7 @@ def main(argv=None):
     p.add_argument('--validation-writers',type=int,default=3)
     p.add_argument('--fixed-validation',type=Path,help='with --replay: keep this earlier set\'s validation writers and native files as they are')
     p.add_argument('--replay-clean',type=int,default=96);p.add_argument('--validation-clean',type=int,default=16)
+    p.add_argument('--training-regions',type=int,help='only whole training writers, in a seeded order, until this many regions (a learning curve)')
     p.add_argument('--output-dir',type=Path,required=True)
     args=p.parse_args(argv)
     extend(args) if args.base_set else build(args)
