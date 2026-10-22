@@ -97,9 +97,30 @@ def standalone(args):
     print(json.dumps({'output':str(out/'标注.html'), 'pages':stats}, ensure_ascii=False))
 
 
-def render_html(payload, draft=None):
+KATEX_CSS = '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">'
+KATEX_JS = '<script async src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js" onload="window.katexLoaded&&window.katexLoaded()"></script>'
+
+
+def katex_inline(folder):
+    """(style, script) of a KaTeX dist folder (katex.min.css, katex.min.js, fonts/*.woff2) with its fonts as data URIs: formulas render
+    on a page opened offline, not only when the CDN answers."""
+    import re
+    css = (folder/'katex.min.css').read_text()
+    def font(m):
+        data = base64.b64encode((folder/'fonts'/(m.group(1)+'.woff2')).read_bytes()).decode()
+        return f'src:url(data:font/woff2;base64,{data}) format("woff2")'
+    css = re.sub(r'src:url\(fonts/([A-Za-z0-9_-]+)\.woff2\) format\("woff2"\)[^;}]*', font, css)
+    require('url(fonts/' not in css, 'a KaTeX font the stylesheet names is not inlined')
+    return '<style>'+css+'</style>', '<script>'+(folder/'katex.min.js').read_text().replace('</script', '<\\/script')+'</script>'
+
+
+def render_html(payload, draft=None, katex=None):
     from .pixel_review import HERE, ASSETS
     html = (HERE/'pixel_editor.html').read_text()
+    if katex:
+        require(KATEX_CSS in html and KATEX_JS in html, 'the editor no longer loads KaTeX from the CDN this replaces')
+        style, script = katex_inline(katex)
+        html = html.replace(KATEX_CSS, style).replace(KATEX_JS, script)
     data = '<script id="review-pack" type="application/json">'+script_json(payload)+'</script>'
     data += '<script id="review-draft" type="application/json">'+script_json(draft)+'</script>'
     html = html.replace('<script src="page_rules.js">', data+'<script src="page_rules.js">')

@@ -20,7 +20,9 @@ _NAMES = {'because': '∵', 'therefore': '∴', 'angle': '∠', 'triangle': '△
           'ast': '*', 'leq': '≤', 'le': '≤', 'geq': '≥', 'ge': '≥', 'neq': '≠', 'ne': '≠', 'pm': '±', 'mp': '∓', 'perp': '⊥',
           'parallel': '∥', 'cong': '≅', 'sim': '~', 'infty': '∞', 'square': '□', 'pi': 'π', 'alpha': 'α', 'beta': 'β',
           'gamma': 'γ', 'theta': 'θ', 'lambda': 'λ', 'mu': 'μ', 'Delta': 'Δ', 'approx': '≈', 'in': '∈', 'cap': '∩', 'cup': '∪',
-          'rightarrow': '→', 'to': '→', 'Rightarrow': '⇒', 'ldots': '…', 'dots': '…'}
+          'rightarrow': '→', 'to': '→', 'Rightarrow': '⇒', 'ldots': '…', 'dots': '…', 'backsim': '~'}
+# one sign for each relation however it is spelt (user 2026-10-22): the textbook ≌ and ≅ are congruence, ∽, ∼ and ~ similarity
+_SAME = (('≌', '≅'), ('∽', '~'), ('∼', '~'))
 _CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩'
 _SUPERSCRIPT = {str(i): c for i, c in enumerate('⁰¹²³⁴⁵⁶⁷⁸⁹')}
 _LAYOUT = ('left', 'right', 'quad', 'qquad', 'displaystyle', 'limits', 'big', 'Big', 'bigg', 'Bigg', 'mathrm', 'mathbf', 'mathit',
@@ -32,7 +34,10 @@ def normalise(text):
     if not text:
         return ''
     s = unicodedata.normalize('NFKC', text)
+    s = re.sub(r'\\right\s*\.', ' ', s)                   # the empty side of a one-sided brace (\left\{ ... \right.)
     s = re.sub(r'\\(?:' + '|'.join(_LAYOUT) + r')(?![a-zA-Z])', ' ', s)
+    s = re.sub(r'\\[{}]', ' ', s).replace('&', ' ')       # brace delimiters and alignment marks are layout
+    s = re.sub(r'\\begin\{array\}\s*\{[^{}]*\}', ' ', s)          # an array's column spec ({l}, {cc}) is layout too
     s = re.sub(r'\\begin\{[a-zA-Z*]+\}|\\end\{[a-zA-Z*]+\}', ' ', s)
     s = re.sub(r'\\[\(\)\[\]]', ' ', s)
     s = re.sub(r'\\\\', ' ', s)
@@ -52,7 +57,7 @@ def normalise(text):
     s = re.sub(r'_\s*\{([^{}]*)\}', r'\1', s)
     s = re.sub(r'\\[a-zA-Z]+', ' ', s)
     s = s.replace('$', ' ').replace('{', ' ').replace('}', ' ')
-    for wide, narrow in (('（', '('), ('）', ')'), ('，', ','), ('。', '.'), ('：', ':'), ('、', ','), ('；', ';')):
+    for wide, narrow in (('（', '('), ('）', ')'), ('，', ','), ('。', '.'), ('：', ':'), ('、', ','), ('；', ';'), *_SAME):
         s = s.replace(wide, narrow)
     return ''.join(c for c in unicodedata.normalize('NFKC', s) if not c.isspace())
 

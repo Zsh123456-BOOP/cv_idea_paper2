@@ -63,3 +63,11 @@ def test_regions_list_every_boxed_region_and_a_split_line_knows_its_region():
     assert [t for t, _ in O.regions(text)] == ['image', 'equation']                    # the flat region has no area
     lines = [l for l in O.parse_regions(text) if l['inferred']]
     assert [l['parts'] for l in lines] == [2, 2] and all(l['region'] == [100., 100., 500., 400.] for l in lines)
+
+
+def test_braces_arrays_and_the_spellings_of_congruence_and_similarity_normalise_alike():
+    braced = O.normalise(r'$\left\{ \begin{array}{l} AB = AC \\ \angle B = \angle C \end{array} \right.$')
+    assert braced == O.normalise(r'$\begin{cases}AB=AC\\ \angle B=\angle C\end{cases}$') == 'AB=AC∠B=∠C'
+    assert O.normalise('△ABC≌△DEF') == O.normalise(r'$\triangle ABC\cong\triangle DEF$') == O.normalise(r'$\triangle ABC\text{≌}\triangle DEF$')
+    assert O.normalise('△A∽△B') == O.normalise(r'$\triangle A\backsim\triangle B$') == O.normalise(r'$\triangle A\sim\triangle B$')
+    assert O.normalise('①') == '1'

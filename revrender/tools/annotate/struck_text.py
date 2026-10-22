@@ -258,8 +258,9 @@ def update(args):
                 row['prefill'] = new
                 changed += 1
     out = make_output_dir(args.output_dir)
-    (out/'标注.html').write_text(render_html(payload, draft))
+    (out/'标注.html').write_text(render_html(payload, draft, args.katex))
     inputs = [p for p in (args.source, args.readings, args.judgments) if p]
+    if args.katex: inputs += [args.katex/'katex.min.js', args.katex/'katex.min.css']
     summary = {'regions': len(payload['rows']), 'new_prefill': changed, 'judgments': len(payload.get('judgment_drafts', {}))}
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in inputs}, pack=payload['id'],
                    image_revision=payload.get('image_revision'), embedded_progress_preserved=True, **summary)
@@ -294,6 +295,7 @@ def main(argv=None):
     d.add_argument('--readings', type=Path)
     d.add_argument('--judgments', type=Path, help='a judgment draft of the revisions')
     d.add_argument('--condition', default='erased_neutral')
+    d.add_argument('--katex', type=Path, help='a KaTeX dist folder to inline (formulas render offline)')
     d.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
     {'crops': crops, 'page': page, 'erased': erased_crops, 'update': update}[args.command](args)

@@ -38,7 +38,21 @@ const TextMode = (() => {
     out.push(words((text || '').slice(last)));
     return out.join('');
   }
-  function preview() { if (on()) $('textPreview').innerHTML = SymbolPicker.rendered($('transcription').value); }
+  let lastGood = '';
+  function preview() {
+    // The typed answer rendered; while a formula is half written the last rendering that parsed stays, with a quiet note.
+    if (!on()) return;
+    const { html, complete } = SymbolPicker.render($('transcription').value);
+    if (complete || !lastGood) { $('textPreview').innerHTML = html; if (complete) lastGood = html; }
+    $('previewNote').hidden = complete;
+  }
+  function crop() {
+    // The region's own crop beside the rendering, to read the two against each other.
+    const r = row(), c = $('textCrop');
+    try {
+      const data = cropData(r.page, r.box); c.width = data.width; c.height = data.height; c.getContext('2d').putImageData(data, 0, 0); c.hidden = false;
+    } catch (e) { c.hidden = true; }
+  }
   function question() {
     const page = pack.pages[row().page], q = pack.questions?.[page.exam_question];
     $('questionTitle').textContent = q ? `第 ${q.printed_problem_no} 题（题目与标准解答）` : '（没有对应的题目）';
@@ -90,11 +104,20 @@ const TextMode = (() => {
     $('confirm').innerHTML = '确认像素和文字，下一处 <kbd>Enter</kbd>';
     $('appTitle').textContent = '划线精修 + 被划文字';
     $('appSubtitle').textContent = '框只包住被划掉的字；写下被划掉的原字（改正后的字不写），像素有错直接改。';
-    picker = SymbolPicker.attach($('transcription'), $('symbolList'), $('symbolBar'), value => { $('transcription').value = value; textChanged(); preview(); });
+    picker = SymbolPicker.attach($('transcription'), $('symbolList'), $('symbolBar'), value => {
+      if ($('transcription').value !== value) $('transcription').value = value;   // assigning would clear Ctrl+Z's history
+      textChanged(); preview(); });
     $('transcription').addEventListener('input', preview);
     $('transcription').addEventListener('keydown', ev => {
       if (picker.keys(ev)) return;
-      if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('confirm').click(); }
+      if (ev.key !== 'Enter' || ev.shiftKey || ev.isComposing) return;
+      const area = $('transcription'), at = area.selectionStart;
+      ev.preventDefault();
+      // Inside a brace (\begin{cases}) Enter starts its next row; Ctrl / ⌘ + Enter confirms from anywhere.
+      if (!ev.ctrlKey && !ev.metaKey && SymbolPicker.insideCases(area.value.slice(0, at))) {
+        SymbolPicker.put(area, at, area.selectionEnd, '\\\\ '); area.setSelectionRange(at + 3, at + 3); textChanged(); preview(); return;
+      }
+      $('confirm').click();
     });
     if (judging()) {
       for (const [id, key] of FIELDS) {
@@ -126,7 +149,7 @@ const TextMode = (() => {
     if (!on()) return;
     const r = row();
     $('prefillLine').innerHTML = r.prefill ? '模型初稿：<code>' + escape(r.prefill) + '</code>' : '模型初稿：（空）';
-    preview(); question(); if (judging()) showJudgment();
+    lastGood = ''; preview(); crop(); question(); if (judging()) showJudgment();
     const area = $('transcription'); area.focus(); area.setSelectionRange(area.value.length, area.value.length);
     if (notice) { const text = notice; notice = ''; setTimeout(() => status(text), 1200); }
   }
