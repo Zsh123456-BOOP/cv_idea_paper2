@@ -79,13 +79,15 @@ def build(args):
     positive=[i for i in candidates if records[i]['revisions']>0]
     multi=[i for i in positive if records[i].get('source_instances',records[i]['revisions'])>=2]
     clean=[i for i in candidates if records[i]['revisions']==0]
-    require(len(multi)>=2 and len(clean)>=args.replay_clean,'not enough replay learning strata')
+    # a replay corpus of one strike per sample (the restoration pairs) has no two-revision stratum; replay then takes single ones
+    require(len(clean)>=args.replay_clean and (len(multi)>=2 or not any(r.get('source_instances',r['revisions'])>=2 for r in records)),
+            'not enough replay learning strata')
     # Negatives for validation use the replay corpus's own held-out writers, disjoint from every human writer.
     validation=[i for i,r in enumerate(records) if r['split']=='val' and r['revisions']==0 and canonical(r['group_uuid']) not in all_human]
     rng.shuffle(validation);require(len(validation)>=args.validation_clean,'not enough held-out clean replay')
     count=sum(r['group_uuid'] not in held and r['mask'].any() for r in rows)
-    selected=multi[:2]+[i for i in positive if i not in multi[:2]][:max(2,count)-2]+clean[:args.replay_clean]+validation[:args.validation_clean]
-    data_images=[];data_labels=[];data_records=[];native={};val_records=[]
+    selected=multi[:2]+[i for i in positive if i not in multi[:2]][:max(2,count)-len(multi[:2])]+clean[:args.replay_clean]+validation[:args.validation_clean]
+    data_images=[];data_labels=[];data_records=[];native={};val_records=[];train_native={};train_records=[]
     for r in rows:
         image,mask=strip(Image.fromarray(r['image']),r['mask'])
         split='val' if r['group_uuid'] in held else 'train'
@@ -95,6 +97,9 @@ def build(args):
         if split=='val':
             i=len(val_records);native[f'image_{i}']=r['image'];native[f'mask_{i}']=r['mask']
             val_records.append({k:v for k,v in r.items() if k not in ('image','mask')})
+        else:   # the native crops too, so a restorer that trains on native tiles sees the same regions
+            i=len(train_records);train_native[f'image_{i}']=r['image'];train_native[f'mask_{i}']=r['mask']
+            train_records.append({k:v for k,v in r.items() if k not in ('image','mask')})
     for i in selected:
         r=records[i];data_images.append(np.asarray(images[i]));data_labels.append(np.asarray(labels[i]))
         data_records.append({**r,'group_uuid':canonical(r['group_uuid']),'source':'synthetic_replay'})
@@ -111,12 +116,14 @@ def build(args):
         np.savez_compressed(out/'validation_native.npz',**native)
         write_json(out/'validation_native.json',val_records)
     write_json(out/'records.json',data_records)
+    np.savez_compressed(out/'training_native.npz',**train_native);write_json(out/'training_native.json',train_records)
     inputs[str(args.replay/'run_manifest.json')]=digest(args.replay/'run_manifest.json')
     summary={'confirmed':len(rows),'skipped_unconfirmed':skipped,'human_train':sum(r['group_uuid'] not in held for r in rows),
              'human_validation':len(val_records),'validation_writers':sorted(held),
              'counts':dict(Counter(r['source']+'/'+r['split']+('/positive' if r['revisions'] else '/clean') for r in data_records))}
     write_json(out/'summary.json',summary)
-    files={name:digest(out/name) for name in ['images.npy','labels.npy','records.json','validation_native.npz','validation_native.json']}
+    files={name:digest(out/name) for name in ['images.npy','labels.npy','records.json','validation_native.npz','validation_native.json',
+                                               'training_native.npz','training_native.json']}
     write_manifest(out,config=to_jsonable(args),inputs=inputs,files=files,**summary)
     print(json.dumps(summary),flush=True)
 

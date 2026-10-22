@@ -63,3 +63,12 @@ eval_every = 5000
 validation_limit = 64
 min_steps = 40000
 patience = 6
+
+# Fine-tuning every restorer on the box remover's 201 human regions plus its synthetic replay (2026-10-22, user: same real
+# annotations for every model, versions chosen on validation read-back): as many passes over the set as the box remover's own
+# fine-tuning (revrender_strokes_human.toml: 800 steps x 8 over 498 rows), a tenth of each recipe's learning rate, four
+# validations, from the version chosen on read-back after synthetic training.  No early stop.
+[finetune]
+passes = 12.85
+learning_rate_scale = 0.1
+evaluations = 4

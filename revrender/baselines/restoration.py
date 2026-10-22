@@ -83,6 +83,7 @@ class Experiment:
             args.data/'run_manifest.json',args.data/(args.arm+'.npy'),args.data/'targets.npy',args.data/'records.json',
             args.human_validation,args.human_validation.with_suffix('.npz'),args.upstream/args.model/'source_manifest.json']
         if args.protocol:inputs.append(args.protocol)
+        if args.init:inputs+=[p for p in sorted(args.init.iterdir()) if p.is_file()]
         require(set(r['split'] for r in self.rows)<= {'train','val'},'test row in training bundle')
         require(not {r['group_uuid'] for r in self.rows if r['split']=='train'} &
                 {r['group_uuid'] for r in self.rows if r['split']=='val'},'synthetic validation writer leaked')
@@ -162,11 +163,20 @@ def main(argv=None):
     p.add_argument('--min-steps',type=int,default=0)
     p.add_argument('--patience',type=int,default=0)
     p.add_argument('--ema',action='store_true')
+    p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
     pre,_=p.parse_known_args(argv)
     if pre.protocol:
         protocol=tomllib.loads(pre.protocol.read_text())
         p.set_defaults(**protocol['training'][pre.model])
-    args=p.parse_args(argv);require(args.steps>0 and args.batch_size>0 and args.eval_every>0,'invalid budget')
+    args=p.parse_args(argv)
+    args.learning_rate_scale=1.
+    if args.init:
+        require(pre.protocol is not None and 'finetune' in protocol,'fine-tuning needs the protocol with its [finetune] budget')
+        rule=protocol['finetune'];rows=json.loads((args.data/'records.json').read_text())
+        args.steps=max(rule['evaluations'],round(rule['passes']*sum(r['split']=='train' for r in rows)/args.batch_size))
+        args.eval_every=max(1,args.steps//rule['evaluations']);args.min_steps=0;args.patience=0
+        args.learning_rate_scale=rule['learning_rate_scale']
+    require(args.steps>0 and args.batch_size>0 and args.eval_every>0,'invalid budget')
     random.seed(SEED);np.random.seed(SEED)
     experiment=Experiment(args)
     if args.model=='DE-GAN':from .restoration_tf import train

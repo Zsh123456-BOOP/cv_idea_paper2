@@ -84,3 +84,27 @@ def test_extend_preserves_inputs_and_reuses_only_matching_cached_inference(tmp_p
     (run/'run_manifest.json').write_text(json.dumps(manifest))
     with pytest.raises(RefusedError,match='different inputs'):
         extend_inputs(SimpleNamespace(base=base,models=candidates,output_dir=tmp_path/'mismatched'))
+
+
+def _evaluation(tmp_path,versions):
+    """An evaluation directory as eval_unified_restoration.sh leaves it: versions = [(name, family, step, f1, [read texts])]."""
+    root=tmp_path/'eval';(root/'inputs').mkdir(parents=True);(root/'pack').mkdir();(root/'qwen8b').mkdir()
+    specs=[];rows=[];readings=[]
+    for name,family,step,f1,texts in versions:
+        specs.append(dict(name=name,family=family,step=step))
+        (root/'runs'/name).mkdir(parents=True);(root/'runs'/name/'pixels.json').write_text(json.dumps({'splits':{'val':{'f1':f1}}}))
+        for i,text in enumerate(texts):
+            rid=f'val|{name}|w{i}_1#r';rows.append(dict(id=rid,split='val',model='val__'+name,kind='line',line_id=f'w{i}_1#r',text='abcd'))
+            readings.append(json.dumps(dict(id=rid,text=text,condition='erased_neutral')))
+    (root/'inputs'/'models.json').write_text(json.dumps(specs));(root/'pack'/'pack.json').write_text(json.dumps({'rows':rows}))
+    (root/'qwen8b'/'predictions.jsonl').write_text('\n'.join(readings))
+    return root
+
+
+def test_choose_reads_back_only_among_pixel_improvements_and_the_last_version(tmp_path):
+    from revrender.eval.unified_restoration import choose
+    root=_evaluation(tmp_path,[('A1','A',1,.5,['ab','ab']),('A2','A',2,.4,['abcd','abcd']),('A3','A',3,.6,['abc','abc']),('A4','A',4,.55,['a','a'])])
+    choose(SimpleNamespace(evaluation=root,output_dir=tmp_path/'chosen'))
+    chosen=json.loads((tmp_path/'chosen'/'selection.json').read_text())['A']
+    assert [v['candidate'] for v in chosen['versions']]==[True,False,True,True]
+    assert chosen['chosen']['name']=='A3'      # A2 reads best but never improved the pixel F1

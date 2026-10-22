@@ -223,11 +223,110 @@ def darken_pairs(source,destination):
     print(json.dumps({'counts':summary['counts'],'corrected_pixels':counts}),flush=True)
 
 
+REMOVED = 51        # a pixel the strike darkened by more than 0.2 of the range: the evaluation's "removed" (baselines.restoration)
+
+
+def tiles(image, mask):
+    """256 tiles of a native crop the way ``baselines.restoration.restore_native`` reads it: centred on white when shorter, stride 192;
+    each tile with its target, the crop with the pixels to remove made white."""
+    h, w = image.shape; ph, pw = max(SIZE, h), max(SIZE, w); oy, ox = (ph-h)//2, (pw-w)//2
+    canvas = np.full((ph, pw), 255, np.uint8); canvas[oy:oy+h, ox:ox+w] = image
+    target = canvas.copy(); target[oy:oy+h, ox:ox+w][mask.astype(bool)] = 255
+    at = lambda n: sorted(set(list(range(0, n-SIZE+1, 192))+[n-SIZE]))
+    return [(canvas[y:y+SIZE, x:x+SIZE], target[y:y+SIZE, x:x+SIZE]) for y in at(ph) for x in at(pw)]
+
+
+def as_boxes(source, arm, destination):
+    """The same pairs as the box remover's training set (``data.synthetic_set --crops``): a crop round each pair's strike -- the
+    pixels it darkened by more than ``REMOVED``, the box of the writing they void, a random margin -- letterboxed onto the strip, one
+    instance; a clean pair gives ``CLEAN_CROPS`` crops of its words.  Each record keeps the index of the pair it was cut from."""
+    from .paste_strikes import word_spans
+    from .synthetic_set import CLEAN_CROPS, cropped, region_of, rows_round, sheet
+    out = make_output_dir(destination); manifest = json.loads((source/'run_manifest.json').read_text())
+    for name, value in manifest['files'].items(): require(digest(source/name) == value, 'source paired data changed')
+    pairs = json.loads((source/'records.json').read_text())
+    x = np.load(source/(arm+'.npy'), mmap_mode='r'); y = np.load(source/'targets.npy', mmap_mode='r')
+    images, labels, records, skipped = [], [], [], 0
+    for i, r in enumerate(pairs):
+        struck, clean = np.asarray(x[i]), np.asarray(y[i]); rng = random.Random(r['seed'])
+        numbers = (((clean.astype(np.int16)-struck) > REMOVED) & (struck < 200)).astype(np.uint8)
+        ink = struck < 200; image = Image.fromarray(struck)
+        base = {'line_id': r['line_id'], 'group_uuid': r['group_uuid'], 'split': r['split'], 'pair_index': i,
+                'styles': ['procedural' if r['split'] == 'val' else 'gold_line']}
+        if not r['clean']:
+            if not numbers.any():
+                skipped += 1; continue            # its strike lies wholly on writing: nothing to remove
+            grey, strip_numbers, crop = cropped(image, numbers, region_of(numbers, 1, ink), rng)
+            images.append(grey); labels.append(strip_numbers)
+            records.append({**base, 'id': r['id'], 'kinds': ['paste'], 'revisions': 1, 'crop': crop}); continue
+        spans = word_spans(ink, int(np.ptp(np.nonzero(ink)[0]))+1) if ink.any() else []
+        for n in range(CLEAN_CROPS if spans else 0):
+            first = rng.randrange(len(spans)); last = min(len(spans), first+rng.randint(1, 3))-1
+            columns = (spans[first][0], spans[last][1]); rows = np.flatnonzero(ink[:, columns[0]:columns[1]].any(1))
+            top, bottom = rows_round(ink, columns, int(np.median(rows)))
+            grey, strip_numbers, crop = cropped(image, np.zeros_like(numbers), [columns[0], top, columns[1], bottom], rng)
+            images.append(grey); labels.append(strip_numbers)
+            records.append({**base, 'id': f"{r['id']}#c{n}", 'kinds': ['clean'], 'revisions': 0, 'crop': crop})
+    np.save(out/'images.npy', np.stack(images)); np.save(out/'labels.npy', np.stack(labels)); write_json(out/'records.json', records)
+    sheet(np.stack(images), np.stack(labels), records, out/'sheet.png')
+    summary = {'samples': len(records), 'by_split': dict(Counter(r['split'] for r in records)),
+               'positive': sum(r['revisions'] > 0 for r in records), 'struck_wholly_on_writing': skipped, 'source_pairs': str(source), 'arm': arm}
+    write_json(out/'summary.json', summary)
+    write_manifest(out, config={'source': str(source), 'arm': arm, 'removed_above': REMOVED}, inputs={str(source/'run_manifest.json'): digest(source/'run_manifest.json')},
+                   files={n: digest(out/n) for n in ('images.npy', 'labels.npy', 'records.json')}, **summary)
+    print(json.dumps(summary), flush=True)
+
+
+def human_pairs(review_set, source, arm, destination):
+    """The box remover's fine-tuning set (``data.review_set``) for the restorers, on their own native tiles: its human training regions
+    tiled (``tiles``), its synthetic replay as the very pairs those strips were cut from (``as_boxes``'s ``pair_index``), and the pairs'
+    own validation split (writers apart from the training ones) for their synthetic check.  The 16 fixed validation regions stay the
+    restorers' human validation, as in their synthetic training."""
+    out = make_output_dir(destination)
+    records = json.loads((review_set/'records.json').read_text())
+    native = json.loads((review_set/'training_native.json').read_text()); arrays = np.load(review_set/'training_native.npz')
+    pairs = json.loads((source/'records.json').read_text())
+    x = np.load(source/(arm+'.npy'), mmap_mode='r'); y = np.load(source/'targets.npy', mmap_mode='r')
+    data, targets, rows = [], [], []
+    for k, r in enumerate(native):
+        for n, (tile, target) in enumerate(tiles(arrays[f'image_{k}'], arrays[f'mask_{k}'])):
+            data.append(tile); targets.append(target)
+            rows.append({'id': f"{r['id']}~{n}", 'group_uuid': r['group_uuid'], 'split': 'train', 'source': 'human_confirmed',
+                         'clean': bool((tile == target).all())})
+    replay = [r for r in records if r['source'] == 'synthetic_replay' and r['split'] == 'train']
+    require(all('pair_index' in r for r in replay), 'the replay was not cut from these pairs')
+    for r in replay:
+        i = r['pair_index']; data.append(np.asarray(x[i])); targets.append(np.asarray(y[i]))
+        rows.append({'id': pairs[i]['id'], 'group_uuid': r['group_uuid'], 'split': 'train', 'source': 'synthetic_replay', 'clean': pairs[i]['clean']})
+    train = {r['group_uuid'] for r in rows}
+    for i, r in enumerate(pairs):
+        if r['split'] == 'val' and r['group_uuid'] not in train:
+            data.append(np.asarray(x[i])); targets.append(np.asarray(y[i]))
+            rows.append({'id': r['id'], 'group_uuid': r['group_uuid'], 'split': 'val', 'source': 'synthetic_validation', 'clean': r['clean']})
+    np.save(out/(arm+'.npy'), np.stack(data)); np.save(out/'targets.npy', np.stack(targets)); write_json(out/'records.json', rows)
+    summary = {'counts': dict(Counter(r['source']+'/'+r['split'] for r in rows)), 'human_regions': len(native),
+               'train_tiles': sum(r['split'] == 'train' for r in rows), 'review_set': str(review_set), 'source_pairs': str(source)}
+    write_json(out/'summary.json', summary)
+    inputs = {str(p): digest(p) for p in [review_set/'run_manifest.json', review_set/'training_native.npz', source/'run_manifest.json']}
+    write_manifest(out, config={'review_set': str(review_set), 'source': str(source), 'arm': arm}, inputs=inputs,
+                   files={p.name: digest(p) for p in out.glob('*.npy')} | {'records.json': digest(out/'records.json')}, **summary)
+    print(json.dumps(summary), flush=True)
+
+
 def main(argv=None):
     argv=sys.argv[1:] if argv is None else argv
     if argv[:1]==['darken']:
         p=argparse.ArgumentParser();p.add_argument('--source',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True)
         a=p.parse_args(argv[1:]);darken_pairs(a.source,a.output_dir);return
+    if argv[:1]==['boxes']:
+        p=argparse.ArgumentParser(description=as_boxes.__doc__);p.add_argument('--source',type=Path,required=True)
+        p.add_argument('--arm',choices=ARMS,default='gold_pixels');p.add_argument('--output-dir',type=Path,required=True)
+        a=p.parse_args(argv[1:]);as_boxes(a.source,a.arm,a.output_dir);return
+    if argv[:1]==['human']:
+        p=argparse.ArgumentParser(description=human_pairs.__doc__);p.add_argument('--review-set',type=Path,required=True)
+        p.add_argument('--source',type=Path,required=True);p.add_argument('--arm',choices=ARMS,default='gold_pixels')
+        p.add_argument('--output-dir',type=Path,required=True)
+        a=p.parse_args(argv[1:]);human_pairs(a.review_set,a.source,a.arm,a.output_dir);return
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('corpus','mapping','same-student','human-validation','gold-bank','detections','templates','output-dir'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--copies',type=int,default=4);p.add_argument('--min-score',type=float,default=.8)

@@ -1,7 +1,7 @@
 """Frozen-model comparison on shared native pixel and OCR validation/test inputs.
 
-No optimization or checkpoint selection. Every restorer receives identical
-source crops; architecture-specific inference geometry remains as trained.
+Every restorer receives identical source crops; architecture-specific inference geometry remains as trained.  ``choose`` picks each
+family's version from candidate versions evaluated together (read-back on validation), ``compare`` pairs two such choices.
 """
 import argparse
 import json
@@ -42,8 +42,10 @@ def freeze_specs(specs):
         else:
             require(spec['type'] == 'baseline', 'unsupported model type')
             run = Path(spec['run']); selection = json.loads((run/'selection.json').read_text())
-            checkpoint = run/selection['checkpoint']
-            files = [run/'selection.json', run/'run_manifest.json', checkpoint/('generator.h5' if spec['name'] == 'DE-GAN' else 'weights.pt')]
+            # an explicit step directory of the run (a candidate version), else the run's own selection
+            checkpoint = run/(spec.get('checkpoint') or selection['checkpoint'])
+            model = json.loads((run/'run_manifest.json').read_text())['config']['model']
+            files = [run/'selection.json', run/'run_manifest.json', checkpoint/('generator.h5' if model == 'DE-GAN' else 'weights.pt')]
             item['selection'] = selection
         item['sha256'] = {str(p): digest(p) for p in files}
         frozen.append(item)
@@ -188,7 +190,7 @@ def infer_model(args):
             return np.where(mask, 1., raw).astype(np.float32)
     else:
         from ..baselines.restoration_export import selected_predictor
-        predictor, _, _ = selected_predictor(Path(spec['run']), Path(spec['upstream']))
+        predictor, _, _ = selected_predictor(Path(spec['run']), Path(spec['upstream']), spec.get('checkpoint'))
         def restore(raw): return restore_native(predictor, raw)
     cases = json.loads((inputs/'pixels.json').read_text()); archive = np.load(inputs/'pixels.npz', allow_pickle=False)
     totals = {s:np.zeros(5, np.int64) for s in ('val','test')}; detail = []; outputs = {}
@@ -227,6 +229,63 @@ def merge(args):
     write_manifest(out, config=to_jsonable(args), inputs={str(args.inputs/'models.json'):digest(args.inputs/'models.json')}, rows=len(rows))
 
 
+def row_scores(root):
+    """Per model, {line_id: share of the struck characters held} on the validation lines (``eval.revision_boxes.held``)."""
+    from .revision_boxes import held
+    rows = {r['id']: r for r in json.loads((root/'pack/pack.json').read_text())['rows']}
+    scores = {}
+    for line in (root/'qwen8b/predictions.jsonl').read_text(encoding='utf-8').splitlines():
+        reading = json.loads(line); r = rows[reading['id']]
+        if r['split'] != 'val' or r['kind'] != 'line': continue
+        share = held(r['text'], reading['text'])
+        if share is not None: scores.setdefault(r['model'].split('__', 1)[1], {})[r['line_id']] = share
+    return scores
+
+
+def choose(args):
+    """Each family's version by the rule of 2026-10-22: its candidates are the versions whose pixel F1 on the 16 fixed validation
+    regions beat every earlier one, and its last (the versions a restorer's own training keeps); of these, the highest read-back on
+    the 41 validation strikes, the earlier step on a tie.  A family is ``family`` in the model list, a version's order ``step``."""
+    root = args.evaluation; specs = json.loads((root/'inputs/models.json').read_text()); scores = row_scores(root)
+    families = {}
+    for spec in specs: families.setdefault(spec['family'], []).append(spec)
+    chosen = {}
+    for family, versions in sorted(families.items()):
+        versions.sort(key=lambda s: s['step']); best = -1; table = []
+        for i, spec in enumerate(versions):
+            f1 = json.loads((root/'runs'/spec['name']/'pixels.json').read_text())['splits']['val']['f1']
+            held = float(np.mean(list(scores[spec['name']].values())))
+            candidate = f1 > best or i == len(versions)-1; best = max(best, f1)
+            table.append(dict(name=spec['name'], step=spec['step'], pixel_f1=f1, read_back=held, candidate=candidate))
+        pick = max((t for t in table if t['candidate']), key=lambda t: (t['read_back'], -t['step']))
+        chosen[family] = dict(chosen=pick, versions=table, spec=next(s for s in versions if s['name'] == pick['name']))
+    out = make_output_dir(args.output_dir); write_json(out/'selection.json', chosen)
+    write_manifest(out, config={'evaluation': str(root)}, inputs={str(p): digest(p) for p in [root/'inputs/models.json', root/'qwen8b/predictions.jsonl']},
+                   rule='candidates: pixel-F1 improvements on the 16 fixed validation regions and the last version; chosen: highest read-back on the 41 validation strikes, earlier step on a tie')
+    print(json.dumps({f: c['chosen'] for f, c in chosen.items()}), flush=True)
+
+
+def compare(args):
+    """The paired difference in read-back between two chosen versions of every family (``choose`` outputs: before and after), on the
+    validation strikes both read, with 95% intervals by resampling writers (seed 42)."""
+    before = json.loads((args.before/'selection.json').read_text()); after = json.loads((args.after/'selection.json').read_text())
+    a_scores = row_scores(Path(json.loads((args.before/'run_manifest.json').read_text())['config']['evaluation']))
+    b_scores = row_scores(Path(json.loads((args.after/'run_manifest.json').read_text())['config']['evaluation']))
+    rng = np.random.default_rng(42); result = {}
+    for family in sorted(set(before) & set(after)):
+        x = a_scores[before[family]['chosen']['name']]; y = b_scores[after[family]['chosen']['name']]
+        lines = sorted(set(x) & set(y)); writers = sorted({l.split('_')[0] for l in lines})
+        by = {w: [l for l in lines if l.startswith(w+'_')] for w in writers}
+        diff = lambda ls: float(np.mean([y[l]-x[l] for l in ls]))
+        draws = [diff([l for w in rng.choice(writers, len(writers)) for l in by[w]]) for _ in range(1000)]
+        result[family] = dict(before=float(np.mean([x[l] for l in lines])), after=float(np.mean([y[l] for l in lines])),
+                              difference=diff(lines), interval=[float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))],
+                              strikes=len(lines), writers=len(writers))
+    out = make_output_dir(args.output_dir); write_json(out/'comparison.json', result)
+    write_manifest(out, config={'before': str(args.before), 'after': str(args.after)}, inputs={str(p/'selection.json'): digest(p/'selection.json') for p in (args.before, args.after)})
+    print(json.dumps(result), flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__); sub = parser.add_subparsers(dest='command',required=True)
     p = sub.add_parser('prepare')
@@ -240,8 +299,12 @@ def main(argv=None):
     for key in ('inputs','runs','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     p = sub.add_parser('extend')
     for key in ('base','models','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p = sub.add_parser('choose')
+    for key in ('evaluation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p = sub.add_parser('compare')
+    for key in ('before','after','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     args = parser.parse_args(argv)
-    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs}[args.command](args)
+    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs,'choose':choose,'compare':compare}[args.command](args)
 
 
 if __name__ == '__main__': main()

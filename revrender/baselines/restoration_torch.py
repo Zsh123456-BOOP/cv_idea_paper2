@@ -103,17 +103,19 @@ def train(e):
     torch.set_num_threads(4);torch.manual_seed(SEED);torch.cuda.manual_seed_all(SEED)
     torch.backends.cudnn.benchmark=False
     network,diffusion,lap=build(a.model,a.upstream/a.model)
+    if a.init:network.load_state_dict(torch.load(a.init/'weights.pt',map_location='cuda',weights_only=False)['model'])
+    scale=a.learning_rate_scale
     is_doc=a.model=='DocDiff';is_cor=a.model=='COR-Generator';is_rest=a.model=='Restormer'
     is_stain=a.model=='StainRestorer'
-    if is_cor:opt=torch.optim.Adam(network.parameters(),lr=1e-3,betas=(.9,.999))
-    elif is_stain:opt=torch.optim.AdamW(network.parameters(),lr=2e-4,betas=(.9,.999),weight_decay=.01,eps=1e-8)
+    if is_cor:opt=torch.optim.Adam(network.parameters(),lr=1e-3*scale,betas=(.9,.999))
+    elif is_stain:opt=torch.optim.AdamW(network.parameters(),lr=2e-4*scale,betas=(.9,.999),weight_decay=.01,eps=1e-8)
     else:
-        opt=torch.optim.AdamW(network.parameters(),lr=1e-4 if is_doc else 3e-4 if is_rest else 1e-3,
+        opt=torch.optim.AdamW(network.parameters(),lr=scale*(1e-4 if is_doc else 3e-4 if is_rest else 1e-3),
             weight_decay=1e-4 if is_doc or is_rest else 1e-3,
             betas=(.9,.999) if is_doc or is_rest else (.9,.9))
     scheduler=None
-    if a.model=='NAFNet':scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-7)
-    if is_stain:scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-6)
+    if a.model=='NAFNet':scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-7*scale)
+    if is_stain:scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-6*scale)
     if is_rest:
         # Preserve the official flat/cosine fractions, scale duration to declared task budget.
         flat=max(1,round(a.steps*92000/300000))
@@ -133,10 +135,11 @@ def train(e):
                 'both stages: MSE + 0.2*(1-SSIM), author torchmetrics defaults per image' if is_stain else 'official PSNR loss'),
         'diffusion_steps':100 if is_doc else None,'ema':ema is not None,'precision':'float32',
         'ema_rule':'official .9999 parameter average every 100 updates after step 2000; initial model copy; raw and EMA validation candidates' if ema is not None else None,
-        'adaptation':'256 native tiles; batch4; seed42; no rotation; task-specific budget; Restormer fixed patches and scaled flat/cosine schedule'}
+        'adaptation':'256 native tiles; batch4; seed42; no rotation; task-specific budget; Restormer fixed patches and scaled flat/cosine schedule',
+        'initialization':str(a.init) if a.init else 'official random initialization','learning_rate_scale':scale}
     if is_stain:
         import torchmetrics
-        config.update(initialization='random; no author checkpoint',torchmetrics=torchmetrics.__version__,
+        config.update(initialization=str(a.init) if a.init else 'random; no author checkpoint',torchmetrics=torchmetrics.__version__,
             microbatch=1,adaptation='native256; effective batch4 via single-image gradients; image-wise SSIM matches author batch1 config; cosine scaled to task update budget; seed42; no rotation')
     write_json(e.out/'model_config.json',config);e.log(config)
     active=network

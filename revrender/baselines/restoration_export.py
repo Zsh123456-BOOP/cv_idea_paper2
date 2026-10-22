@@ -18,9 +18,10 @@ from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_js
 from .restoration import module_file, removal_counts, removal_metrics, restore_native, verified_source
 
 
-def selected_predictor(run,upstream):
+def selected_predictor(run,upstream,checkpoint=None):
+    """The predictor of a run's selected checkpoint, or of ``checkpoint`` (a step directory of the run) when given."""
     manifest=json.loads((run/'run_manifest.json').read_text());model=manifest['config']['model']
-    selection=json.loads((run/'selection.json').read_text());weights=run/selection['checkpoint']
+    weights=run/(checkpoint or json.loads((run/'selection.json').read_text())['checkpoint'])
     source=verified_source(upstream/model);require(source==manifest['upstream'],'upstream mismatch')
     if model=='DE-GAN':
         os.environ['TF_USE_LEGACY_KERAS']='1'

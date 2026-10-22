@@ -27,13 +27,17 @@ def train(e):
     init(inverse);init(network)
     clean_d=discriminator(1).cuda();struck_d=discriminator(1).cuda()
     init(struck_d);init(clean_d)
-    go=torch.optim.Adam(itertools.chain(inverse.parameters(),network.parameters()),lr=.0002,betas=(.5,.999))
-    do=torch.optim.Adam(itertools.chain(struck_d.parameters(),clean_d.parameters()),lr=.0002,betas=(.5,.999))
+    if a.init:   # all four nets of the chosen version: a CycleGAN fine-tunes as it trained
+        state=torch.load(a.init/'weights.pt',map_location='cuda',weights_only=False)
+        for net,key in ((network,'model'),(inverse,'inverse'),(clean_d,'clean_d'),(struck_d,'struck_d')):net.load_state_dict(state[key])
+    lr=.0002*a.learning_rate_scale
+    go=torch.optim.Adam(itertools.chain(inverse.parameters(),network.parameters()),lr=lr,betas=(.5,.999))
+    do=torch.optim.Adam(itertools.chain(struck_d.parameters(),clean_d.parameters()),lr=lr,betas=(.5,.999))
     clean_pool=pool(20);struck_pool=pool(20)
     config={'architecture':'official DenseGenerator n_blocks1, BatchNorm; PatchGAN n_layers3',
             'variant':'ORIGINAL','loss':'LSGAN MSE + 10 L1 cycle each direction; identity lambda0',
             'paired_training':False,'type_labels':False,'auxiliary_recognizer':False,
-            'lr':.0002,'betas':[.5,.999],'pool_size':20,'framework':torch.__version__,
+            'lr':lr,'betas':[.5,.999],'initialization':str(a.init) if a.init else 'official init_weights','pool_size':20,'framework':torch.__version__,
             'parameters':sum(p.numel() for p in network.parameters()),
             'adaptation':'inverted grayscale native 256 tiles, batch4, independent domains from common training pool; seed42'}
     write_json(e.out/'model_config.json',config);e.log(config)

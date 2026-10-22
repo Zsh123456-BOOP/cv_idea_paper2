@@ -24,14 +24,16 @@ def train(e):
     tf.config.threading.set_intra_op_parallelism_threads(4);tf.config.threading.set_inter_op_parallelism_threads(2)
     m=module_file('paper2_degan_official',e.args.upstream/'DE-GAN/models/models.py')
     # Compatibility alias only: modern Keras renamed lr to learning_rate.
-    m.get_optimizer=lambda:tf.keras.optimizers.Adam(learning_rate=1e-4)
+    m.get_optimizer=lambda:tf.keras.optimizers.Adam(learning_rate=1e-4*e.args.learning_rate_scale)
     g=m.generator_model(biggest_layer=1024);d=m.discriminator_model()
+    if e.args.init:g.load_weights(str(e.args.init/'generator.h5'));d.load_weights(str(e.args.init/'discriminator.h5'))
     go=m.get_optimizer();do=m.get_optimizer();go.build(g.trainable_variables);do.build(d.trainable_variables)
     config={'framework':tf.__version__,'generator_parameters':g.count_params(),'discriminator_parameters':d.count_params(),
         'architecture':'unchanged official generator biggest_layer1024 and discriminator',
         'loss':'released code MSE adversarial + 100 binary cross entropy reconstruction',
         'update':'D(real), D(detached fake from eval G), G through eval D; two D optimizer steps',
-        'adaptation':'modern optimizer alias and Python3.12 integer RNG bounds; same paired 256 inputs and shortened budget'}
+        'adaptation':'modern optimizer alias and Python3.12 integer RNG bounds; same paired 256 inputs and shortened budget',
+        'initialization':str(e.args.init) if e.args.init else 'official initialization','learning_rate_scale':e.args.learning_rate_scale}
     write_json(e.out/'model_config.json',config);e.log(config)
 
     @tf.function(reduce_retracing=True)
