@@ -16,7 +16,7 @@ SEL1=${N}_v4_versions_synthetic; SEL=${N}_v2_versions_synthetic
 VAL=$O/paper2_fixed_validation20261007; UP=$O/paper2_restoration_sources20261008; STAIN_UP=$O/paper2_stainrestorer_resources20261009/upstream
 MAP=$O/paper2_splits/index_manifest.json; PAIRS=$O/paper2_splits/same_student_pairs.json
 C0=GPU-8b057858-863a-bb19-1102-4c7ee3d1afe0; C1=GPU-d0bcc564-5bd9-b943-f995-8536415088e3; C2=GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0; C3=$CARD3
-mkdir -p "$R"
+mkdir -p "$R" "$SUITE"
 exec 8>"$R/lock"; flock -n 8 || { echo 'another run of this experiment is still going'; exit 1; }
 stamp() { echo "$* $(date -u +%FT%TZ)"; }
 done_() { [ -e "$R/$1.done" ]; }
