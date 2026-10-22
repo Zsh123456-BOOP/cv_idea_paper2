@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# How the gain of the human regions grows with their number (user 2026-10-22): the box remover and the two restorers best after the
-# 201-region fine-tuning (DE-GAN, Restormer) fine-tuned exactly as in run_annotation_value.sh on nested subsets of the regions --
+# How the gain of the human regions grows with their number (user 2026-10-22): the box remover and all seven restorers (first the
+# box remover, DE-GAN and Restormer; the user then asked for every one) fine-tuned exactly as in run_annotation_value.sh on nested
+# subsets of the regions --
 # whole training writers in one seeded order until 50 and 100 regions (data.review_set --training-regions), with the same synthetic
 # replay rule -- each from the synthetic version chosen there; versions chosen the same way.  The 0 and 201 points are that run's.
-# Unattended; a step whose marker is in $R is skipped.  Cards 1 and 0 (card 2 for the OCR when it has room, else card 3 when idle).
+# Unattended; a step whose marker is in $R is skipped.  Cards 1 and 3 (3 only while nobody else is on it; card 2 for the OCR when it
+# has room, else card 3 when idle).
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -30,16 +32,18 @@ for n in 50 100; do
             --training-regions "$n" --output-dir "$SET" > "$R/set_$n.log" 2>&1
         "$PY" -m revrender.data.restoration_pairs human --review-set "$SET" --source "$V4" --output-dir "$TILES" >> "$R/set_$n.log" 2>&1
         mark "set_$n"; fi
-    if ! done_ "finetune_$n"; then
+    if ! done_ "finetune_all_$n"; then   # versions already fine-tuned are kept (finetune_restorer, run_review_round's COMPLETE)
+        lane() { local card="$1" numa="$2"; shift 2; for m in "$@"; do finetune_restorer "$m" "$card" "$numa" "$(chosen_of "$SEL1/chosen" "$m")" "$TILES" "${FT}_$m"; done; }
         ( [ -e "${FT}_Ours/COMPLETE" ] || bash "$ROOT/scripts/run_review_round.sh" "$SET" "$(chosen_of "$SEL1/chosen" Ours)" "$C1" 0 "${FT}_Ours"
-          finetune_restorer DE-GAN "$C1" 0 "$(chosen_of "$SEL1/chosen" DE-GAN)" "$TILES" "${FT}_DE-GAN" ) > "$R/finetune_${n}_lane1.log" 2>&1 & A=$!
-        ( finetune_restorer Restormer "$C0" 0 "$(chosen_of "$SEL1/chosen" Restormer)" "$TILES" "${FT}_Restormer" ) > "$R/finetune_${n}_lane0.log" 2>&1 & B=$!
-        wait $A; wait $B; mark "finetune_$n"; fi
-    if ! done_ "versions_$n"; then
-        [ -e "$R/candidates_$n.json" ] || "$PY" -m revrender.eval.unified_restoration candidates --own "Ours=${FT}_Ours/train/formal" \
-            --run "DE-GAN=${FT}_DE-GAN" --run "Restormer=${FT}_Restormer" --upstream "$UP" --stain-upstream "$STAIN_UP" --output "$R/candidates_$n.json" >> "$R/versions_$n.log" 2>&1
-        evaluate_versions "$R/candidates_$n.json" "$SEL" "$R/versions_$n.log"
-        "$PY" -m revrender.eval.unified_restoration compare --before "$SEL1/chosen" --after "$SEL/chosen" --output-dir "$R/compare_$n" >> "$R/versions_$n.log" 2>&1
-        mark "versions_$n"; fi
+          lane "$C1" 0 DE-GAN NAFNet COR-Generator Restormer ) > "$R/finetune_${n}_lane1.log" 2>&1 & A=$!
+        ( lane "$C3" 1 StainRestorer DocDiff Strikethrough-CycleGAN ) > "$R/finetune_${n}_lane3.log" 2>&1 & B=$!
+        wait $A; wait $B; mark "finetune_all_$n"; fi
+    if ! done_ "versions_all_$n"; then
+        runs=(); for m in COR-Generator DE-GAN DocDiff NAFNet Restormer StainRestorer Strikethrough-CycleGAN; do runs+=(--run "$m=${FT}_$m"); done
+        [ -e "$R/candidates_all_$n.json" ] || "$PY" -m revrender.eval.unified_restoration candidates --own "Ours=${FT}_Ours/train/formal" \
+            "${runs[@]}" --upstream "$UP" --stain-upstream "$STAIN_UP" --output "$R/candidates_all_$n.json" >> "$R/versions_$n.log" 2>&1
+        evaluate_versions "$R/candidates_all_$n.json" "${SEL}_all" "$R/versions_$n.log"
+        "$PY" -m revrender.eval.unified_restoration compare --before "$SEL1/chosen" --after "${SEL}_all/chosen" --output-dir "$R/compare_all_$n" >> "$R/versions_$n.log" 2>&1
+        mark "versions_all_$n"; fi
 done
 touch "$R/COMPLETE"; stamp complete
