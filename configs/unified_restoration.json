@@ -1,11 +1,11 @@
 [
-  {"name":"Ours-old", "type":"own", "checkpoint":"/home/zsh/hme/outputs/paper2_pixel_finetune20261007/formal/step_800.pt", "training":"original box model + 50 human regions + synthetic replay"},
-  {"name":"Ours-round1", "type":"own", "checkpoint":"/home/zsh/hme/outputs/paper2_pixel_round_group20261010/train/formal/step_400.pt", "training":"Ours-old + 40 new human regions + previous 50 human regions + synthetic replay"},
-  {"name":"COR-Generator", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_restoration_suite20261008/lane0/COR-Generator_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
-  {"name":"Restormer", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_restoration_suite20261008/lane0/Restormer_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
-  {"name":"NAFNet", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_restoration_suite20261008/lane2/NAFNet_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
-  {"name":"DE-GAN", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_restoration_suite20261008/lane2/DE-GAN_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
-  {"name":"Strikethrough-CycleGAN", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_restoration_suite20261008/lane3/Strikethrough-CycleGAN_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
-  {"name":"DocDiff", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_restoration_suite20261008/lane3/DocDiff_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
-  {"name":"StainRestorer", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_stainrestorer20261009/formal/StainRestorer_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_stainrestorer_resources20261009/upstream"}
+  {"name":"Ours-synthetic", "type":"own", "checkpoint":"/home/zsh/hme/outputs/paper2_clean_strokes_boxes/formal/step_10500.pt", "training":"synthetic lines then synthetic boxes; step chosen on the 41 validation strikes' read-back"},
+  {"name":"Ours-finetuned", "type":"own", "checkpoint":"/home/zsh/hme/outputs/paper2_clean_pixel_finetune/train/formal/step_600.pt", "training":"Ours-synthetic + 201 human regions + synthetic replay; step chosen on the 16 fixed validation regions"},
+  {"name":"COR-Generator", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_clean_restoration_suite/lane0/COR-Generator_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
+  {"name":"Restormer", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_clean_restoration_suite/lane0/Restormer_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
+  {"name":"NAFNet", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_clean_restoration_suite/lane2/NAFNet_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
+  {"name":"DE-GAN", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_clean_restoration_suite/lane2/DE-GAN_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
+  {"name":"Strikethrough-CycleGAN", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_clean_restoration_suite/lane3/Strikethrough-CycleGAN_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
+  {"name":"DocDiff", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_clean_restoration_suite/lane3/DocDiff_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_restoration_sources20261008"},
+  {"name":"StainRestorer", "type":"baseline", "run":"/home/zsh/hme/outputs/paper2_clean_stainrestorer/StainRestorer_gold_pixels", "upstream":"/home/zsh/hme/outputs/paper2_stainrestorer_resources20261009/upstream"}
 ]

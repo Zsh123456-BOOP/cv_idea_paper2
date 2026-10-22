@@ -40,8 +40,8 @@ def test_frozen_checkpoint_change_is_rejected(tmp_path):
 
 def test_report_rejects_duplicate_or_incomplete_readings():
     rows=[dict(id='a')]
-    with pytest.raises(RefusedError,match='missing or extra'):audit(rows,[],[])
-    with pytest.raises(RefusedError,match='duplicate'):audit(rows,[dict(id='a'),dict(id='a')],[])
+    with pytest.raises(RefusedError,match='missing or extra'):audit(rows,[],[],{})
+    with pytest.raises(RefusedError,match='duplicate'):audit(rows,[dict(id='a'),dict(id='a')],[],{})
 
 
 def test_report_requires_same_labels_even_when_counts_match():
@@ -51,9 +51,10 @@ def test_report_requires_same_labels_even_when_counts_match():
             rows.extend(dict(id=f'{split}|{name}|{i}',split=split,model=split+'__'+name,
                              line_id=str(i),kind='line',text='x',size=[20,10]) for i in range(count))
     readings=[dict(id=r['id'],condition='erased_neutral') for r in rows]
-    audit(rows,readings,[dict(name='candidate')])
+    audit(rows,readings,[dict(name='candidate')],{'val':41,'test':81})
+    audit([r for r in rows if r['split']=='val'],[r for r in readings if r['id'].startswith('val')],[dict(name='candidate')],{'val':41})
     rows[-1]['text']='different'
-    with pytest.raises(RefusedError,match='different OCR examples'):audit(rows,readings,[dict(name='candidate')])
+    with pytest.raises(RefusedError,match='different OCR examples'):audit(rows,readings,[dict(name='candidate')],{'val':41,'test':81})
 import json
 from types import SimpleNamespace
 

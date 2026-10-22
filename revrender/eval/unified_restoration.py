@@ -106,7 +106,9 @@ def prepare_inputs(args):
                  if q.get('done') and selection.get(i, {}).get('split') in ('val', 'test')
                  for r in q['revisions'] if not r.get('deleted') and not r.get('unreadable')
                  and prepare_text(r.get('text', '')).replace('?', '')]
-    geometry_ids = sorted(p.stem for p in args.geometry.glob('*.json') if p.stem not in ('summary', 'run_manifest'))
+    # the old seven pixel test pages (--geometry) are optional: that test set was retired on 2026-10-18 (it held a labmate's pages)
+    geometry = [] if args.geometry is None else [*args.geometry.glob('*.json'), *args.geometry.glob('*.npz')]
+    geometry_ids = sorted(p.stem for p in geometry if p.suffix == '.json' and p.stem not in ('summary', 'run_manifest'))
     require(all(selection[i]['split'] == 'test' for i in geometry_ids), 'pixel test page outside test split')
     files = pages.page_files(args.pages, sorted({i for _, i, _ in revisions} | set(geometry_ids)))
     scans = {}
@@ -152,10 +154,9 @@ def prepare_inputs(args):
                         pixel_regions=sum(len(c['windows']) for c in cases if c['split']==split),
                         ocr_regions=sum(r['split']==split for r in rows),
                         ocr_lines=sum(r['split']==split and r['kind']=='line' for r in rows)) for split in ('val','test')}
-    require(counts['val']['pixel_regions']==16 and counts['test']['pixel_regions']==28, 'unexpected pixel population')
-    require(counts['val']['ocr_lines']==41 and counts['test']['ocr_lines']==81, 'unexpected OCR population')
+    require(counts['val']['pixel_regions']==16 and counts['val']['ocr_lines']==41, 'unexpected validation population')
     inputs = [args.models, args.selection, *args.labels, args.human_validation, args.human_validation.with_suffix('.npz'),
-              *files.values(), *args.geometry.glob('*.json'), *args.geometry.glob('*.npz')]
+              *files.values(), *geometry]
     write_json(out/'counts.json', counts)
     generated = [out/'models.json', out/'protocol.json', out/'pack.json', out/'pixels.json', out/'pixels.npz', *sorted((out/'crops').glob('*.png'))]
     write_json(out/'prepared_sha256.json', {str(p):digest(p) for p in generated})
@@ -229,7 +230,8 @@ def merge(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__); sub = parser.add_subparsers(dest='command',required=True)
     p = sub.add_parser('prepare')
-    for key in ('models','selection','geometry','human-validation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    for key in ('models','selection','human-validation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p.add_argument('--geometry',type=Path)
     for key in ('labels','pages'):p.add_argument('--'+key,type=Path,action='append',required=True)
     p = sub.add_parser('infer')
     for key in ('inputs','output-dir'):p.add_argument('--'+key,type=Path,required=True)
