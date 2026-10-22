@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The restorer experiments read again on a wider validation (user 2026-10-22): the 16 fixed regions and 41 strikes plus the
 # development half of the test questions (configs/test_halves.json; the annotator's export of the test page) -- every version
-# run_annotation_value.sh and run_learning_curve.sh weighed, evaluated together per stage, chosen on validation and development
+# run_annotation_value.sh, run_learning_curve.sh and run_realistic_synthesis.sh weighed, evaluated together per stage, chosen on validation and development
 # pooled, and the stages compared as before.  Weights unchanged; nothing trained.  The sealed half is never read.
 #   run_wider_validation.sh EXPORT
 set -Eeuo pipefail
@@ -21,11 +21,12 @@ mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 source "$ROOT/scripts/_restorers.sh"
 declare -A LISTS=([synthetic]=$O/paper2_annotation_value20261022/candidates_synthetic.json [r201]=$O/paper2_annotation_value20261022/candidates_finetuned.json
-                  [r50]=$O/paper2_learning_curve20261022/candidates_all_50.json [r100]=$O/paper2_learning_curve20261022/candidates_all_100.json)
-for stage in synthetic r50 r100 r201; do
+                  [r50]=$O/paper2_learning_curve20261022/candidates_all_50.json [r100]=$O/paper2_learning_curve20261022/candidates_all_100.json
+                  [realistic]=$O/paper2_synthetic_v2_20261022/candidates.json)
+for stage in synthetic r50 r100 r201 realistic; do
     done_ "$stage" || { evaluate_versions "${LISTS[$stage]}" "${N}_wide_versions_$stage" "$R/$stage.log"; mark "$stage"; }
 done
-for stage in r50 r100 r201; do
+for stage in r50 r100 r201 realistic; do
     done_ "compare_$stage" || { "$PY" -m revrender.eval.unified_restoration compare --before "${N}_wide_versions_synthetic/chosen" \
         --after "${N}_wide_versions_$stage/chosen" --output-dir "$R/compare_$stage" > "$R/compare_$stage.log" 2>&1; mark "compare_$stage"; }
 done
