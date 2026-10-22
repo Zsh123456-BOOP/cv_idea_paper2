@@ -92,7 +92,8 @@ def _evaluation(tmp_path,versions):
     specs=[];rows=[];readings=[]
     for name,family,step,f1,texts in versions:
         specs.append(dict(name=name,family=family,step=step))
-        (root/'runs'/name).mkdir(parents=True);(root/'runs'/name/'pixels.json').write_text(json.dumps({'splits':{'val':{'f1':f1}}}))
+        (root/'runs'/name).mkdir(parents=True)
+        (root/'runs'/name/'pixels.json').write_text(json.dumps({'splits':{'val':{'f1':f1,'tp':f1*1000,'fp':(1-f1)*1000,'fn':(1-f1)*1000}}}))
         for i,text in enumerate(texts):
             rid=f'val|{name}|w{i}_1#r';rows.append(dict(id=rid,split='val',model='val__'+name,kind='line',line_id=f'w{i}_1#r',text='abcd'))
             readings.append(json.dumps(dict(id=rid,text=text,condition='erased_neutral')))
@@ -104,7 +105,7 @@ def _evaluation(tmp_path,versions):
 def test_choose_reads_back_only_among_pixel_improvements_and_the_last_version(tmp_path):
     from revrender.eval.unified_restoration import choose
     root=_evaluation(tmp_path,[('A1','A',1,.5,['ab','ab']),('A2','A',2,.4,['abcd','abcd']),('A3','A',3,.6,['abc','abc']),('A4','A',4,.55,['a','a'])])
-    choose(SimpleNamespace(evaluation=root,output_dir=tmp_path/'chosen'))
+    choose(SimpleNamespace(evaluation=root,output_dir=tmp_path/'chosen',splits=['val']))
     chosen=json.loads((tmp_path/'chosen'/'selection.json').read_text())['A']
     assert [v['candidate'] for v in chosen['versions']]==[True,False,True,True]
     assert chosen['chosen']['name']=='A3'      # A2 reads best but never improved the pixel F1
@@ -119,3 +120,20 @@ def test_candidates_list_a_remover_every_n_steps_and_a_restorers_kept_versions(t
     candidates(SimpleNamespace(own=[f'Ours={own}'],every=2000,run=[f'DocDiff={run}'],upstream=tmp_path,stain_upstream=None,output=tmp_path/'c.json'))
     specs=json.loads((tmp_path/'c.json').read_text())
     assert [s['name'] for s in specs]==['Ours-s2000','Ours-s4000','Ours-s4300','DocDiff-s5000','DocDiff-s100000','DocDiff-s100000ema']
+
+
+def test_the_development_half_gives_pixel_cases_and_readable_ocr_crops_of_confirmed_regions_only(tmp_path):
+    from PIL import Image
+    from revrender.data.pixel_masks import encode
+    from revrender.eval.unified_restoration import development
+    page=np.full((40,80),255,np.uint8);page[10:30,10:70]=40;Image.fromarray(page).save(tmp_path/'q1_1.png')
+    Image.fromarray(page).save(tmp_path/'q2_1.png')
+    mask=np.zeros((20,60),bool);mask[9:11,:]=True
+    base=dict(box=[10,10,70,30],region=[[10,10],[70,10],[70,30],[10,30]],runs=encode(mask),text='$x+1$')
+    export={'pages':{'q1_1':{'revisions':[dict(base,id='a',confirmed=True,text_confirmed=True),dict(base,id='b',confirmed=False,text_confirmed=True,unreadable=True)]},
+                     'q2_1':{'revisions':[dict(base,id='c',confirmed=True,text_confirmed=True)]}}}
+    (tmp_path/'export.json').write_text(json.dumps(export));(tmp_path/'halves.json').write_text(json.dumps({'development':['q1_1'],'sealed':['q2_1']}))
+    out=tmp_path/'inputs';(out/'crops').mkdir(parents=True);rows=[];cases=[];arrays={}
+    development(SimpleNamespace(dev_export=tmp_path/'export.json',dev_pages=tmp_path,dev_questions=tmp_path/'halves.json'),out,rows,cases,arrays)
+    assert [c['id'] for c in cases]==['q1_1#a'] and arrays['gold_0'].sum()==mask.sum()
+    assert [r['line_id'] for r in rows]==['q1_1#a'] and rows[0]['split']=='dev'      # the sealed question is never read

@@ -11,7 +11,8 @@ second_card() {   # card 2 when it has room, else card 3 when nobody is on it ->
 evaluate_versions() {   # LIST OUT LOG: every version of LIST (eval.unified_restoration candidates) evaluated together on validation, then chosen
     local list="$1" out="$2" log="$3"
     [ -e "$out/COMPLETED" ] || MODELS="$list" GPU_A=$C1 GPU_B=$(second_card) bash "$ROOT/scripts/eval_unified_restoration.sh" "$out" >> "$log" 2>&1
-    [ -e "$out/chosen/selection.json" ] || "$PY" -m revrender.eval.unified_restoration choose --evaluation "$out" --output-dir "$out/chosen" >> "$log" 2>&1
+    [ -e "$out/chosen/selection.json" ] || "$PY" -m revrender.eval.unified_restoration choose --evaluation "$out" --splits ${CHOOSE_SPLITS:-val} \
+        --output-dir "$out/chosen" >> "$log" 2>&1
 }
 chosen_of() {   # SELECTION FAMILY: the chosen version's weights (a box remover's .pt, a restorer's step directory)
     "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1]))[sys.argv[2]]["spec"]; print(s["checkpoint"] if s["type"]=="own" else s["run"]+"/"+s["checkpoint"])' "$1/selection.json" "$2"

@@ -128,7 +128,6 @@ def prepare_inputs(args):
         key = image_id+'#'+r['id']
         rows.append(dict(id=split+'|scan|'+key, line_id=key, split=split, model=split+'__scan', image_id=image_id,
                          kind=r['kind'], text=r['text'], boxes=[], size=[int(rr-l), int(b-t)], images={'erased':path}))
-    write_json(out/'pack.json', {'schema':'revrender-line-pack', 'rows':rows})
     native_rows = json.loads(args.human_validation.read_text()); native = np.load(args.human_validation.with_suffix('.npz'), allow_pickle=False)
     arrays = {}; cases = []
     for i, row in enumerate(native_rows):
@@ -151,19 +150,53 @@ def prepare_inputs(args):
             gold |= unpacked(masks[f'revision_{n}'], grey.shape[1])
         arrays[f'image_{k}'] = grey; arrays[f'gold_{k}'] = gold; arrays[f'domain_{k}'] = domain
         cases.append(dict(id=image_id, split='test', windows=windows))
+    dev_inputs = development(args, out, rows, cases, arrays) if args.dev_export else []
+    write_json(out/'pack.json', {'schema':'revrender-line-pack', 'rows':rows})
     write_json(out/'pixels.json', cases); np.savez_compressed(out/'pixels.npz', **arrays)
     counts = {split:dict(pixel_cases=sum(c['split']==split for c in cases),
                         pixel_regions=sum(len(c['windows']) for c in cases if c['split']==split),
                         ocr_regions=sum(r['split']==split for r in rows),
-                        ocr_lines=sum(r['split']==split and r['kind']=='line' for r in rows)) for split in ('val','test')}
+                        ocr_lines=sum(r['split']==split and r['kind']=='line' for r in rows)) for split in ('val','test','dev')}
     require(counts['val']['pixel_regions']==16 and counts['val']['ocr_lines']==41, 'unexpected validation population')
     inputs = [args.models, args.selection, *args.labels, args.human_validation, args.human_validation.with_suffix('.npz'),
-              *files.values(), *geometry]
+              *files.values(), *geometry, *dev_inputs]
     write_json(out/'counts.json', counts)
     generated = [out/'models.json', out/'protocol.json', out/'pack.json', out/'pixels.json', out/'pixels.npz', *sorted((out/'crops').glob('*.png'))]
     write_json(out/'prepared_sha256.json', {str(p):digest(p) for p in generated})
     write_manifest(out, config=to_jsonable(args), inputs={str(p):digest(p) for p in inputs}, counts=counts, protocol=PROTOCOL)
     print(json.dumps(counts), flush=True)
+
+
+def development(args, out, rows, cases, arrays):
+    """The development half of the test questions (``--dev-questions``, user 2026-10-22) from the annotator's export of the test
+    page: every region whose pixels are confirmed a native pixel case (``data.pixel_masks.reviewed_crop``, as the fixed validation
+    was cut), every region whose struck text is confirmed and readable an OCR crop (its box and six pixels, as the validation boxes).
+    Split ``dev``; the sealed half is never read."""
+    from ..data.pixel_masks import has_uncertainty, reviewed_crop
+    export = json.loads(args.dev_export.read_text()); chosen = set(json.loads(args.dev_questions.read_text())['development'])
+    require(chosen <= set(export['pages']), 'a development question is not in the export')
+    used = []; skipped = 0
+    for image_id in sorted(chosen):
+        path = args.dev_pages/(image_id+'.png'); used.append(path)
+        with Image.open(path) as page:
+            grey = np.asarray(page.convert('L'))
+            for r in export['pages'][image_id].get('revisions', []):
+                if r.get('deleted') or r.get('not_revision'): continue
+                if r.get('confirmed'):
+                    if has_uncertainty(r): skipped += 1
+                    else:
+                        image, mask = reviewed_crop(page, r); k = len(cases)
+                        arrays[f'image_{k}'] = image; arrays[f'gold_{k}'] = mask.astype(bool)
+                        arrays[f'domain_{k}'] = np.ones(image.shape, bool); arrays[f'region_{k}_0'] = np.ones(image.shape, bool)
+                        cases.append(dict(id=image_id+'#'+r['id'], split='dev', windows=[[0, 0, image.shape[1], image.shape[0]]]))
+                if r.get('text_confirmed') and not r.get('unreadable') and prepare_text(r.get('text', '')).replace('?', ''):
+                    points = np.asarray(r['region']); l, t = np.maximum(0, points.min(0)-6).astype(int)
+                    rr, b = np.minimum([grey.shape[1], grey.shape[0]], points.max(0)+6).astype(int)
+                    crop = f'crops/{len(rows):05d}.png'; Image.fromarray(grey[t:b, l:rr]).save(out/crop); key = image_id+'#'+r['id']
+                    rows.append(dict(id='dev|scan|'+key, line_id=key, split='dev', model='dev__scan', image_id=image_id, kind='line',
+                                     text=r['text'], boxes=[], size=[int(rr-l), int(b-t)], images={'erased':crop}))
+    write_json(out/'development.json', {'questions': len(chosen), 'uncertain_pixels_skipped': skipped})
+    return [args.dev_export, args.dev_questions, *used]
 
 
 def restore_case(restore, grey, windows, regions):
@@ -193,7 +226,7 @@ def infer_model(args):
         predictor, _, _ = selected_predictor(Path(spec['run']), Path(spec['upstream']), spec.get('checkpoint'))
         def restore(raw): return restore_native(predictor, raw)
     cases = json.loads((inputs/'pixels.json').read_text()); archive = np.load(inputs/'pixels.npz', allow_pickle=False)
-    totals = {s:np.zeros(5, np.int64) for s in ('val','test')}; detail = []; outputs = {}
+    totals = {s:np.zeros(5, np.int64) for s in sorted({c['split'] for c in cases})}; detail = []; outputs = {}
     for k, case in enumerate(cases):
         grey = archive[f'image_{k}']; domain = archive[f'domain_{k}']; gold = archive[f'gold_{k}']
         value = restore_case(restore, grey, case['windows'], [archive[f'region_{k}_{j}'] for j in range(len(case['windows']))])
@@ -255,14 +288,14 @@ def candidates(args):
     write_json(args.output, specs); print(len(specs), 'versions', flush=True)
 
 
-def row_scores(root):
-    """Per model, {line_id: share of the struck characters held} on the validation lines (``eval.revision_boxes.held``)."""
+def row_scores(root, splits=('val',)):
+    """Per model, {line_id: share of the struck characters held} on the lines of ``splits`` (``eval.revision_boxes.held``)."""
     from .revision_boxes import held
     rows = {r['id']: r for r in json.loads((root/'pack/pack.json').read_text())['rows']}
     scores = {}
     for line in (root/'qwen8b/predictions.jsonl').read_text(encoding='utf-8').splitlines():
         reading = json.loads(line); r = rows[reading['id']]
-        if r['split'] != 'val' or r['kind'] != 'line': continue
+        if r['split'] not in splits or r['kind'] != 'line': continue
         share = held(r['text'], reading['text'])
         if share is not None: scores.setdefault(r['model'].split('__', 1)[1], {})[r['line_id']] = share
     return scores
@@ -272,21 +305,22 @@ def choose(args):
     """Each family's version by the rule of 2026-10-22: its candidates are the versions whose pixel F1 on the 16 fixed validation
     regions beat every earlier one, and its last (the versions a restorer's own training keeps); of these, the highest read-back on
     the 41 validation strikes, the earlier step on a tie.  A family is ``family`` in the model list, a version's order ``step``."""
-    root = args.evaluation; specs = json.loads((root/'inputs/models.json').read_text()); scores = row_scores(root)
+    root = args.evaluation; specs = json.loads((root/'inputs/models.json').read_text()); scores = row_scores(root, args.splits)
     families = {}
     for spec in specs: families.setdefault(spec['family'], []).append(spec)
     chosen = {}
     for family, versions in sorted(families.items()):
         versions.sort(key=lambda s: s['step']); best = -1; table = []
         for i, spec in enumerate(versions):
-            f1 = json.loads((root/'runs'/spec['name']/'pixels.json').read_text())['splits']['val']['f1']
+            parts = json.loads((root/'runs'/spec['name']/'pixels.json').read_text())['splits']
+            tp, fp, fn = (sum(parts[x][k] for x in args.splits if x in parts) for k in ('tp', 'fp', 'fn')); f1 = 2*tp/max(1, 2*tp+fp+fn)
             held = float(np.mean(list(scores[spec['name']].values())))
             candidate = f1 > best or i == len(versions)-1; best = max(best, f1)
             table.append(dict(name=spec['name'], step=spec['step'], pixel_f1=f1, read_back=held, candidate=candidate))
         pick = max((t for t in table if t['candidate']), key=lambda t: (t['read_back'], -t['step']))
         chosen[family] = dict(chosen=pick, versions=table, spec=next(s for s in versions if s['name'] == pick['name']))
     out = make_output_dir(args.output_dir); write_json(out/'selection.json', chosen)
-    write_manifest(out, config={'evaluation': str(root)}, inputs={str(p): digest(p) for p in [root/'inputs/models.json', root/'qwen8b/predictions.jsonl']},
+    write_manifest(out, config={'evaluation': str(root), 'splits': list(args.splits)}, inputs={str(p): digest(p) for p in [root/'inputs/models.json', root/'qwen8b/predictions.jsonl']},
                    rule='candidates: pixel-F1 improvements on the 16 fixed validation regions and the last version; chosen: highest read-back on the 41 validation strikes, earlier step on a tie')
     print(json.dumps({f: c['chosen'] for f, c in chosen.items()}), flush=True)
 
@@ -295,12 +329,13 @@ def compare(args):
     """The paired difference in read-back between two chosen versions of every family (``choose`` outputs: before and after), on the
     validation strikes both read, with 95% intervals by resampling writers (seed 42)."""
     before = json.loads((args.before/'selection.json').read_text()); after = json.loads((args.after/'selection.json').read_text())
-    a_scores = row_scores(Path(json.loads((args.before/'run_manifest.json').read_text())['config']['evaluation']))
-    b_scores = row_scores(Path(json.loads((args.after/'run_manifest.json').read_text())['config']['evaluation']))
+    config = lambda p: json.loads((p/'run_manifest.json').read_text())['config']
+    a_scores = row_scores(Path(config(args.before)['evaluation']), config(args.before).get('splits', ['val']))
+    b_scores = row_scores(Path(config(args.after)['evaluation']), config(args.after).get('splits', ['val']))
     rng = np.random.default_rng(42); result = {}
     for family in sorted(set(before) & set(after)):
         x = a_scores[before[family]['chosen']['name']]; y = b_scores[after[family]['chosen']['name']]
-        lines = sorted(set(x) & set(y)); writers = sorted({l.split('_')[0] for l in lines})
+        lines = sorted(set(x) & set(y)); writers = sorted({l.split('_')[0] for l in lines})   # dev and val writers never meet
         by = {w: [l for l in lines if l.startswith(w+'_')] for w in writers}
         diff = lambda ls: float(np.mean([y[l]-x[l] for l in ls]))
         draws = [diff([l for w in rng.choice(writers, len(writers)) for l in by[w]]) for _ in range(1000)]
@@ -330,6 +365,7 @@ def main(argv=None):
     p = sub.add_parser('prepare')
     for key in ('models','selection','human-validation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     p.add_argument('--geometry',type=Path)
+    for key in ('dev-export','dev-pages','dev-questions'):p.add_argument('--'+key,type=Path,help='the development half of the test questions')
     for key in ('labels','pages'):p.add_argument('--'+key,type=Path,action='append',required=True)
     p = sub.add_parser('infer')
     for key in ('inputs','output-dir'):p.add_argument('--'+key,type=Path,required=True)
@@ -344,6 +380,7 @@ def main(argv=None):
     for key in ('upstream', 'stain-upstream', 'output'): p.add_argument('--'+key, type=Path, required=key == 'output')
     p = sub.add_parser('choose')
     for key in ('evaluation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p.add_argument('--splits', nargs='+', default=['val'], help='the splits read-back and pixel F1 are pooled over (val, dev)')
     p = sub.add_parser('compare')
     for key in ('before','after','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     args = parser.parse_args(argv)
