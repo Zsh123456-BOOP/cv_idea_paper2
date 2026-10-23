@@ -72,11 +72,31 @@ def duplicate_groups(rows):
     return result
 
 
-def infer_all(args):
-    from ... import infer, pages as page_io
+REMOVED=.2      # a restorer erases a pixel it brightens by more than this (baselines.restoration.removal_counts)
+
+
+def predictor_of(args):
+    """(masks of crops, selection record, weights) of the prefill model: the box remover a choice names (``--selected``), or a
+    restorer's checkpoint (``--restorer RUN --restorer-checkpoint step_<n> --upstream``; user 2026-10-23: NAFNet fine-tuned on the
+    human regions alone), whose erased pixels are the ink it brightens by more than ``REMOVED``."""
+    if args.restorer:
+        from ...baselines.restoration import restore_native
+        from ...baselines.restoration_export import selected_predictor
+        predict,checkpoint,_=selected_predictor(args.restorer,args.upstream,args.restorer_checkpoint)
+        selected={'selected':f'{args.restorer.name}/{args.restorer_checkpoint}','checkpoint':str(checkpoint),'restorer':str(args.restorer)}
+        def masks(crops):
+            return [((restore_native(predict,c.astype(np.float32)/255)-c.astype(np.float32)/255)>REMOVED)&(c<245) for c in crops]
+        return masks,selected,Path(checkpoint)
+    from ... import infer
     from ...eval.review_removal import predict_crops
     selected=json.loads(args.selected.read_text());checkpoint=Path(selected['checkpoint'])
     model,_=infer.load_checkpoint(checkpoint)
+    return (lambda crops:predict_crops(model,crops)),selected,checkpoint
+
+
+def infer_all(args):
+    from ... import pages as page_io
+    masks_of,selected,checkpoint=predictor_of(args)
     split=writer_splits(args.mapping,args.same_student);other=twins(args.same_student)
     canon=lambda w:min(w,other.get(w,w))
     held={canon(r['group_uuid']) for r in json.loads(args.validation.read_text())}
@@ -94,7 +114,7 @@ def infer_all(args):
     if wanted is not None:require(set(ids)==wanted,f'pages without detection or cleaned image: {sorted(wanted-set(ids))[:3]}')
     refuse_outside(ids)
     out=make_output_dir(args.output_dir);(out/'images').mkdir()
-    inputs={str(p):digest(p) for p in [args.selected,checkpoint,args.mapping,args.same_student,args.validation,*args.review_export,
+    inputs={str(p):digest(p) for p in [*([args.selected] if args.selected else []),checkpoint,args.mapping,args.same_student,args.validation,*args.review_export,
                                        *(d/'run_manifest.json' for d in args.detector),*([args.ids] if args.ids else []),Path(__file__)]}
     pages=[];rows=[];coverage=[];scanned=0
     for page in ids:
@@ -119,7 +139,7 @@ def infer_all(args):
             if covered:continue
             l,t,r,b=box;fresh.append({'id':identity,'box':box,'region':corners(box),'detector_index':n,'score':inst['score'],'confirmed':False})
             crops.append(grey[t:b,l:r])
-        masks=predict_crops(model,crops) if crops else []
+        masks=masks_of(crops) if crops else []
         pi=len(pages);writer=page.split('_')[0]
         role=split.get(writer,'train')
         if role=='dev' or split.get(other.get(writer,writer)) in ('val','dev'):role='val'
@@ -206,7 +226,11 @@ def prefill_export(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     i=sub.add_parser('infer')
-    for name in ('selected','mapping','same-student','validation','output-dir'):i.add_argument('--'+name,type=Path,required=True)
+    for name in ('mapping','same-student','validation','output-dir'):i.add_argument('--'+name,type=Path,required=True)
+    model=i.add_mutually_exclusive_group(required=True)
+    model.add_argument('--selected',type=Path,help="a box remover's choice (its summary.json naming the checkpoint)")
+    model.add_argument('--restorer',type=Path,help="a restorer's run (with --restorer-checkpoint and --upstream)")
+    i.add_argument('--restorer-checkpoint',help='the step directory of the restorer run');i.add_argument('--upstream',type=Path)
     i.add_argument('--pages',type=Path,action='append',required=True,help='a folder of cleaned pages (repeatable)')
     i.add_argument('--detector',type=Path,action='append',required=True,help='a folder of detections (repeatable)')
     i.add_argument('--ids',type=Path,help='only these pages, one id per line')
