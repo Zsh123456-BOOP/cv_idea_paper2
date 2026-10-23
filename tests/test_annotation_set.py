@@ -52,3 +52,12 @@ def test_the_tool_writes_the_selection_with_a_pilot_and_one_split_per_writer(tmp
     rest = json.loads((tmp_path/'rest'/'selection.json').read_text())['pages']
     first = {p['image_id'] for p in selection['pages']}
     assert {p['image_id'] for p in rest} == {f't{w}_{q}_1' for w in range(4) for q in (3, 4)} - first
+
+
+def test_an_export_leaves_out_only_the_questions_someone_worked_on(tmp_path):
+    import json
+    from revrender.data.annotation_set import annotated
+    export = tmp_path/'export.json'
+    export.write_text(json.dumps({'pages': {'a': {'revisions': [{'confirmed': False, 'ops': 0}]}, 'b': {'revisions': [{'ops': 3}]},
+                                            'c': {'revisions': [{'text_confirmed': True}]}, 'd': {}}}))
+    assert annotated([export]) == {'b', 'c'}

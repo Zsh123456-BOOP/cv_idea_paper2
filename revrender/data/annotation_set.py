@@ -11,7 +11,8 @@ is drawn from before any is drawn twice, and a writer gives a second question on
 stops at the first question that brings its lines to the target.  The first ``--pilot`` questions of the test split are the pilot.
 
 A labmate's writers never come in (``data.allowed``: the catalogue holds only allowed writers); ``--exclude`` leaves out the
-questions of earlier selections, and ``SPLIT=all`` takes every question that qualifies.
+questions of earlier selections, ``--exclude-export`` those an annotator already worked on in a review export, and ``SPLIT=all`` takes
+every question that qualifies.
 
 OUT/selection.json lists the questions (image id, split, writer, question, lines, revised lines, pilot) and the counts per split; only ids
 and counts, no text.
@@ -91,6 +92,16 @@ def choose(pool, target):
     return chosen
 
 
+def annotated(exports):
+    """The questions of review exports where the annotator confirmed, edited or wrote anything (a library export lists every question)."""
+    out = set()
+    for path in exports:
+        for image_id, page in json.loads(path.read_text())['pages'].items():
+            if any(r.get('confirmed') or r.get('ops') or r.get('text_confirmed') or r.get('deleted') for r in page.get('revisions', [])):
+                out.add(image_id)
+    return out
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument('--catalogue', type=Path, help='the line catalogue (default: configs/paths.toml)')
@@ -101,13 +112,14 @@ def main(argv=None):
     parser.add_argument('--min-edited', type=int, default=3)
     parser.add_argument('--pilot', type=int, default=5, help='the first N test questions are the pilot')
     parser.add_argument('--exclude', type=Path, action='append', default=[], help="an earlier selection.json whose questions are left out")
+    parser.add_argument('--exclude-export', type=Path, action='append', default=[], help='a review export whose annotated questions are left out')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
     targets = {k: v for k, v in (s.split('=') for s in args.lines)}
     require(set(targets) <= set(SPLITS.values()), f'splits are {sorted(SPLITS.values())}')
     catalogue = lines_module.read_catalogue(args.catalogue) if args.catalogue else lines_module.default_catalogue()
     writers = writer_splits(args.mapping, args.same_student)
-    excluded = {p['image_id'] for e in args.exclude for p in json.loads(e.read_text())['pages']}
+    excluded = {p['image_id'] for e in args.exclude for p in json.loads(e.read_text())['pages']} | annotated(args.exclude_export)
     pools = {split: [p for p in pool if p['image_id'] not in excluded]
              for split, pool in candidates(catalogue, writers, args.min_lines, args.min_edited).items()}
     pages = []
@@ -127,7 +139,7 @@ def main(argv=None):
     out = make_output_dir(args.output_dir)
     write_json(out/'selection.json', {'pages': pages, 'summary': summary, 'min_lines': args.min_lines, 'min_edited': args.min_edited, 'seed': SEED})
     refuse_outside([p['image_id'] for p in pages], 'question')
-    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.mapping, *args.exclude)},
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.mapping, *args.exclude, *args.exclude_export)},
                    summary=summary)
     print(json.dumps(summary, ensure_ascii=False))
     return 0
