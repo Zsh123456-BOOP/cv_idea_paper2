@@ -310,11 +310,11 @@ def as_boxes(source, arm, destination):
     print(json.dumps(summary), flush=True)
 
 
-def human_pairs(review_set, source, arm, destination):
+def human_pairs(review_set, source, arm, destination, no_replay=False):
     """The box remover's fine-tuning set (``data.review_set``) for the restorers, on their own native tiles: its human training regions
     tiled (``tiles``), its synthetic replay as the very pairs those strips were cut from (``as_boxes``'s ``pair_index``), and the pairs'
     own validation split (writers apart from the training ones) for their synthetic check.  The 16 fixed validation regions stay the
-    restorers' human validation, as in their synthetic training."""
+    restorers' human validation, as in their synthetic training.  ``no_replay``: the human regions alone."""
     out = make_output_dir(destination)
     records = json.loads((review_set/'records.json').read_text())
     native = json.loads((review_set/'training_native.json').read_text()); arrays = np.load(review_set/'training_native.npz')
@@ -326,7 +326,7 @@ def human_pairs(review_set, source, arm, destination):
             data.append(tile); targets.append(target)
             rows.append({'id': f"{r['id']}~{n}", 'group_uuid': r['group_uuid'], 'split': 'train', 'source': 'human_confirmed',
                          'clean': bool((tile == target).all())})
-    replay = [r for r in records if r['source'] == 'synthetic_replay' and r['split'] == 'train']
+    replay = [] if no_replay else [r for r in records if r['source'] == 'synthetic_replay' and r['split'] == 'train']
     require(all('pair_index' in r for r in replay), 'the replay was not cut from these pairs')
     for r in replay:
         i = r['pair_index']; data.append(np.asarray(x[i])); targets.append(np.asarray(y[i]))
@@ -341,7 +341,7 @@ def human_pairs(review_set, source, arm, destination):
                'train_tiles': sum(r['split'] == 'train' for r in rows), 'review_set': str(review_set), 'source_pairs': str(source)}
     write_json(out/'summary.json', summary)
     inputs = {str(p): digest(p) for p in [review_set/'run_manifest.json', review_set/'training_native.npz', source/'run_manifest.json']}
-    write_manifest(out, config={'review_set': str(review_set), 'source': str(source), 'arm': arm}, inputs=inputs,
+    write_manifest(out, config={'review_set': str(review_set), 'source': str(source), 'arm': arm, 'no_replay': no_replay}, inputs=inputs,
                    files={p.name: digest(p) for p in out.glob('*.npy')} | {'records.json': digest(out/'records.json')}, **summary)
     print(json.dumps(summary), flush=True)
 
@@ -358,8 +358,9 @@ def main(argv=None):
     if argv[:1]==['human']:
         p=argparse.ArgumentParser(description=human_pairs.__doc__);p.add_argument('--review-set',type=Path,required=True)
         p.add_argument('--source',type=Path,required=True);p.add_argument('--arm',choices=ARMS,default='gold_pixels')
+        p.add_argument('--no-replay',action='store_true',help='the human regions alone, without the synthetic replay')
         p.add_argument('--output-dir',type=Path,required=True)
-        a=p.parse_args(argv[1:]);human_pairs(a.review_set,a.source,a.arm,a.output_dir);return
+        a=p.parse_args(argv[1:]);human_pairs(a.review_set,a.source,a.arm,a.output_dir,a.no_replay);return
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('corpus','mapping','same-student','human-validation','gold-bank','detections','templates','output-dir'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--copies',type=int,default=4);p.add_argument('--min-score',type=float,default=.8)

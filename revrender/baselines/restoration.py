@@ -164,18 +164,21 @@ def main(argv=None):
     p.add_argument('--patience',type=int,default=0)
     p.add_argument('--ema',action='store_true')
     p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
+    p.add_argument('--budget',help="a budget section of the protocol (passes over the data, evaluations, learning-rate scale): "
+                   "default [finetune] with --init, the model's own [training] budget without")
     pre,_=p.parse_known_args(argv)
     if pre.protocol:
         protocol=tomllib.loads(pre.protocol.read_text())
         p.set_defaults(**protocol['training'][pre.model])
     args=p.parse_args(argv)
     args.learning_rate_scale=1.
-    if args.init:
-        require(pre.protocol is not None and 'finetune' in protocol,'fine-tuning needs the protocol with its [finetune] budget')
-        rule=protocol['finetune'];rows=json.loads((args.data/'records.json').read_text())
+    budget=args.budget or ('finetune' if args.init else None)
+    if budget:
+        require(pre.protocol is not None and budget in protocol,f'the protocol has no [{budget}] budget')
+        rule=protocol[budget];rows=json.loads((args.data/'records.json').read_text())
         args.steps=max(rule['evaluations'],round(rule['passes']*sum(r['split']=='train' for r in rows)/args.batch_size))
         args.eval_every=max(1,args.steps//rule['evaluations']);args.min_steps=0;args.patience=0
-        args.learning_rate_scale=rule['learning_rate_scale']
+        args.learning_rate_scale=rule.get('learning_rate_scale',1.)
     require(args.steps>0 and args.batch_size>0 and args.eval_every>0,'invalid budget')
     random.seed(SEED);np.random.seed(SEED)
     experiment=Experiment(args)

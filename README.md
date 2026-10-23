@@ -19,6 +19,7 @@
 - 学习曲线（`scripts/run_learning_curve.sh`，标记 `paper2_learning_curve20261022/`）：我们的模型和全部七个基线在 50 / 100 处真实区域上同样微调（`review_set --training-regions N`：整个书写者按种子 42 的固定顺序取到 N 处为止，小的子集在大的里面），0 与 201 处两点用上一个实验的。
 - 合成 v2（`scripts/run_realistic_synthesis.sh`，标记 `paper2_synthetic_v2_20261022/`）：宿主、份数、种子同 v1，素材按真实大小对着宿主的字贴（`restoration_pairs --real-geometry`），长 1.6 倍、来回至多 3 道、弯曲至多 0.15 字高、粗 1.3 倍、比字的中位灰度深 20；这组参数是对 201 处训练区域划线统计最接近的一组（只用训练区域，不看验证）。我们的模型、NAFNet、DE-GAN 用 v1 的预算在 v2 上训练，同规则选版，与 v1 比读回和错误分区。共用的步骤在 `scripts/_restorers.sh`，候选版本列表 `unified_restoration candidates`。
 - 更宽的验证（`scripts/run_wider_validation.sh EXPORT`，标记 `paper2_wider_validation20261022/`）：在 16 处固定验证、41 处验证划线之外，加上测试题开发集一半（`configs/test_halves.json`）里用户已确认的区域（`unified_restoration prepare --dev-export --dev-pages --dev-questions`：像素已确认的按 `reviewed_crop` 切，文字已确认且可读的按框加 6 像素切；封存的一半不读），把上面三个实验评过的全部版本按阶段重评，`choose --splits val dev` 合起来选，阶段之间照旧 `compare`。不训练。
+- 只用真实数据（`scripts/run_real_only.sh`，标记 `paper2_real_only20261023/`）：COR、NAFNet、DE-GAN 只在 201 处人工区域上训练，不混合成回放（`restoration_pairs human --no-replay`）：(a) 从头训练（`restoration.toml [real_only]`：180 遍、全学习率、10 次验证）；(b) 从同一合成版继续、只用真实、更久（`[finetune_long]`：51.4 遍、十分之一学习率、8 次验证）。按验证 + 开发集选版，与现在的「合成训练 + 混合微调」配对比较。
 - `unified_restoration compare` 给每个模型微调前后读回的配对差（按书写者重抽样的 95% 区间）；`eval.restoration_errors` 给错误落在哪（压字处 / 远离处、条带放大 / 缩小）和真实与合成划线的统计（笔宽比、碰字比例、深浅、长度、直度）。只用验证集。
 
 第二篇论文（整道题的涂改识别）的代码库。第一篇（RevRender + ExamRev，涂改实例分割）的模型、训练、评测、基线和工具，从旧仓库整理成一个普通的 Python 包。旧仓库的脚本是编号的一次性实验，互相按路径加载、用 SHA-256 钉住；这里是正常的包、正常的 import、一个命令行入口一件事。

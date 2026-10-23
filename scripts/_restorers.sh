@@ -17,8 +17,10 @@ evaluate_versions() {   # LIST OUT LOG: every version of LIST (eval.unified_rest
 chosen_of() {   # SELECTION FAMILY: the chosen version's weights (a box remover's .pt, a restorer's step directory)
     "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1]))[sys.argv[2]]["spec"]; print(s["checkpoint"] if s["type"]=="own" else s["run"]+"/"+s["checkpoint"])' "$1/selection.json" "$2"
 }
-finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT: a restorer fine-tuned from INIT on DATA (configs/restoration.toml [finetune])
-    local model="$1" card="$2" numa="$3" init="$4" data="$5" out="$6" runtime=$PY upstream=$UP
+finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT [BUDGET]: a restorer trained on DATA from INIT ('-': its own random start) with a
+    # budget of configs/restoration.toml (default [finetune] from INIT)
+    local model="$1" card="$2" numa="$3" init="$4" data="$5" out="$6" budget="${7:-}" runtime=$PY upstream=$UP start=()
+    [ "$init" = - ] || start=(--init "$init"); [ -z "$budget" ] || start+=(--budget "$budget")
     [ ! -e "$out/selection.json" ] || return 0
     [ "$model" != StainRestorer ] || upstream=$STAIN_UP
     (
@@ -31,6 +33,6 @@ finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT: a restorer fine-tuned f
         wait_for_gpu_memory "$card" 20000 "$idle"
         bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$runtime" -m revrender.baselines.restoration --model "$model" \
             --arm gold_pixels --protocol "$ROOT/configs/restoration.toml" --data "$data" --upstream "$upstream" \
-            --human-validation "$VAL/validation_native.json" --init "$init" --output-dir "$out" > "$out.log" 2>&1 < /dev/null
+            --human-validation "$VAL/validation_native.json" "${start[@]}" --output-dir "$out" > "$out.log" 2>&1 < /dev/null
     )
 }

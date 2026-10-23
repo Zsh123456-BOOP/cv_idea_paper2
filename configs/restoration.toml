@@ -72,3 +72,16 @@ patience = 6
 passes = 12.85
 learning_rate_scale = 0.1
 evaluations = 4
+
+# Two arms against [finetune] (2026-10-23, user: does the synthetic data hold the restorers back?), on the human regions alone (no
+# synthetic replay): [finetune_long] from the same chosen synthetic version, four times the passes and twice the evaluations;
+# [real_only] from the restorer's own random initialisation, its full learning rate, as many updates as a short synthetic run.
+[finetune_long]
+passes = 51.4
+learning_rate_scale = 0.1
+evaluations = 8
+
+[real_only]
+passes = 180
+learning_rate_scale = 1.0
+evaluations = 10
