@@ -269,6 +269,59 @@ def tiles(image, mask):
     return [(canvas[y:y+SIZE, x:x+SIZE], target[y:y+SIZE, x:x+SIZE]) for y in at(ph) for x in at(pw)]
 
 
+def question_gold(page, revisions):
+    """(grey, strike mask, region mask) of a whole question: the confirmed pixels of every region (``data.pixel_masks.reviewed_crop``)
+    and the union of the regions' polygons, both in the question's own coordinates."""
+    from .pixel_masks import region_pixels, reviewed_crop
+    grey = np.asarray(page.convert('L')); gold = np.zeros(grey.shape, bool); regions = np.zeros(grey.shape, bool)
+    for r in revisions:
+        if r.get('deleted') or not r.get('confirmed'): continue
+        _, mask = reviewed_crop(page, r); l, t, rr, b = r['box']
+        gold[t:b, l:rr] |= mask.astype(bool); regions[t:b, l:rr] |= region_pixels(r.get('region'), r['box'])
+    return grey, gold, regions
+
+
+def question_pairs(export, pages, ids, review_set, source, arm, whole, destination):
+    """The human training data of a whole-question test (user 2026-10-23): the review set's native training crops (``human_pairs``
+    without replay), and the questions ``ids`` of an export whose every region is confirmed -- whole (``whole``: every 256 tile of the
+    question, the ink outside its regions kept) or as the crops of their regions only -- with the pairs' validation split."""
+    from .pixel_masks import reviewed_crop
+    data = json.loads(export.read_text()); chosen = Path(ids).read_text().split()
+    native = json.loads((review_set/'training_native.json').read_text()); arrays = np.load(review_set/'training_native.npz')
+    pairs = json.loads((source/'records.json').read_text())
+    x = np.load(source/(arm+'.npy'), mmap_mode='r'); y = np.load(source/'targets.npy', mmap_mode='r')
+    images, targets, rows = [], [], []
+    def add(items, writer, name, kind):
+        for n, (tile, target) in enumerate(items):
+            images.append(tile); targets.append(target)
+            rows.append({'id': f'{name}~{n}', 'group_uuid': writer, 'split': 'train', 'source': kind, 'clean': bool((tile == target).all())})
+    for k, r in enumerate(native):
+        add(tiles(arrays[f'image_{k}'], arrays[f'mask_{k}']), r['group_uuid'], r['id'], 'human_confirmed')
+    for image_id in chosen:
+        revisions = data['pages'][image_id]['revisions']
+        require(revisions and all(r.get('confirmed') for r in revisions if not r.get('deleted')), f'{image_id}: a region is not confirmed')
+        with Image.open(pages/(image_id+'.png')) as page:
+            if whole:
+                grey, gold, _ = question_gold(page, revisions); add(tiles(grey, gold), image_id.split('_')[0], image_id, 'whole_question')
+            else:
+                for r in revisions:
+                    if r.get('confirmed') and not r.get('deleted'):
+                        image, mask = reviewed_crop(page, r); add(tiles(image, mask), image_id.split('_')[0], image_id+'#'+r['id'], 'question_region')
+    train = {r['group_uuid'] for r in rows}
+    for i, r in enumerate(pairs):
+        if r['split'] == 'val' and r['group_uuid'] not in train:
+            images.append(np.asarray(x[i])); targets.append(np.asarray(y[i]))
+            rows.append({'id': r['id'], 'group_uuid': r['group_uuid'], 'split': 'val', 'source': 'synthetic_validation', 'clean': r['clean']})
+    out = make_output_dir(destination)
+    np.save(out/(arm+'.npy'), np.stack(images)); np.save(out/'targets.npy', np.stack(targets)); write_json(out/'records.json', rows)
+    summary = {'counts': dict(Counter(r['source']+'/'+r['split'] for r in rows)), 'questions': len(chosen), 'whole': whole}
+    write_json(out/'summary.json', summary)
+    inputs = {str(p): digest(p) for p in [export, Path(ids), review_set/'run_manifest.json', review_set/'training_native.npz', source/'run_manifest.json']}
+    write_manifest(out, config={'export': str(export), 'pages': str(pages), 'ids': str(ids), 'review_set': str(review_set), 'whole': whole},
+                   inputs=inputs, files={p.name: digest(p) for p in out.glob('*.npy')} | {'records.json': digest(out/'records.json')}, **summary)
+    print(json.dumps(summary), flush=True)
+
+
 def as_boxes(source, arm, destination):
     """The same pairs as the box remover's training set (``data.synthetic_set --crops``): a crop round each pair's strike -- the
     pixels it darkened by more than ``REMOVED``, the box of the writing they void, a random margin -- letterboxed onto the strip, one
@@ -355,6 +408,11 @@ def main(argv=None):
         p=argparse.ArgumentParser(description=as_boxes.__doc__);p.add_argument('--source',type=Path,required=True)
         p.add_argument('--arm',choices=ARMS,default='gold_pixels');p.add_argument('--output-dir',type=Path,required=True)
         a=p.parse_args(argv[1:]);as_boxes(a.source,a.arm,a.output_dir);return
+    if argv[:1]==['questions']:
+        p=argparse.ArgumentParser(description=question_pairs.__doc__)
+        for name in ('export','pages','ids','review-set','source','output-dir'):p.add_argument('--'+name,type=Path,required=True)
+        p.add_argument('--arm',choices=ARMS,default='gold_pixels');p.add_argument('--whole',action='store_true',help='every tile of each question, not only its regions')
+        a=p.parse_args(argv[1:]);question_pairs(a.export,a.pages,a.ids,a.review_set,a.source,a.arm,a.whole,a.output_dir);return
     if argv[:1]==['human']:
         p=argparse.ArgumentParser(description=human_pairs.__doc__);p.add_argument('--review-set',type=Path,required=True)
         p.add_argument('--source',type=Path,required=True);p.add_argument('--arm',choices=ARMS,default='gold_pixels')
