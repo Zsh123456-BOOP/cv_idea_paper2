@@ -137,3 +137,20 @@ def test_the_development_half_gives_pixel_cases_and_readable_ocr_crops_of_confir
     development(SimpleNamespace(dev_export=tmp_path/'export.json',dev_pages=tmp_path,dev_questions=tmp_path/'halves.json'),out,rows,cases,arrays)
     assert [c['id'] for c in cases]==['q1_1#a'] and arrays['gold_0'].sum()==mask.sum()
     assert [r['line_id'] for r in rows]==['q1_1#a'] and rows[0]['split']=='dev'      # the sealed question is never read
+
+
+def test_the_human_ceiling_erases_the_confirmed_pixels_in_the_very_window_of_the_evaluation_crop(tmp_path):
+    from PIL import Image
+    from revrender.data.pixel_masks import encode
+    from revrender.eval.unified_restoration import development, human_pack
+    page=np.full((40,80),255,np.uint8);page[10:30,10:70]=40;Image.fromarray(page).save(tmp_path/'q1_1.png')
+    mask=np.zeros((20,60),bool);mask[9:11,:]=True
+    r=dict(id='a',box=[10,10,70,30],region=[[10,10],[70,10],[70,30],[10,30]],runs=encode(mask),text='$x+1$',confirmed=True,text_confirmed=True)
+    (tmp_path/'export.json').write_text(json.dumps({'pages':{'q1_1':{'revisions':[r]}}}));(tmp_path/'halves.json').write_text(json.dumps({'development':['q1_1']}))
+    inputs=tmp_path/'inputs';(inputs/'crops').mkdir(parents=True);rows=[]
+    development(SimpleNamespace(dev_export=tmp_path/'export.json',dev_pages=tmp_path,dev_questions=tmp_path/'halves.json'),inputs,rows,[],{})
+    (inputs/'pack.json').write_text(json.dumps({'rows':rows}))
+    human_pack(SimpleNamespace(inputs=inputs,dev_export=tmp_path/'export.json',dev_pages=tmp_path,output_dir=tmp_path/'human'))
+    row=json.loads((tmp_path/'human'/'pack.json').read_text())['rows'][0]
+    crop=np.asarray(Image.open(tmp_path/'human'/row['images']['erased']))
+    assert row['model']=='dev__human' and crop.shape==(32,72) and (crop[6+9:6+11,6:66]==255).all() and (crop[6+5,6:66]==40).all()

@@ -199,6 +199,54 @@ def development(args, out, rows, cases, arrays):
     return [args.dev_export, args.dev_questions, *used]
 
 
+def human_pack(args):
+    """The ceiling: the development strikes whose pixels the annotator also confirmed, erased as the annotator drew it (the confirmed
+    pixels made white), cut with the very windows of an evaluation's OCR crops, as a line pack for ``recognize_lines``."""
+    from ..data.pixel_masks import has_uncertainty, reviewed_crop
+    export = json.loads(args.dev_export.read_text())
+    rows = [r for r in json.loads((args.inputs/'pack.json').read_text())['rows'] if r['split'] == 'dev']
+    out = make_output_dir(args.output_dir); (out/'crops').mkdir(); pack = []; pages = {}
+    for row in rows:
+        image_id, rid = row['line_id'].split('#', 1)
+        r = next(x for x in export['pages'][image_id]['revisions'] if x['id'] == rid)
+        if not r.get('confirmed') or has_uncertainty(r): continue
+        if image_id not in pages:
+            with Image.open(args.dev_pages/(image_id+'.png')) as page: pages[image_id] = page.convert('L')
+        page = pages[image_id]; grey = np.asarray(page).copy()
+        crop, mask = reviewed_crop(page, r); l, t = r['box'][0], r['box'][1]
+        erased = grey.copy(); erased[t:t+mask.shape[0], l:l+mask.shape[1]][mask.astype(bool)] = 255
+        points = np.asarray(r['region']); wl, wt = np.maximum(0, points.min(0)-6).astype(int)
+        wr, wb = np.minimum([grey.shape[1], grey.shape[0]], points.max(0)+6).astype(int)
+        require([int(wr-wl), int(wb-wt)] == row['size'], 'not the window of the evaluation crop')
+        path = f'crops/{len(pack):05d}.png'; Image.fromarray(erased[wt:wb, wl:wr]).save(out/path)
+        pack.append({**row, 'id': 'dev|human|'+row['line_id'], 'model': 'dev__human', 'images': {'erased': path}})
+    write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': pack})
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [args.inputs/'pack.json', args.dev_export]}, rows=len(pack))
+    print(json.dumps({'strikes': len(pack), 'of_development': len(rows)}), flush=True)
+
+
+def ceiling(args):
+    """Read-back on the strikes of the human ceiling: the annotator's erasure (``human_pack`` read by ``recognize_lines``), the scan and
+    every chosen version of the given choices (``choose`` outputs), each on exactly those strikes."""
+    from .revision_boxes import held
+    pack = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
+    human = {}
+    for line in (args.readings/'predictions.jsonl').read_text(encoding='utf-8').splitlines():
+        g = json.loads(line); r = pack[g['id']]; h = held(r['text'], g['text'])
+        if h is not None: human[r['line_id']] = h
+    result = {'strikes': len(human), 'human': float(np.mean(list(human.values())))}
+    for chosen in args.chosen:
+        config = json.loads((chosen/'run_manifest.json').read_text())['config']
+        scores = row_scores(Path(config['evaluation']), ('dev',)); stage = chosen.parent.name
+        selection = json.loads((chosen/'selection.json').read_text())
+        result[stage] = {'scan': float(np.mean([scores['scan'][l] for l in human]))}
+        for family, c in selection.items():
+            result[stage][family] = float(np.mean([scores[c['chosen']['name']][l] for l in human]))
+    out = make_output_dir(args.output_dir); write_json(out/'ceiling.json', result)
+    write_manifest(out, config=to_jsonable(args), inputs={str(args.readings/'predictions.jsonl'): digest(args.readings/'predictions.jsonl')})
+    print(json.dumps(result), flush=True)
+
+
 def restore_case(restore, grey, windows, regions):
     raw = grey.astype(np.float32)/255; restored = raw.copy()
     for window, region in zip(windows, regions):
@@ -378,13 +426,19 @@ def main(argv=None):
     p.add_argument('--own', action='append', help='FAMILY=FOLDER of step_<n>.pt'); p.add_argument('--every', type=int)
     p.add_argument('--run', action='append', help="FAMILY=RUN of a restorer (its kept step_<n> directories)")
     for key in ('upstream', 'stain-upstream', 'output'): p.add_argument('--'+key, type=Path, required=key == 'output')
+    p = sub.add_parser('human-pack')
+    for key in ('inputs','dev-export','dev-pages','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p = sub.add_parser('ceiling')
+    for key in ('pack','readings','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p.add_argument('--chosen',type=Path,action='append',required=True,help='a choose output whose versions are read on the same strikes')
     p = sub.add_parser('choose')
     for key in ('evaluation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     p.add_argument('--splits', nargs='+', default=['val'], help='the splits read-back and pixel F1 are pooled over (val, dev)')
     p = sub.add_parser('compare')
     for key in ('before','after','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     args = parser.parse_args(argv)
-    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs,'candidates':candidates,'choose':choose,'compare':compare}[args.command](args)
+    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs,'candidates':candidates,'choose':choose,'compare':compare,
+     'human-pack':human_pack,'ceiling':ceiling}[args.command](args)
 
 
 if __name__ == '__main__': main()
