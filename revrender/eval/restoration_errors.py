@@ -51,13 +51,13 @@ def zones(args):
     cases = json.loads((root/'inputs/pixels.json').read_text()); archive = np.load(root/'inputs/pixels.npz')
     specs = json.loads((root/'inputs/models.json').read_text())
     from .unified_restoration import row_scores
-    reads = row_scores(root)
+    reads = row_scores(root, args.splits)
     result = {}
     for spec in specs:
         restored = np.load(root/'runs'/spec['name']/'restored_pixels.npz')
         totals = {}; by_scale = {'enlarged': np.zeros(3, np.int64), 'shrunk': np.zeros(3, np.int64)}
         for k, case in enumerate(cases):
-            if case['split'] != 'val': continue
+            if case['split'] not in args.splits: continue
             image, gold, domain = archive[f'image_{k}'], archive[f'gold_{k}'], archive[f'domain_{k}']
             for name, (n, wrong) in zone_counts(image, gold, domain, restored[f'image_{k}']).items():
                 totals.setdefault(name, [0, 0]); totals[name][0] += n; totals[name][1] += wrong
@@ -66,13 +66,13 @@ def zones(args):
             by_scale['enlarged' if scale >= 1 else 'shrunk'] += [(removed & truth).sum(), (removed & ~truth & ink).sum(), (~removed & truth).sum()]
         f1 = {k: float(2*v[0]/max(1, 2*v[0]+v[1]+v[2])) for k, v in by_scale.items()}
         result[spec['name']] = {'error_rate': {k: v[1]/max(1, v[0]) for k, v in totals.items()}, 'pixels': {k: v[0] for k, v in totals.items()},
-                                'f1_by_strip_scale': f1, 'cases_by_strip_scale': {k: sum(1 for c, case in enumerate(cases) if case['split'] == 'val'
+                                'f1_by_strip_scale': f1, 'cases_by_strip_scale': {k: sum(1 for c, case in enumerate(cases) if case['split'] in args.splits
                                     and (min(CANVAS[1]/archive[f'image_{c}'].shape[1], CANVAS[0]/archive[f'image_{c}'].shape[0]) >= 1) == (k == 'enlarged'))
                                     for k in by_scale},
                                 'read_back': reads.get(spec['name'], {})}
     result['scan'] = {'read_back': reads.get('scan', {})}
     write_json(args.output, {'definitions': {'near': NEAR, 'removed_above': REMOVED}, 'models': result,
-                             'provenance': provenance(config={'evaluation': str(root)}, inputs={str(root/'inputs/models.json'): digest(root/'inputs/models.json')})})
+                             'provenance': provenance(config={'evaluation': str(root), 'splits': list(args.splits)}, inputs={str(root/'inputs/models.json'): digest(root/'inputs/models.json')})})
     for name, r in result.items():
         if 'error_rate' in r: print(name, {k: round(100*v, 1) for k, v in r['error_rate'].items()}, {k: round(100*v, 1) for k, v in r['f1_by_strip_scale'].items()})
 
@@ -132,6 +132,7 @@ def strokes(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__); sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('zones'); p.add_argument('--evaluation', type=Path, required=True); p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--splits', nargs='+', default=['val'], help='the pixel cases and strikes counted (val, dev)')
     p = sub.add_parser('strokes')
     for key in ('review-set', 'pairs', 'output'): p.add_argument('--'+key, type=Path, required=True)
     p.add_argument('--sample', type=int, default=1000)
