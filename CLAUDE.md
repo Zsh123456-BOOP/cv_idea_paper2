@@ -136,3 +136,4 @@ StainRestorer 状态（2026-10-10 核验更新）：`/home/zsh/hme/outputs/paper
 
 2026-10-23 全量库 `全部涂改标注/` 的预填换成 NAFNet（合成预训练 + 只用 201 处真实区域加长微调，step_364；验证 + 开发集上要改的像素 54.3%、原字误擦 6.8%），人工记录不动，旧目录在 `work/page_backups/`。之后每标一批就按 README「全量库预填换成 NAFNet」那条重新微调（约 3 分钟）再预填；我们的框内模型不再用于预填。
 2026-10-23 训练题改成分批、像素和被划文字一次标完（用户定）：`scripts/build_training_batch.sh`。第 1 批桌面 `训练集涂改与文字标注_第1批.html`（包 `paper2-struck-pixels-bab867aaa522`，49 题 / 304 处，NAFNet step_364 预填像素、32B 读擦线小块写文字初稿，服务器 `paper2_training_batch1_*`）；换页前在无头 Chrome 验证过自动保存。用户导出后放 `paper2_training_batch1_returned/export.json`，再微调 NAFNet、出下一批。
+2026-10-23 桌面清理（用户要求）：只留 `全部涂改标注.html`（及目录）、`测试集涂改与文字标注.html`、`训练集涂改与文字标注_第1批.html`；其余 8 个旧页（划线区域框选、划线精细标注三份、涂改精修与文字标注、两份灰度挖洞对比、补被划文字）移到 `work/page_backups/desktop_archive_20261023/`，没有删除。上面各条里提到的这些桌面路径以此为准。
