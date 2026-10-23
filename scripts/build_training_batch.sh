@@ -19,7 +19,8 @@ earlier=(); for s in "$O"/paper2_training_batch*_selection/selection.json; do [ 
 exports=(); for e in "$O/paper2_pixel_round_struck20261012_inputs/training_annotations.json" "$FT/annotations_0.json" "$FT/annotations_1.json" \
                     "$LAB/全量划线标注_2026-10-11.json" "$LAB/划线精细标注_paper2-struck-pixels-5a688fece9ad_2026-10-11.json" \
                     "$O"/paper2_training_batch*_returned/export.json; do [ -e "$e" ] && exports+=(--exclude-export "$e"); done
-"$PY" -m revrender.data.annotation_set --mapping "$FT/index_manifest.json" --same-student "$FT/same_student_pairs.json" --lines "train=$LINES" \
+"$PY" -m revrender.data.annotation_set --catalogue /home/zsh/hme/code_358_spatial_v1/gold/line_edit_all5002_policy_decisions_20260814_v1/canonical/exact_crops_46902.jsonl \
+    --mapping "$FT/index_manifest.json" --same-student "$FT/same_student_pairs.json" --lines "train=$LINES" \
     --pilot 0 --exclude "$O/paper2_annotation_labels_allowed20261021/selection.json" "${earlier[@]}" "${exports[@]}" --output-dir "${T}_selection"
 "$PY" -c 'import json,sys; print("\n".join(p["image_id"] for p in json.load(open(sys.argv[1]))["pages"]))' "${T}_selection/selection.json" > "${T}_selection/ids.txt"
 bash "$ROOT/scripts/launch_gpu_job.sh" "$C2" 1 "${T}_pack" -- "$PY" -m revrender.tools.annotate.pixel_library infer --restorer "$O/$RUN" \
