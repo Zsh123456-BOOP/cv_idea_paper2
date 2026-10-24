@@ -259,14 +259,18 @@ def darken_pairs(source,destination):
 REMOVED = 51        # a pixel the strike darkened by more than 0.2 of the range: the evaluation's "removed" (baselines.restoration)
 
 
-def tiles(image, mask):
-    """256 tiles of a native crop the way ``baselines.restoration.restore_native`` reads it: centred on white when shorter, stride 192;
-    each tile with its target, the crop with the pixels to remove made white."""
-    h, w = image.shape; ph, pw = max(SIZE, h), max(SIZE, w); oy, ox = (ph-h)//2, (pw-w)//2
-    canvas = np.full((ph, pw), 255, np.uint8); canvas[oy:oy+h, ox:ox+w] = image
-    target = canvas.copy(); target[oy:oy+h, ox:ox+w][mask.astype(bool)] = 255
+def canvas_tiles(array, fill):
+    """The 256 tiles ``baselines.restoration.restore_native`` reads of a native crop: centred on ``fill`` when shorter, stride 192."""
+    h, w = array.shape; ph, pw = max(SIZE, h), max(SIZE, w); oy, ox = (ph-h)//2, (pw-w)//2
+    canvas = np.full((ph, pw), fill, array.dtype); canvas[oy:oy+h, ox:ox+w] = array
     at = lambda n: sorted(set(list(range(0, n-SIZE+1, 192))+[n-SIZE]))
-    return [(canvas[y:y+SIZE, x:x+SIZE], target[y:y+SIZE, x:x+SIZE]) for y in at(ph) for x in at(pw)]
+    return [canvas[y:y+SIZE, x:x+SIZE] for y in at(ph) for x in at(pw)]
+
+
+def tiles(image, mask):
+    """The tiles of a native crop (``canvas_tiles`` on white), each with its target: the crop with the pixels to remove made white."""
+    target = image.copy(); target[mask.astype(bool)] = 255
+    return list(zip(canvas_tiles(image, 255), canvas_tiles(target, 255)))
 
 
 def question_gold(page, revisions):
@@ -363,18 +367,22 @@ def as_boxes(source, arm, destination):
     print(json.dumps(summary), flush=True)
 
 
-def human_pairs(review_set, source, arm, destination, no_replay=False):
+def human_pairs(review_set, source, arm, destination, no_replay=False, detector=None):
     """The box remover's fine-tuning set (``data.review_set``) for the restorers, on their own native tiles: its human training regions
     tiled (``tiles``), its synthetic replay as the very pairs those strips were cut from (``as_boxes``'s ``pair_index``), and the pairs'
     own validation split (writers apart from the training ones) for their synthetic check.  The 16 fixed validation regions stay the
-    restorers' human validation, as in their synthetic training.  ``no_replay``: the human regions alone."""
+    restorers' human validation, as in their synthetic training.  ``no_replay``: the human regions alone.  ``detector``: a detection
+    run whose masks hint each human tile (``data.separation.detector_hint``, hint.npy; a synthetic tile's hint is simulated)."""
+    from .separation import detector_hint
     out = make_output_dir(destination)
     records = json.loads((review_set/'records.json').read_text())
     native = json.loads((review_set/'training_native.json').read_text()); arrays = np.load(review_set/'training_native.npz')
     pairs = json.loads((source/'records.json').read_text())
     x = np.load(source/(arm+'.npy'), mmap_mode='r'); y = np.load(source/'targets.npy', mmap_mode='r')
-    data, targets, rows = [], [], []
+    data, targets, rows, hints = [], [], [], []
     for k, r in enumerate(native):
+        if detector:
+            hints += canvas_tiles(detector_hint(pages.read_output(detector, r['page'])[1], r['box'], arrays[f'image_{k}']), 0)
         for n, (tile, target) in enumerate(tiles(arrays[f'image_{k}'], arrays[f'mask_{k}'])):
             data.append(tile); targets.append(target)
             rows.append({'id': f"{r['id']}~{n}", 'group_uuid': r['group_uuid'], 'split': 'train', 'source': 'human_confirmed',
@@ -390,11 +398,14 @@ def human_pairs(review_set, source, arm, destination, no_replay=False):
             data.append(np.asarray(x[i])); targets.append(np.asarray(y[i]))
             rows.append({'id': r['id'], 'group_uuid': r['group_uuid'], 'split': 'val', 'source': 'synthetic_validation', 'clean': r['clean']})
     np.save(out/(arm+'.npy'), np.stack(data)); np.save(out/'targets.npy', np.stack(targets)); write_json(out/'records.json', rows)
+    if detector: np.save(out/'hint.npy', np.stack(hints + [np.zeros((SIZE, SIZE), np.uint8)]*(len(rows)-len(hints))))
     summary = {'counts': dict(Counter(r['source']+'/'+r['split'] for r in rows)), 'human_regions': len(native),
                'train_tiles': sum(r['split'] == 'train' for r in rows), 'review_set': str(review_set), 'source_pairs': str(source)}
     write_json(out/'summary.json', summary)
-    inputs = {str(p): digest(p) for p in [review_set/'run_manifest.json', review_set/'training_native.npz', source/'run_manifest.json']}
-    write_manifest(out, config={'review_set': str(review_set), 'source': str(source), 'arm': arm, 'no_replay': no_replay}, inputs=inputs,
+    inputs = {str(p): digest(p) for p in [review_set/'run_manifest.json', review_set/'training_native.npz', source/'run_manifest.json',
+                                          *([detector/'run_manifest.json'] if detector else [])]}
+    write_manifest(out, config={'review_set': str(review_set), 'source': str(source), 'arm': arm, 'no_replay': no_replay,
+                                'detector': str(detector) if detector else None}, inputs=inputs,
                    files={p.name: digest(p) for p in out.glob('*.npy')} | {'records.json': digest(out/'records.json')}, **summary)
     print(json.dumps(summary), flush=True)
 
@@ -417,8 +428,9 @@ def main(argv=None):
         p=argparse.ArgumentParser(description=human_pairs.__doc__);p.add_argument('--review-set',type=Path,required=True)
         p.add_argument('--source',type=Path,required=True);p.add_argument('--arm',choices=ARMS,default='gold_pixels')
         p.add_argument('--no-replay',action='store_true',help='the human regions alone, without the synthetic replay')
+        p.add_argument('--detector',type=Path,help="a detection run: its masks hint the human tiles (hint.npy, for RevSep)")
         p.add_argument('--output-dir',type=Path,required=True)
-        a=p.parse_args(argv[1:]);human_pairs(a.review_set,a.source,a.arm,a.output_dir,a.no_replay);return
+        a=p.parse_args(argv[1:]);human_pairs(a.review_set,a.source,a.arm,a.output_dir,a.no_replay,a.detector);return
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('corpus','mapping','same-student','human-validation','gold-bank','detections','templates','output-dir'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--pages',type=Path,action='append',required=True);p.add_argument('--copies',type=int,default=4);p.add_argument('--min-score',type=float,default=.8)

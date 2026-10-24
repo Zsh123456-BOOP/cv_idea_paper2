@@ -29,6 +29,20 @@ validation_limit = 64
 min_steps = 40000
 patience = 6
 
+# Ours (models.separation, plan 2026-10-25): NAFNet's budget; the hint simulated on synthetic pairs (data.separation); the head
+# weights set once from the gradient balance of a smoke run, then fixed.
+[training.RevSep]
+steps = 80000
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 40000
+patience = 6
+hint_reach = 5
+hint_drop = 0.3
+erase_weight = 1.0
+cross_weight = 1.0
+
 [training.Restormer]
 steps = 80000
 batch_size = 4

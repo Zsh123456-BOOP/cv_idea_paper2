@@ -1,7 +1,9 @@
 """Frozen-model comparison on shared native pixel and OCR validation/test inputs.
 
 Every restorer receives identical source crops; architecture-specific inference geometry remains as trained.  ``choose`` picks each
-family's version from candidate versions evaluated together (read-back on validation), ``compare`` pairs two such choices.
+family's version from candidate versions evaluated together (read-back on validation), ``compare`` pairs two such choices.  With
+``--detector`` every pixel case and OCR crop also gets the detector's masks on it (``data.separation.detector_hint``, hints.npz), which
+only a hinted model (RevSep) reads; a spec with ``"composed": false`` reads RevSep's H1 without its composition.
 """
 import argparse
 import json
@@ -12,7 +14,7 @@ import numpy as np
 from PIL import Image
 
 from .. import pages
-from ..baselines.restoration import removal_counts, removal_metrics, restore_native
+from ..baselines.restoration import HINTED, removal_counts, removal_metrics, restore_native
 from ..data.clean_pages import review_clean
 from ..util import digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 from .revision_boxes import prepare as prepare_text, read_labels, unpacked
@@ -68,7 +70,7 @@ def extend_inputs(args):
     for spec in prior: verify_files(spec['sha256'])
     out=make_output_dir(args.output_dir); inputs=make_output_dir(out/'inputs'); runs=make_output_dir(out/'runs')
     copied={}
-    for name in ('crops','protocol.json','pack.json','pixels.json','pixels.npz','counts.json'):
+    for name in ('crops','protocol.json','pack.json','pixels.json','pixels.npz','counts.json',*(['hints.npz'] if (source/'hints.npz').exists() else [])):
         src=source/name; dst=inputs/name
         if src.is_dir(): shutil.copytree(src,dst)
         else: shutil.copyfile(src,dst)
@@ -118,12 +120,18 @@ def prepare_inputs(args):
         if i not in scans:
             with Image.open(files[i]) as im: scans[i] = review_clean(np.asarray(im.convert('L')))
         return scans[i]
-    (out/'crops').mkdir(); rows = []
+    (out/'crops').mkdir(); rows = []; hints = {}; detected = {}
+    def hint_of(image_id, window, crop):
+        if args.detector is None: return
+        from ..data.separation import detector_hint
+        if image_id not in detected: detected[image_id] = pages.read_output(args.detector, image_id)[1]
+        return detector_hint(detected[image_id], window, crop)
     for split, image_id, r in revisions:
         grey = scan(image_id); points = np.asarray(r['region'])
         l, t = np.maximum(0, points.min(0)-6).astype(int)
         rr, b = np.minimum([grey.shape[1], grey.shape[0]], points.max(0)+6).astype(int)
         require(rr > l and b > t, 'empty OCR crop')
+        if args.detector: hints[f'ocr_{len(rows)}'] = hint_of(image_id, (l, t, rr, b), grey[t:b, l:rr])
         path = f'crops/{len(rows):05d}.png'; Image.fromarray(grey[t:b, l:rr]).save(out/path)
         key = image_id+'#'+r['id']
         rows.append(dict(id=split+'|scan|'+key, line_id=key, split=split, model=split+'__scan', image_id=image_id,
@@ -134,7 +142,9 @@ def prepare_inputs(args):
         grey = native[f'image_{i}']; shape = grey.shape; k = len(cases)
         arrays[f'image_{k}'] = grey; arrays[f'gold_{k}'] = native[f'mask_{i}'].astype(bool)
         arrays[f'domain_{k}'] = np.ones(shape, bool); arrays[f'region_{k}_0'] = np.ones(shape, bool)
+        if args.detector: hints[f'pixel_{k}'] = hint_of(row['page'], row['box'], grey)
         cases.append(dict(id=row['id'], split='val', windows=[[0, 0, shape[1], shape[0]]]))
+    require(not (geometry_ids and args.detector), 'no hints for the retired pixel test pages')
     for image_id in geometry_ids:
         grey = scan(image_id); k = len(cases); record = json.loads((args.geometry/f'{image_id}.json').read_text())
         masks = np.load(args.geometry/f'{image_id}.npz', allow_pickle=False)
@@ -150,28 +160,31 @@ def prepare_inputs(args):
             gold |= unpacked(masks[f'revision_{n}'], grey.shape[1])
         arrays[f'image_{k}'] = grey; arrays[f'gold_{k}'] = gold; arrays[f'domain_{k}'] = domain
         cases.append(dict(id=image_id, split='test', windows=windows))
-    dev_inputs = development(args, out, rows, cases, arrays) if args.dev_export else []
+    dev_inputs = development(args, out, rows, cases, arrays, hints, hint_of if args.detector else None) if args.dev_export else []
     write_json(out/'pack.json', {'schema':'revrender-line-pack', 'rows':rows})
     write_json(out/'pixels.json', cases); np.savez_compressed(out/'pixels.npz', **arrays)
+    if args.detector:
+        require(len(hints) == len(rows)+len(cases), 'a crop without its hint'); np.savez_compressed(out/'hints.npz', **hints)
     counts = {split:dict(pixel_cases=sum(c['split']==split for c in cases),
                         pixel_regions=sum(len(c['windows']) for c in cases if c['split']==split),
                         ocr_regions=sum(r['split']==split for r in rows),
                         ocr_lines=sum(r['split']==split and r['kind']=='line' for r in rows)) for split in ('val','test','dev')}
     require(counts['val']['pixel_regions']==16 and counts['val']['ocr_lines']==41, 'unexpected validation population')
     inputs = [args.models, args.selection, *args.labels, args.human_validation, args.human_validation.with_suffix('.npz'),
-              *files.values(), *geometry, *dev_inputs]
+              *files.values(), *geometry, *dev_inputs, *([args.detector/'run_manifest.json'] if args.detector else [])]
     write_json(out/'counts.json', counts)
-    generated = [out/'models.json', out/'protocol.json', out/'pack.json', out/'pixels.json', out/'pixels.npz', *sorted((out/'crops').glob('*.png'))]
+    generated = [out/'models.json', out/'protocol.json', out/'pack.json', out/'pixels.json', out/'pixels.npz', *sorted((out/'crops').glob('*.png')),
+                 *([out/'hints.npz'] if args.detector else [])]
     write_json(out/'prepared_sha256.json', {str(p):digest(p) for p in generated})
     write_manifest(out, config=to_jsonable(args), inputs={str(p):digest(p) for p in inputs}, counts=counts, protocol=PROTOCOL)
     print(json.dumps(counts), flush=True)
 
 
-def development(args, out, rows, cases, arrays):
+def development(args, out, rows, cases, arrays, hints=None, hint_of=None):
     """The development half of the test questions (``--dev-questions``, user 2026-10-22) from the annotator's export of the test
     page: every region whose pixels are confirmed a native pixel case (``data.pixel_masks.reviewed_crop``, as the fixed validation
     was cut), every region whose struck text is confirmed and readable an OCR crop (its box and six pixels, as the validation boxes).
-    Split ``dev``; the sealed half is never read."""
+    Split ``dev``; the sealed half is never read.  With ``--detector`` each crop's detector hint goes into ``hints`` (``hint_of``)."""
     from ..data.pixel_masks import has_uncertainty, reviewed_crop
     export = json.loads(args.dev_export.read_text()); chosen = set(json.loads(args.dev_questions.read_text())['development'])
     require(chosen <= set(export['pages']), 'a development question is not in the export')
@@ -188,10 +201,12 @@ def development(args, out, rows, cases, arrays):
                         image, mask = reviewed_crop(page, r); k = len(cases)
                         arrays[f'image_{k}'] = image; arrays[f'gold_{k}'] = mask.astype(bool)
                         arrays[f'domain_{k}'] = np.ones(image.shape, bool); arrays[f'region_{k}_0'] = np.ones(image.shape, bool)
+                        if hint_of: hints[f'pixel_{k}'] = hint_of(image_id, r['box'], image)
                         cases.append(dict(id=image_id+'#'+r['id'], split='dev', windows=[[0, 0, image.shape[1], image.shape[0]]]))
                 if r.get('text_confirmed') and not r.get('unreadable') and prepare_text(r.get('text', '')).replace('?', ''):
                     points = np.asarray(r['region']); l, t = np.maximum(0, points.min(0)-6).astype(int)
                     rr, b = np.minimum([grey.shape[1], grey.shape[0]], points.max(0)+6).astype(int)
+                    if hint_of: hints[f'ocr_{len(rows)}'] = hint_of(image_id, (l, t, rr, b), grey[t:b, l:rr])
                     crop = f'crops/{len(rows):05d}.png'; Image.fromarray(grey[t:b, l:rr]).save(out/crop); key = image_id+'#'+r['id']
                     rows.append(dict(id='dev|scan|'+key, line_id=key, split='dev', model='dev__scan', image_id=image_id, kind='line',
                                      text=r['text'], boxes=[], size=[int(rr-l), int(b-t)], images={'erased':crop}))
@@ -247,10 +262,10 @@ def ceiling(args):
     print(json.dumps(result), flush=True)
 
 
-def restore_case(restore, grey, windows, regions):
+def restore_case(restore, grey, windows, regions, hint=None):
     raw = grey.astype(np.float32)/255; restored = raw.copy()
     for window, region in zip(windows, regions):
-        l, t, r, b = window; value = restore(raw[t:b, l:r])
+        l, t, r, b = window; value = restore(raw[t:b, l:r]) if hint is None else restore(raw[t:b, l:r], hint[t:b, l:r])
         require(value.shape == region.shape and np.isfinite(value).all(), 'invalid restored crop')
         restored[t:b, l:r][region] = value[region]
     return restored
@@ -260,34 +275,38 @@ def infer_model(args):
     inputs = args.inputs
     verify_files(json.loads((inputs/'prepared_sha256.json').read_text()))
     spec = next(s for s in json.loads((inputs/'models.json').read_text()) if s['name']==args.name)
-    verify_files(spec['sha256']); out = make_output_dir(args.output_dir)
+    verify_files(spec['sha256']); out = make_output_dir(args.output_dir); hinted = False
     if spec['type'] == 'own':
         from ..infer import load_checkpoint
         from .review_removal import predict_crops
         model, _ = load_checkpoint(Path(spec['checkpoint']))
-        def restore(raw):
+        def restore(raw, hint=None):
             grey = np.rint(raw*255).astype(np.uint8)
             mask = predict_crops(model, [grey])[0]
             return np.where(mask, 1., raw).astype(np.float32)
     else:
         from ..baselines.restoration_export import selected_predictor
-        predictor, _, _ = selected_predictor(Path(spec['run']), Path(spec['upstream']), spec.get('checkpoint'))
-        def restore(raw): return restore_native(predictor, raw)
+        predictor, _, manifest = selected_predictor(Path(spec['run']), Path(spec['upstream']), spec.get('checkpoint'), spec.get('composed', True))
+        hinted = manifest['config']['model'] in HINTED
+        def restore(raw, hint=None): return restore_native(predictor, raw, hint if hinted else None)
+    hints = np.load(inputs/'hints.npz') if (inputs/'hints.npz').exists() else None
+    require(hints is not None or not hinted, 'a hinted model needs inputs prepared with --detector')
+    hint = lambda key: hints[key] if hinted else None
     cases = json.loads((inputs/'pixels.json').read_text()); archive = np.load(inputs/'pixels.npz', allow_pickle=False)
     totals = {s:np.zeros(5, np.int64) for s in sorted({c['split'] for c in cases})}; detail = []; outputs = {}
     for k, case in enumerate(cases):
         grey = archive[f'image_{k}']; domain = archive[f'domain_{k}']; gold = archive[f'gold_{k}']
-        value = restore_case(restore, grey, case['windows'], [archive[f'region_{k}_{j}'] for j in range(len(case['windows']))])
+        value = restore_case(restore, grey, case['windows'], [archive[f'region_{k}_{j}'] for j in range(len(case['windows']))], hint(f'pixel_{k}'))
         count = removal_counts(grey[domain].astype(np.float32)/255, value[domain], gold[domain]); totals[case['split']] += count
         detail.append({**case, **removal_metrics(count), 'valid_ink':int(count[3])})
         outputs[f'image_{k}'] = np.rint(value*255).astype(np.uint8)
     np.savez_compressed(out/'restored_pixels.npz', **outputs)
     write_json(out/'pixels.json', {'model':args.name, 'splits':{s:{**removal_metrics(c),'valid_ink':int(c[3])} for s,c in totals.items()}, 'cases':detail})
     pack = make_output_dir(out/'pack'); (pack/'crops').mkdir(); rows = []
-    for r in json.loads((inputs/'pack.json').read_text())['rows']:
+    for n, r in enumerate(json.loads((inputs/'pack.json').read_text())['rows']):
         source = inputs/r['images']['erased']
         with Image.open(source) as im: raw = np.asarray(im.convert('L'), np.float32)/255
-        value = restore(raw); require(value.shape==raw.shape and np.isfinite(value).all(), 'invalid OCR image')
+        value = restore(raw, hint(f'ocr_{n}')); require(value.shape==raw.shape and np.isfinite(value).all(), 'invalid OCR image')
         path = f'crops/{len(rows):05d}.png'; Image.fromarray(np.rint(value*255).astype(np.uint8)).save(pack/path)
         rows.append({**r, 'id':r['split']+'|'+args.name+'|'+r['line_id'], 'model':r['split']+'__'+args.name, 'images':{'erased':path}})
     write_json(pack/'pack.json', {'schema':'revrender-line-pack','rows':rows})
@@ -413,6 +432,7 @@ def main(argv=None):
     p = sub.add_parser('prepare')
     for key in ('models','selection','human-validation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     p.add_argument('--geometry',type=Path)
+    p.add_argument('--detector',type=Path,help="a detection run: its masks on every crop (hints.npz), for a hinted model")
     for key in ('dev-export','dev-pages','dev-questions'):p.add_argument('--'+key,type=Path,help='the development half of the test questions')
     for key in ('labels','pages'):p.add_argument('--'+key,type=Path,action='append',required=True)
     p = sub.add_parser('infer')

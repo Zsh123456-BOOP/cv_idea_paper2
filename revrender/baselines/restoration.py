@@ -17,7 +17,13 @@ from PIL import Image
 
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
-MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer', 'StainRestorer']
+MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer', 'StainRestorer', 'RevSep']
+HINTED = ('RevSep',)    # told where the revision is (data.separation): ours (models.separation), not a baseline
+
+
+def upstream_of(upstream, model):
+    """The official source a model is built from: RevSep's body is NAFNet's."""
+    return upstream/('NAFNet' if model == 'RevSep' else model)
 
 
 def verified_source(path):
@@ -49,20 +55,24 @@ def removal_metrics(count):
                 new_dark_pixels=added,threshold=.2)
 
 
-def restore_native(predict, grey):
-    """Native resolution tiling; centre short regions on the same white 256 canvas."""
+def restore_native(predict, grey, hint=None):
+    """Native resolution tiling; centre short regions on the same white 256 canvas (a hinted model's hint on zeros)."""
     h,w=grey.shape;ph=max(256,h);pw=max(256,w);oy=(ph-h)//2;ox=(pw-w)//2
     padded=np.ones((ph,pw),np.float32);padded[oy:oy+h,ox:ox+w]=grey
+    if hint is not None:marks=np.zeros((ph,pw),np.float32);marks[oy:oy+h,ox:ox+w]=hint
     positions=lambda n: sorted(set(list(range(0,n-255,192))+[n-256]))
     total=np.zeros_like(padded);weight=np.zeros_like(padded)
     for y in positions(ph):
         for x in positions(pw):
-            value=predict(padded[None,y:y+256,x:x+256])[0]
+            tile=padded[None,y:y+256,x:x+256]
+            value=(predict(tile) if hint is None else predict(tile,marks[None,y:y+256,x:x+256]))[0]
             total[y:y+256,x:x+256]+=value;weight[y:y+256,x:x+256]+=1
     return (total/weight)[oy:oy+h,ox:ox+w]
 
 
 class Experiment:
+    hinted=False    # a model told where the revision is (HINTED)
+
     def __init__(self,args):
         self.args=args;self.out=make_output_dir(args.output_dir)
         self.rows=json.loads((args.data/'records.json').read_text())
@@ -78,10 +88,20 @@ class Experiment:
         self.stale=0;self.stop=False;self.last_step=0
         self.unpaired_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(1)[0])
         self.candidate_improved=False
-        self.source=verified_source(args.upstream/args.model)
+        self.source=verified_source(upstream_of(args.upstream,args.model))
         inputs=[
             args.data/'run_manifest.json',args.data/(args.arm+'.npy'),args.data/'targets.npy',args.data/'records.json',
-            args.human_validation,args.human_validation.with_suffix('.npz'),args.upstream/args.model/'source_manifest.json']
+            args.human_validation,args.human_validation.with_suffix('.npz'),upstream_of(args.upstream,args.model)/'source_manifest.json']
+        self.hinted=args.model in HINTED
+        if self.hinted:
+            from ..data.separation import HUMAN
+            self.human=np.array([r.get('source')==HUMAN for r in self.rows])
+            self.stored_hints=np.load(args.data/'hint.npy',mmap_mode='r') if (args.data/'hint.npy').exists() else None
+            require(self.stored_hints is not None or not self.human.any(),'human tiles without their detector hints (restoration_pairs human --detector)')
+            require(args.human_validation_hints is not None or not args.hint,'the hints of the human validation are needed (data.separation hints)')
+            self.native_hints=np.load(args.human_validation_hints) if args.hint else None
+            self.hint_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(2)[1])
+            inputs+=[p for p in (args.data/'hint.npy',args.human_validation_hints) if p is not None and p.exists()]
         if args.protocol:inputs.append(args.protocol)
         if args.init:inputs+=[p for p in sorted(args.init.iterdir()) if p.is_file()]
         require(set(r['split'] for r in self.rows)<= {'train','val'},'test row in training bundle')
@@ -92,10 +112,32 @@ class Experiment:
             synthetic_validation_indices=self.val.tolist(),limitations='human labels do not provide true clean images or hidden-stroke truth',
             adaptation='native 256 square tiles; image-only; synthetic-only; paired supervision except independent clean-domain sampling for CycleGAN; task adaptation, not original benchmark scores')
 
+    def sample(self):
+        return self.rng.choice(self.train,self.args.batch_size,replace=False)
+
     def batch(self,unpaired=False):
-        ids=self.rng.choice(self.train,self.args.batch_size,replace=False)
+        ids=self.sample()
         targets=self.unpaired_rng.choice(self.train,self.args.batch_size,replace=False) if unpaired else ids
         return self.x[ids].astype(np.float32)/255,self.y[targets].astype(np.float32)/255
+
+    def hints_of(self,ids,x,y,rng):
+        """The hints of pairs ``ids`` (their uint8 x, y): a human tile's detector hint jittered, a synthetic one's simulated
+        (``data.separation``); zeros with --no-hint."""
+        from ..data.separation import jittered_hint, simulated_hint
+        if not self.args.hint:return np.zeros(x.shape,np.float32)
+        return np.stack([jittered_hint(self.stored_hints[i],a,rng) if self.human[i] else
+                         simulated_hint(a,b,rng,self.args.hint_reach,self.args.hint_drop) for i,a,b in zip(ids,x,y)]).astype(np.float32)
+
+    def labelled_batch(self):
+        """A batch for RevSep: grey, target and hint on [0, 1], and the erase and cross labels (``data.separation.pair_labels``)."""
+        from ..data.separation import pair_labels
+        ids=self.sample();x=self.x[ids];y=self.y[ids];labels=[pair_labels(a,b,self.human[i]) for i,a,b in zip(ids,x,y)]
+        return (x.astype(np.float32)/255,y.astype(np.float32)/255,self.hints_of(ids,x,y,self.hint_rng),
+                np.stack([e for e,_ in labels]),np.stack([c for _,c in labels]))
+
+    def native_hint(self,i):
+        if not self.hinted:return None
+        return self.native_hints[f'hint_{i}'] if self.args.hint else np.zeros(self.native[f'image_{i}'].shape,np.uint8)
 
     def log(self,record):
         record={**record,'elapsed_seconds':round(time.monotonic()-self.start,2)}
@@ -107,16 +149,17 @@ class Experiment:
         counts=np.zeros(5,np.int64);native_out={};tiles=[]
         for i,_ in enumerate(self.native_rows):
             im=self.native[f'image_{i}'].astype(np.float32)/255;gold=self.native[f'mask_{i}']
-            pred=restore_native(predict,im);require(np.isfinite(pred).all(),'nonfinite restoration')
+            pred=restore_native(predict,im,self.native_hint(i));require(np.isfinite(pred).all(),'nonfinite restoration')
             counts+=removal_counts(im,pred,gold);native_out[f'image_{i}']=np.rint(pred*255).astype(np.uint8)
             canvas=Image.new('L',(768,256),255)
             for j,a in enumerate((im,pred,np.where(gold,1,im))):
                 tile=Image.fromarray(np.rint(a*255).astype(np.uint8));tile.thumbnail((252,252));canvas.paste(tile,(j*256+(256-tile.width)//2,(256-tile.height)//2))
             tiles.append(np.asarray(canvas))
-        sse=0.;base=0.;n=0;changed=[];preserve=[]
+        sse=0.;base=0.;n=0;changed=[];preserve=[];hint_rng=np.random.default_rng(SEED)    # the same hints at every evaluation
         for start in range(0,len(self.val),self.args.batch_size):
-            ids=self.val[start:start+self.args.batch_size];x=self.x[ids].astype(np.float32)/255;y=self.y[ids].astype(np.float32)/255
-            p=predict(x);require(np.isfinite(p).all(),'nonfinite synthetic restoration')
+            ids=self.val[start:start+self.args.batch_size];xu=self.x[ids];yu=self.y[ids]
+            x=xu.astype(np.float32)/255;y=yu.astype(np.float32)/255
+            p=predict(x,self.hints_of(ids,xu,yu,hint_rng)) if self.hinted else predict(x);require(np.isfinite(p).all(),'nonfinite synthetic restoration')
             sse+=float(((p-y)**2).sum());base+=float(((x-y)**2).sum());n+=y.size
             changed.extend(np.abs(p-y)[np.abs(x-y)>.05].tolist())
             preserve.extend(np.abs(p-y)[(y<200/255)&(np.abs(x-y)<=.05)].tolist())
@@ -164,6 +207,10 @@ def main(argv=None):
     p.add_argument('--patience',type=int,default=0)
     p.add_argument('--ema',action='store_true')
     p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
+    p.add_argument('--human-validation-hints',type=Path,help='RevSep: the detector hints of the human validation crops (data.separation hints)')
+    p.add_argument('--hint',action=argparse.BooleanOptionalAction,default=True,help='RevSep: the hint channel (off: zeros)')
+    p.add_argument('--heads',action=argparse.BooleanOptionalAction,default=True,
+                   help='RevSep: the erase and cross heads and the composition (off: H1 alone, NAFNet with the hint channel)')
     p.add_argument('--budget',help="a budget section of the protocol (passes over the data, evaluations, learning-rate scale): "
                    "default [finetune] with --init, the model's own [training] budget without")
     pre,_=p.parse_known_args(argv)

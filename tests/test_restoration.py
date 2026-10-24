@@ -129,3 +129,20 @@ def test_report_reads_selected_ema_or_raw_evaluation_and_variable_model_count(tm
     assert summary['models'][0]['validation']['variant']=='raw'
     assert summary['models'][0]['training']['steps']==100
     assert (out/'index.html').is_file()
+
+
+def test_a_hinted_batch_reads_human_hints_simulates_synthetic_ones_and_labels_both():
+    from revrender.baselines.restoration import Experiment
+    from types import SimpleNamespace
+    e=Experiment.__new__(Experiment);e.args=SimpleNamespace(batch_size=2,hint=True,hint_reach=2,hint_drop=0.)
+    x=np.full((2,16,16),250,np.uint8);x[:,7:9,2:14]=30;y=x.copy();y[0,7:9,2:14]=255;y[1,7:9,2:14]=250
+    e.x,e.y=x,y;e.train=np.arange(2);e.rng=np.random.default_rng(42);e.hint_rng=np.random.default_rng(1)
+    e.human=np.array([True,False]);e.stored_hints=np.zeros((2,16,16),np.uint8);e.stored_hints[0,7:9,2:6]=1
+    e.sample=lambda:np.array([0,1])
+    gx,gy,hint,erase,cross=e.labelled_batch()
+    assert gx.dtype==np.float32 and gx.max()<=1 and hint.shape==(2,16,16)
+    assert hint[0][x[0]<200].sum()<=4*3 and not hint[0][7:9,10:14].any()       # the stored hint, within a pixel
+    assert hint[1][7:9,2:14].all()                                            # simulated on the strike
+    assert erase[0][7:9,2:14].all() and (cross[0][x[0]<200]==255).all() and erase[1][7:9,2:14].all()
+    e.args.hint=False
+    assert not e.labelled_batch()[2].any()

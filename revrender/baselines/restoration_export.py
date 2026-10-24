@@ -15,14 +15,15 @@ from .. import pages
 from ..data.clean_pages import review_clean
 from ..eval.revision_boxes import read_labels, prepare, unpacked
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
-from .restoration import module_file, removal_counts, removal_metrics, restore_native, verified_source
+from .restoration import module_file, removal_counts, removal_metrics, restore_native, upstream_of, verified_source
 
 
-def selected_predictor(run,upstream,checkpoint=None):
-    """The predictor of a run's selected checkpoint, or of ``checkpoint`` (a step directory of the run) when given."""
+def selected_predictor(run,upstream,checkpoint=None,composed=True):
+    """The predictor of a run's selected checkpoint, or of ``checkpoint`` (a step directory of the run) when given.  A hinted model's
+    (RevSep's) takes the hint as its second argument (none: zeros); ``composed=False``: its H1 alone, without the composition."""
     manifest=json.loads((run/'run_manifest.json').read_text());model=manifest['config']['model']
     weights=run/(checkpoint or json.loads((run/'selection.json').read_text())['checkpoint'])
-    source=verified_source(upstream/model);require(source==manifest['upstream'],'upstream mismatch')
+    source=verified_source(upstream_of(upstream,model));require(source==manifest['upstream'],'upstream mismatch')
     if model=='DE-GAN':
         os.environ['TF_USE_LEGACY_KERAS']='1'
         import tensorflow as tf
@@ -41,11 +42,18 @@ def selected_predictor(run,upstream,checkpoint=None):
         import torch
         from .restoration_torch import build, predict_image
         torch.manual_seed(SEED);torch.set_num_threads(4)
-        network,diffusion,_=build(model,upstream/model);checkpoint=weights/'weights.pt'
+        network,diffusion,_=build(model,upstream_of(upstream,model));checkpoint=weights/'weights.pt'
         state=torch.load(checkpoint,map_location='cpu',weights_only=False);network.load_state_dict(state['model']);network.eval()
-        @torch.no_grad()
-        def predict(x):
-            return predict_image(network,diffusion,x,model)
+        if model=='RevSep':
+            from ..models.separation import separate
+            config=manifest['config']
+            def predict(x,hint=None):
+                hint=np.zeros_like(x) if hint is None or not config['hint'] else hint
+                return separate(network,x,hint,config['heads'],composed)
+        else:
+            @torch.no_grad()
+            def predict(x):
+                return predict_image(network,diffusion,x,model)
     return predict,checkpoint,manifest
 
 
