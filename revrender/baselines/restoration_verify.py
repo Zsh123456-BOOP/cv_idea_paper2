@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from ..util import digest, require, write_json
-from .restoration import restore_native
+from .restoration import HINTED, restore_native
 from .restoration_export import selected_predictor
 
 
@@ -16,7 +16,9 @@ def verify(run,upstream):
     data=np.load(Path(manifest['config']['human_validation']).with_suffix('.npz'))
     key=selection['checkpoint'].replace('step_','native_',1)+'.npz'
     expected=np.load(run/key)['image_0']
-    actual=np.rint(restore_native(predict,data['image_0'].astype(np.float32)/255)*255).astype(np.uint8)
+    config=manifest['config'];hint=None
+    if config['model'] in HINTED and config['hint']:hint=np.load(config['human_validation_hints'])['hint_0']
+    actual=np.rint(restore_native(predict,data['image_0'].astype(np.float32)/255,hint)*255).astype(np.uint8)
     error=int(np.abs(actual.astype(int)-expected.astype(int)).max())
     require(error<=1,f'selected checkpoint inference differs: {error} grayscale levels')
     write_json(run/'inference_verified.json',{'checkpoint':str(checkpoint),'sha256':digest(checkpoint),

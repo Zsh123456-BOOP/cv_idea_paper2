@@ -18,9 +18,11 @@ chosen_of() {   # SELECTION FAMILY: the chosen version's weights (a box remover'
     "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1]))[sys.argv[2]]["spec"]; print(s["checkpoint"] if s["type"]=="own" else s["run"]+"/"+s["checkpoint"])' "$1/selection.json" "$2"
 }
 finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT [BUDGET]: a restorer trained on DATA from INIT ('-': its own random start) with a
-    # budget of configs/restoration.toml (default [finetune] from INIT)
+    # budget of configs/restoration.toml (default [finetune] from INIT); RevSep with the hints of the validation (VAL_HINTS) and the
+    # switches in RESTORER_FLAGS (--no-hint, --no-heads)
     local model="$1" card="$2" numa="$3" init="$4" data="$5" out="$6" budget="${7:-}" runtime=$PY upstream=$UP start=()
     [ "$init" = - ] || start=(--init "$init"); [ -z "$budget" ] || start+=(--budget "$budget")
+    [ "$model" != RevSep ] || start+=(--human-validation-hints "$VAL_HINTS" ${RESTORER_FLAGS:-})
     [ ! -e "$out/selection.json" ] || return 0
     [ "$model" != StainRestorer ] || upstream=$STAIN_UP
     (

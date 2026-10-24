@@ -2,7 +2,8 @@
 # Frozen checkpoints, shared inputs, one OCR engine for every model: the validation split (the old test set is retired).
 # Cards: GPU_A runs the restorations, GPU_A and GPU_B the OCR (TP2); defaults cards 1 and 2.  MODELS=<list> evaluates another list
 # (candidate versions for eval.unified_restoration choose) in place of configs/unified_restoration.json.  DEV_EXPORT=<export of the
-# test page> DEV_PAGES=<its page images> adds the development half of the test questions (configs/test_halves.json).
+# test page> DEV_PAGES=<its page images> adds the development half of the test questions (configs/test_halves.json).  DETECTOR=<a
+# detection run> gives every crop the detector's masks (hints.npz), which a hinted model (RevSep) reads.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 OUT="$1"
@@ -20,6 +21,7 @@ LAB=$O/paper2_annotation_labels
   --human-validation "$O/paper2_fixed_validation20261007/validation_native.json" \
   --pages "$O/paper2_pages_clean_unlabeled3976" \
   ${DEV_EXPORT:+--dev-export "$DEV_EXPORT" --dev-pages "$DEV_PAGES" --dev-questions "$ROOT/configs/test_halves.json"} \
+  ${DETECTOR:+--detector "$DETECTOR"} \
   --output-dir "$OUT/inputs"
 mkdir "$OUT/runs"
 export GPU_A=${GPU_A:-GPU-d0bcc564-5bd9-b943-f995-8536415088e3} GPU_B=${GPU_B:-GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0}

@@ -29,8 +29,9 @@ validation_limit = 64
 min_steps = 40000
 patience = 6
 
-# Ours (models.separation, plan 2026-10-25): NAFNet's budget; the hint simulated on synthetic pairs (data.separation); the head
-# weights set once from the gradient balance of a smoke run, then fixed.
+# Ours (models.separation, plan 2026-10-25): NAFNet's budget; the hint simulated on synthetic pairs (data.separation).  The head
+# weights were set once, then fixed: over the first 1,000 synthetic steps at weight 1 the composed image term's gradient was a
+# median 92 times the erase term's (the cross term's 207; paper2_clean_revsep_calibration), so both 100.
 [training.RevSep]
 steps = 80000
 batch_size = 4
@@ -40,8 +41,8 @@ min_steps = 40000
 patience = 6
 hint_reach = 5
 hint_drop = 0.3
-erase_weight = 1.0
-cross_weight = 1.0
+erase_weight = 100.0
+cross_weight = 100.0
 
 [training.Restormer]
 steps = 80000
