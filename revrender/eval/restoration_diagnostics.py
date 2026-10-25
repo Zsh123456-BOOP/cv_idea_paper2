@@ -8,7 +8,8 @@ a line pack of the scan, the chosen RevSep, RevSep-both, NAFNet and DE-GAN as th
 
 - D1: RevSep's erase probability used as a soft lightening, scan + sigmoid(erase/T)*(1-scan), at T = 1 and 2 (no H1, no crossing);
 - D2: on the development strikes whose pixels the annotator confirmed, RevSep-both with its writing (scan ink outside the annotator's
-  erased pixels) put back to the scan, and RevSep with its strike pixels taken from RevSep-both;
+  erased pixels) put back to the scan, and RevSep with its strike pixels taken from RevSep-both; and (added after the first reading,
+  not in the plan's rules) every one of the four with its writing put back, the read-back each loses to what it does to the writing;
 - D3: each of NAFNet, DE-GAN and RevSep averaged with the scan, (scan + output)/2.
 
 It also measures, on those development strikes, what the pixel scores do not see: each version's mean change of the writing's grey
@@ -82,6 +83,7 @@ def pack(args):
             writing = (scan < 200/255) & ~strike
             outputs['D2-both-writing-kept'] = np.where(writing, scan, outputs['RevSep-both'])
             outputs['D2-revsep-strike-from-both'] = np.where(strike, outputs['RevSep-both'], outputs['RevSep'])
+            outputs.update({f'D2-kept-{f}': np.where(writing, scan, outputs[f]) for f in FAMILIES if f != 'RevSep-both'})
             edge = writing & ndimage.binary_dilation(scan >= 200/255)
             for name, image in outputs.items():
                 m = measures.setdefault(name, {'writing_change': [], 'edge_gradient_ratio': []})

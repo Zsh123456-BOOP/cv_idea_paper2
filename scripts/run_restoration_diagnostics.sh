@@ -8,7 +8,8 @@ set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-O=/home/zsh/hme/outputs; N=$O/paper2_clean; R=$O/paper2_restoration_diagnostics20261025; D=${N}_restoration_diagnostics
+# VARIANT names another run (its own marker and pack directories).
+O=/home/zsh/hme/outputs; N=$O/paper2_clean; R=$O/paper2_restoration_diagnostics20261025${VARIANT:+_$VARIANT}; D=${N}_restoration_diagnostics${VARIANT:+_$VARIANT}
 E=${N}_revsep_stroke_versions_final; UP=$O/paper2_restoration_sources20261008
 DEV_EXPORT=$O/paper2_test_export20261022/export.json; DEV_PAGES=$O/paper2_test_text20261018_page/site/images
 mkdir -p "$R"
