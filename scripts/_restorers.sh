@@ -1,10 +1,11 @@
 # Steps the restorer experiments share (run_annotation_value.sh, run_learning_curve.sh, run_realistic_synthesis.sh); sourced after
 # _common.sh, with O, VAL, UP, STAIN_UP, C1, C2, C3 set.  Versions are chosen by eval.unified_restoration choose (read-back on the 41
 # validation strikes among the versions whose pixel F1 on the 16 fixed regions improved, and the last).
-second_card() {   # card 2 when it has room, else card 3 when nobody is on it -> its uuid
+second_card() {   # card 2 when it has room, else card 3 when nobody is on it, else card 0 (when the script sets C0) with room -> its uuid
     while true; do
         [ "$(nvidia-smi -i "$C2" --query-gpu=memory.free --format=csv,noheader,nounits)" -lt 15000 ] || { echo "$C2"; return; }
         [ -n "$(nvidia-smi -i "$C3" --query-compute-apps=pid --format=csv,noheader)" ] || { echo "$C3"; return; }
+        [ -z "${C0:-}" ] || [ "$(nvidia-smi -i "$C0" --query-gpu=memory.free --format=csv,noheader,nounits)" -lt 15000 ] || { echo "$C0"; return; }
         sleep 60
     done
 }
