@@ -18,9 +18,10 @@ from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_js
 from .restoration import module_file, removal_counts, removal_metrics, restore_native, upstream_of, verified_source
 
 
-def selected_predictor(run,upstream,checkpoint=None,composed=True):
+def selected_predictor(run,upstream,checkpoint=None,composed=True,soften=None):
     """The predictor of a run's selected checkpoint, or of ``checkpoint`` (a step directory of the run) when given.  A hinted model's
-    (RevSep's) takes the hint as its second argument (none: zeros); ``composed=False``: its H1 alone, without the composition."""
+    (RevSep's) takes the hint as its second argument (none: zeros); ``composed=False``: its H1 alone, without the composition;
+    ``soften``: the scan lightened by its erase probability at that temperature (``models.separation.separate``)."""
     manifest=json.loads((run/'run_manifest.json').read_text());model=manifest['config']['model']
     weights=run/(checkpoint or json.loads((run/'selection.json').read_text())['checkpoint'])
     source=verified_source(upstream_of(upstream,model));require(source==manifest['upstream'],'upstream mismatch')
@@ -49,7 +50,7 @@ def selected_predictor(run,upstream,checkpoint=None,composed=True):
             config=manifest['config']
             def predict(x,hint=None):
                 hint=np.zeros_like(x) if hint is None or not config['hint'] else hint
-                return separate(network,x,hint,config['heads'],composed,config.get('hint_from','detector'))
+                return separate(network,x,hint,config['heads'],composed,config.get('hint_from','detector'),soften)
         else:
             @torch.no_grad()
             def predict(x):
