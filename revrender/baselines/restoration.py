@@ -80,6 +80,8 @@ class Experiment:
         self.x=np.load(args.data/(args.arm+'.npy'),mmap_mode='r');self.y=np.load(args.data/'targets.npy',mmap_mode='r')
         # Per-pixel loss weights (data.pseudo_regions: 0 where the teachers disagree); honoured by NAFNet's loss.
         self.w=np.load(args.data/'weights.npy',mmap_mode='r') if (args.data/'weights.npy').exists() else None
+        # Per-sample loss weights (data.pseudo_regions --pseudo-weight: a pseudo-labelled region's against a human one's).
+        self.s=np.array([float(r.get('weight',1.)) for r in self.rows],np.float32)
         self.train=np.array([i for i,r in enumerate(self.rows) if r['split']=='train'])
         self.val=np.array([i for i,r in enumerate(self.rows) if r['split']=='val'])
         rng=np.random.default_rng(SEED);self.val=rng.choice(self.val,min(args.validation_limit,len(self.val)),replace=False)
@@ -97,10 +99,11 @@ class Experiment:
             args.human_validation,args.human_validation.with_suffix('.npz'),upstream_of(args.upstream,args.model)/'source_manifest.json']
         self.hinted=args.model in HINTED
         if self.hinted:
-            from ..data.separation import HUMAN
+            from ..data.separation import DETECTED, HUMAN
             self.human=np.array([r.get('source')==HUMAN for r in self.rows])
+            self.detected=np.array([r.get('source') in DETECTED for r in self.rows])
             self.stored_hints=np.load(args.data/'hint.npy',mmap_mode='r') if (args.data/'hint.npy').exists() else None
-            require(self.stored_hints is not None or not self.human.any(),'human tiles without their detector hints (restoration_pairs human --detector)')
+            require(self.stored_hints is not None or not self.detected.any(),'real tiles without their detector hints (restoration_pairs human --detector)')
             require(args.human_validation_hints is not None or not args.hint,'the hints of the human validation are needed (data.separation hints)')
             self.native_hints=np.load(args.human_validation_hints) if args.hint else None
             self.hint_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(2)[1])
@@ -131,14 +134,14 @@ class Experiment:
         targets=self.unpaired_rng.choice(self.train,self.args.batch_size,replace=False) if unpaired else ids
         x,y=self.x[ids].astype(np.float32)/255,self.y[targets].astype(np.float32)/255
         if not weights:return x,y
-        return x,y,(self.w[ids].astype(np.float32) if self.w is not None else np.ones_like(x))
+        return x,y,(self.w[ids].astype(np.float32) if self.w is not None else np.ones_like(x)),self.s[ids]
 
     def hints_of(self,ids,x,y,rng):
         """The hints of pairs ``ids`` (their uint8 x, y): a human tile's detector hint jittered, a synthetic one's simulated
         (``data.separation``); zeros with --no-hint."""
         from ..data.separation import jittered_hint, simulated_hint
         if not self.args.hint:return np.zeros(x.shape,np.float32)
-        return np.stack([jittered_hint(self.stored_hints[i],a,rng) if self.human[i] else
+        return np.stack([jittered_hint(self.stored_hints[i],a,rng) if self.detected[i] else
                          simulated_hint(a,b,rng,self.args.hint_reach,self.args.hint_drop) for i,a,b in zip(ids,x,y)]).astype(np.float32)
 
     def labelled_batch(self):
@@ -170,11 +173,12 @@ class Experiment:
 
     def evaluate(self,predict,step,save,variant='',final_candidate=True):
         suffix=('_'+variant) if variant else ''
-        counts=np.zeros(5,np.int64);native_out={};tiles=[]
+        counts=np.zeros(5,np.int64);native_out={};tiles=[];edits=[]
         for i,_ in enumerate(self.native_rows):
             im=self.native[f'image_{i}'].astype(np.float32)/255;gold=self.native[f'mask_{i}']
             pred=restore_native(predict,im,self.native_hint(i));require(np.isfinite(pred).all(),'nonfinite restoration')
-            counts+=removal_counts(im,pred,gold);native_out[f'image_{i}']=np.rint(pred*255).astype(np.uint8)
+            count=removal_counts(im,pred,gold);counts+=count;native_out[f'image_{i}']=np.rint(pred*255).astype(np.uint8)
+            edits.append((count[1]+count[2])/max(1,count[0]+count[2]))   # pixels to fix (missed + writing erased) over the strike's
             canvas=Image.new('L',(768,256),255)
             for j,a in enumerate((im,pred,np.where(gold,1,im))):
                 tile=Image.fromarray(np.rint(a*255).astype(np.uint8));tile.thumbnail((252,252));canvas.paste(tile,(j*256+(256-tile.width)//2,(256-tile.height)//2))
@@ -187,11 +191,13 @@ class Experiment:
             sse+=float(((p-y)**2).sum());base+=float(((x-y)**2).sum());n+=y.size
             changed.extend(np.abs(p-y)[np.abs(x-y)>.05].tolist())
             preserve.extend(np.abs(p-y)[(y<200/255)&(np.abs(x-y)<=.05)].tolist())
-        result={'step':step,'human_removal':removal_metrics(counts),'synthetic_psnr':-10*np.log10(max(sse/n,1e-12)),
-                'identity_synthetic_psnr':-10*np.log10(max(base/n,1e-12)),
+        result={'step':step,'human_removal':removal_metrics(counts),'human_edits':float(np.mean(edits)),
+                'synthetic_psnr':-10*np.log10(max(sse/n,1e-12)) if n else None,
+                'identity_synthetic_psnr':-10*np.log10(max(base/n,1e-12)) if n else None,
                 'synthetic_changed_mae':float(np.mean(changed)) if changed else 0.,
                 'synthetic_preserved_ink_mae':float(np.mean(preserve)) if preserve else 0.}
-        score=result['human_removal']['f1']
+        # by the removal F1 of the human validation, or (--select edits, the prefill model) by its pixels to fix, fewer the better
+        score=-result['human_edits'] if getattr(self.args,'select','f1')=='edits' else result['human_removal']['f1']
         improved=score>self.best[0]
         self.last_step=step
         self.candidate_improved|=improved
@@ -210,7 +216,7 @@ class Experiment:
         return result
 
     def finish(self):
-        write_json(self.out/'selection.json',{'step':self.best[1],'human_removal_f1':self.best[0],
+        write_json(self.out/'selection.json',{'step':self.best[1],'human_removal_f1':self.best[0],'selected_by':getattr(self.args,'select','f1'),
             'checkpoint':f'step_{self.best[1]}{self.best[2]}','evaluation':f'evaluation_{self.best[1]}{self.best[2]}.json',
             'no_test_data_used':True,'actual_steps':self.last_step,
             'stop_reason':'validation_plateau' if self.stop else 'declared_budget',
@@ -230,6 +236,7 @@ def main(argv=None):
     p.add_argument('--min-steps',type=int,default=0)
     p.add_argument('--patience',type=int,default=0)
     p.add_argument('--ema',action='store_true')
+    p.add_argument('--select',choices=['f1','edits'],default='f1',help="keep a version when the human validation's removal F1 rises, or its pixels to fix fall")
     p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
     p.add_argument('--human-validation-hints',type=Path,help='RevSep: the detector hints of the human validation crops (data.separation hints)')
     p.add_argument('--hint',action=argparse.BooleanOptionalAction,default=True,help='RevSep: the hint channel (off: zeros)')

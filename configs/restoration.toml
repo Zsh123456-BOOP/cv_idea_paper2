@@ -121,3 +121,10 @@ evaluations = 10
 passes = 4
 learning_rate_scale = 0.1
 evaluations = 8
+
+# The prefill model (plan 预填模型, scripts/run_prefill_model.sh; 2026-10-25): real data and pseudo-labelled regions only, from NAFNet's
+# own random start, six passes over them, a version every twelfth (kept when the held-out writers' pixels to fix fall: --select edits).
+[prefill]
+passes = 6
+learning_rate_scale = 1.0
+evaluations = 12

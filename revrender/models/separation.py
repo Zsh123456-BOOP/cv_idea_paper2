@@ -91,10 +91,12 @@ def gated(grey, erase, writing, erase_threshold=.5, writing_threshold=.5):
     return torch.where(white, torch.ones_like(grey), grey)
 
 
-def psnr_loss(value, target, weight=None):
-    """NAFNet's PSNR loss (the baseline's, ``restoration_torch.train``); with a per-pixel ``weight``, its weighted mean error."""
-    error = ((value-target)**2).mean((1, 2, 3)) if weight is None else ((value-target)**2*weight).mean((1, 2, 3))/weight.mean((1, 2, 3))
-    return 10/np.log(10)*torch.log(error+1e-8).mean()
+def psnr_loss(value, target, weight=None, sample_weight=None):
+    """NAFNet's PSNR loss (the baseline's, ``restoration_torch.train``); with a per-pixel ``weight``, its weighted mean error; with a
+    ``sample_weight`` (N), the samples' losses averaged by it."""
+    error = ((value-target)**2).mean((1, 2, 3)) if weight is None else ((value-target)**2*weight).mean((1, 2, 3))/weight.mean((1, 2, 3)).clamp(min=1e-8)
+    loss = 10/np.log(10)*torch.log(error+1e-8)
+    return loss.mean() if sample_weight is None else (loss*sample_weight).sum()/sample_weight.sum()
 
 
 def masked_bce(logits, labels):

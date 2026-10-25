@@ -137,7 +137,7 @@ def test_a_hinted_batch_reads_human_hints_simulates_synthetic_ones_and_labels_bo
     e=Experiment.__new__(Experiment);e.args=SimpleNamespace(batch_size=2,hint=True,hint_reach=2,hint_drop=0.,stroke=False)
     x=np.full((2,16,16),250,np.uint8);x[:,7:9,2:14]=30;y=x.copy();y[0,7:9,2:14]=255;y[1,7:9,2:14]=250
     e.x,e.y=x,y;e.train=np.arange(2);e.rng=np.random.default_rng(42);e.hint_rng=np.random.default_rng(1)
-    e.human=np.array([True,False]);e.stored_hints=np.zeros((2,16,16),np.uint8);e.stored_hints[0,7:9,2:6]=1
+    e.human=np.array([True,False]);e.detected=e.human;e.stored_hints=np.zeros((2,16,16),np.uint8);e.stored_hints[0,7:9,2:6]=1
     e.sample=lambda:np.array([0,1])
     gx,gy,hint,erase,cross,ids,strokes,gate=e.labelled_batch()
     assert gx.dtype==np.float32 and gx.max()<=1 and hint.shape==(2,16,16)

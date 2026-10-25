@@ -47,6 +47,7 @@ WIDTH_STEP = 4      # the stored half-width is in quarter pixels
 NEAR = 4            # pixels: writing this close to the strike is the struck writing (restoration_diagnostics.STRUCK)
 FAINT = 8           # darkened by more than this but no more than REMOVED: a strike's faint edge, labelled for neither head
 HUMAN = 'human_confirmed'   # the source of a human region's tiles in a pair set (``restoration_pairs.human_pairs``)
+DETECTED = (HUMAN, 'pseudo_agreement')   # the sources whose tiles carry the detector's hint (``human_pairs --detector``)
 
 
 def pair_labels(x, y, human):

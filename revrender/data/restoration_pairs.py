@@ -379,18 +379,20 @@ def human_pairs(review_set, source, arm, destination, no_replay=False, detector=
     ``texts``: an export holding the regions' struck text; a region within one tile whose text is confirmed and readable gives its tile
     ``text`` and ``window`` (x, y, width, height of the region on the tile), for RevSep's recognition loss.  A review set with per-pixel
     weights (``weight_<k>``, ``data.pseudo_regions``) gives ``weights.npy`` beside the tiles, 1 on every other row; a region with its
-    own ``target_<k>`` image (the teachers' mean) is tiled against that instead of the whitened mask; a region keeps the source its
-    review set's record gives it."""
+    own ``target_<k>`` image (the teachers' mean) is tiled against that instead of the whitened mask; a region keeps the source and the
+    sample weight its review set's record gives it.  Without ``source`` (no synthetic pairs: the prefill model) there is neither replay
+    nor a synthetic validation."""
     from .separation import detector_hint
     from ..eval.coverage import prepare
     struck = {r['id']: r for p in json.loads(texts.read_text())['pages'].values() for r in p.get('revisions', [])} if texts else {}
     out = make_output_dir(destination)
     records = json.loads((review_set/'records.json').read_text())
     native = json.loads((review_set/'training_native.json').read_text()); arrays = np.load(review_set/'training_native.npz')
-    pairs = json.loads((source/'records.json').read_text())
-    x = np.load(source/(arm+'.npy'), mmap_mode='r'); y = np.load(source/'targets.npy', mmap_mode='r')
+    pairs = json.loads((source/'records.json').read_text()) if source else []
+    if source: x = np.load(source/(arm+'.npy'), mmap_mode='r'); y = np.load(source/'targets.npy', mmap_mode='r')
     data, targets, rows, hints, weights = [], [], [], [], []
     weighted = any(name.startswith('weight_') for name in arrays.files); source_of = {r['id']: r['source'] for r in records}
+    weight_of = {r['id']: r['weight'] for r in records if 'weight' in r}
     for k, r in enumerate(native):
         if detector:
             hints += canvas_tiles(detector_hint(pages.read_output(detector, r['page'])[1], r['box'], arrays[f'image_{k}']), 0)
@@ -401,9 +403,9 @@ def human_pairs(review_set, source, arm, destination, no_replay=False, detector=
         for n, (tile, target, weight) in enumerate(made):
             data.append(tile); targets.append(target); weights.append(weight)
             rows.append({'id': f"{r['id']}~{n}", 'group_uuid': r['group_uuid'], 'split': 'train', 'source': source_of.get(r['id'], 'human_confirmed'),
-                         'clean': bool((tile == target).all()),
+                         'clean': bool((tile == target).all()), **({'weight': weight_of[r['id']]} if r['id'] in weight_of else {}),
                          **({'text': s['text'], 'window': [(SIZE-w)//2, (SIZE-h)//2, w, h]} if readable else {})})
-    replay = [] if no_replay else [r for r in records if r['source'] == 'synthetic_replay' and r['split'] == 'train']
+    replay = [] if no_replay or not source else [r for r in records if r['source'] == 'synthetic_replay' and r['split'] == 'train']
     require(all('pair_index' in r for r in replay), 'the replay was not cut from these pairs')
     for r in replay:
         i = r['pair_index']; data.append(np.asarray(x[i])); targets.append(np.asarray(y[i]))
@@ -417,13 +419,13 @@ def human_pairs(review_set, source, arm, destination, no_replay=False, detector=
     if detector: np.save(out/'hint.npy', np.stack(hints + [np.zeros((SIZE, SIZE), np.uint8)]*(len(rows)-len(hints))))
     if weighted: np.save(out/'weights.npy', np.concatenate([np.stack(weights), np.ones((len(data)-len(weights), SIZE, SIZE), np.uint8)]))
     summary = {'counts': dict(Counter(r['source']+'/'+r['split'] for r in rows)), 'human_regions': len(native), 'weighted': weighted,
-               'train_tiles': sum(r['split'] == 'train' for r in rows), 'review_set': str(review_set), 'source_pairs': str(source),
+               'train_tiles': sum(r['split'] == 'train' for r in rows), 'review_set': str(review_set), 'source_pairs': str(source) if source else None,
                **({'tiles_with_text': sum('text' in r for r in rows)} if texts else {})}
     write_json(out/'summary.json', summary)
-    inputs = {str(p): digest(p) for p in [review_set/'run_manifest.json', review_set/'training_native.npz', source/'run_manifest.json',
+    inputs = {str(p): digest(p) for p in [review_set/'run_manifest.json', review_set/'training_native.npz', *([source/'run_manifest.json'] if source else []),
                                           *([detector/'run_manifest.json'] if detector else [])]}
     if texts: inputs[str(texts)] = digest(texts)
-    write_manifest(out, config={'review_set': str(review_set), 'source': str(source), 'arm': arm, 'no_replay': no_replay,
+    write_manifest(out, config={'review_set': str(review_set), 'source': str(source) if source else None, 'arm': arm, 'no_replay': no_replay,
                                 'detector': str(detector) if detector else None, 'texts': str(texts) if texts else None}, inputs=inputs,
                    files={p.name: digest(p) for p in out.glob('*.npy')} | {'records.json': digest(out/'records.json')}, **summary)
     print(json.dumps(summary), flush=True)
@@ -445,7 +447,7 @@ def main(argv=None):
         a=p.parse_args(argv[1:]);question_pairs(a.export,a.pages,a.ids,a.review_set,a.source,a.arm,a.whole,a.output_dir);return
     if argv[:1]==['human']:
         p=argparse.ArgumentParser(description=human_pairs.__doc__);p.add_argument('--review-set',type=Path,required=True)
-        p.add_argument('--source',type=Path,required=True);p.add_argument('--arm',choices=ARMS,default='gold_pixels')
+        p.add_argument('--source',type=Path,help='the synthetic pairs replayed and checked against (none: the human regions alone)');p.add_argument('--arm',choices=ARMS,default='gold_pixels')
         p.add_argument('--no-replay',action='store_true',help='the human regions alone, without the synthetic replay')
         p.add_argument('--detector',type=Path,help="a detection run: its masks hint the human tiles (hint.npy, for RevSep)")
         p.add_argument('--texts',type=Path,help="an export with the regions' struck text: text and window of the one-tile regions, for RevSep")
