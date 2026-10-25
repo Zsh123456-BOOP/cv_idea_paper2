@@ -394,8 +394,13 @@ def choose(args):
 
 def compare(args):
     """The paired difference in read-back between two chosen versions of every family (``choose`` outputs: before and after), on the
-    validation strikes both read, with 95% intervals by resampling writers (seed 42)."""
+    validation strikes both read, with 95% intervals by resampling writers (seed 42).  ``--pair AFTER=BEFORE``: family AFTER of the
+    after choice against family BEFORE of the before one instead (one model against another, both chosen in the same batch); the
+    result is keyed by AFTER."""
     before = json.loads((args.before/'selection.json').read_text()); after = json.loads((args.after/'selection.json').read_text())
+    if args.pair:
+        pairs = dict(p.split('=', 1) for p in args.pair); require(set(pairs) <= set(after) and set(pairs.values()) <= set(before), 'no such family')
+        before = {a: before[b] for a, b in pairs.items()}; after = {a: after[a] for a in pairs}
     config = lambda p: json.loads((p/'run_manifest.json').read_text())['config']
     a_scores = row_scores(Path(config(args.before)['evaluation']), config(args.before).get('splits', ['val']))
     b_scores = row_scores(Path(config(args.after)['evaluation']), config(args.after).get('splits', ['val']))
@@ -423,7 +428,7 @@ def compare(args):
     result['_all'] = dict(difference=pooled(writers), interval=[float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))],
                           families=len(families), improved=sum(result[f]['difference'] > 0 for f in families), writers=len(writers))
     out = make_output_dir(args.output_dir); write_json(out/'comparison.json', result)
-    write_manifest(out, config={'before': str(args.before), 'after': str(args.after)}, inputs={str(p/'selection.json'): digest(p/'selection.json') for p in (args.before, args.after)})
+    write_manifest(out, config={'before': str(args.before), 'after': str(args.after), 'pair': args.pair}, inputs={str(p/'selection.json'): digest(p/'selection.json') for p in (args.before, args.after)})
     print(json.dumps(result), flush=True)
 
 
@@ -456,6 +461,7 @@ def main(argv=None):
     p.add_argument('--splits', nargs='+', default=['val'], help='the splits read-back and pixel F1 are pooled over (val, dev)')
     p = sub.add_parser('compare')
     for key in ('before','after','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p.add_argument('--pair', action='append', help='AFTER=BEFORE: compare these two families (default: every family both choices have)')
     args = parser.parse_args(argv)
     {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs,'candidates':candidates,'choose':choose,'compare':compare,
      'human-pack':human_pack,'ceiling':ceiling}[args.command](args)

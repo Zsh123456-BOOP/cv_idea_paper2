@@ -104,6 +104,7 @@ class Experiment:
             inputs+=[p for p in (args.data/'hint.npy',args.human_validation_hints) if p is not None and p.exists()]
         if args.protocol:inputs.append(args.protocol)
         if args.init:inputs+=[p for p in sorted(args.init.iterdir()) if p.is_file()]
+        if getattr(args,'reader',None):inputs.append(args.reader)
         require(set(r['split'] for r in self.rows)<= {'train','val'},'test row in training bundle')
         require(not {r['group_uuid'] for r in self.rows if r['split']=='train'} &
                 {r['group_uuid'] for r in self.rows if r['split']=='val'},'synthetic validation writer leaked')
@@ -129,11 +130,11 @@ class Experiment:
                          simulated_hint(a,b,rng,self.args.hint_reach,self.args.hint_drop) for i,a,b in zip(ids,x,y)]).astype(np.float32)
 
     def labelled_batch(self):
-        """A batch for RevSep: grey, target and hint on [0, 1], and the erase and cross labels (``data.separation.pair_labels``)."""
+        """A batch for RevSep: grey, target and hint on [0, 1], the erase and cross labels (``data.separation.pair_labels``), its rows."""
         from ..data.separation import pair_labels
         ids=self.sample();x=self.x[ids];y=self.y[ids];labels=[pair_labels(a,b,self.human[i]) for i,a,b in zip(ids,x,y)]
         return (x.astype(np.float32)/255,y.astype(np.float32)/255,self.hints_of(ids,x,y,self.hint_rng),
-                np.stack([e for e,_ in labels]),np.stack([c for _,c in labels]))
+                np.stack([e for e,_ in labels]),np.stack([c for _,c in labels]),ids)
 
     def native_hint(self,i):
         if not self.hinted:return None
@@ -209,6 +210,8 @@ def main(argv=None):
     p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
     p.add_argument('--human-validation-hints',type=Path,help='RevSep: the detector hints of the human validation crops (data.separation hints)')
     p.add_argument('--hint',action=argparse.BooleanOptionalAction,default=True,help='RevSep: the hint channel (off: zeros)')
+    p.add_argument('--reader',type=Path,help='RevSep: a frozen reader (reader_ctc) whose CTC loss on the output of the one-tile human regions joins the loss')
+    p.add_argument('--reading-weight',type=float,default=0.,help='RevSep: the weight of that reading term')
     p.add_argument('--heads',action=argparse.BooleanOptionalAction,default=True,
                    help='RevSep: the erase and cross heads and the composition (off: H1 alone, NAFNet with the hint channel)')
     p.add_argument('--budget',help="a budget section of the protocol (passes over the data, evaluations, learning-rate scale): "

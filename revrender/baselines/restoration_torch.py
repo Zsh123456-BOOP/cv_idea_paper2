@@ -143,7 +143,8 @@ def train(e):
     if is_sep:
         config.update(architecture='RevSep (models.separation): the unchanged official NAFNet body on grey, hint and zeros; a 1x1 erase/cross head on its last decoder features',
             loss=('PSNR loss of the composed output and of H1, erase BCE+Dice, cross BCE' if a.heads else 'PSNR loss of H1'),
-            heads=a.heads,hint=a.hint,erase_weight=a.erase_weight,cross_weight=a.cross_weight,hint_reach=a.hint_reach,hint_drop=a.hint_drop)
+            heads=a.heads,hint=a.hint,erase_weight=a.erase_weight,cross_weight=a.cross_weight,hint_reach=a.hint_reach,hint_drop=a.hint_drop,
+            reader=str(a.reader) if a.reader else None,reading_weight=a.reading_weight)
     if is_stain:
         import torchmetrics
         config.update(initialization=str(a.init) if a.init else 'random; no author checkpoint',torchmetrics=torchmetrics.__version__,
@@ -164,14 +165,28 @@ def train(e):
         restored=torch.load(path/'weights.pt',map_location='cpu',weights_only=False)['model']
         require(all(torch.equal(v.detach().cpu(),restored[k]) for k,v in active.state_dict().items()),'checkpoint round-trip mismatch')
 
-    if is_sep:from ..models.separation import separate, separation_loss
+    if is_sep:
+        from ..models.separation import separate, separation_loss
+        reading=None
+        if a.reader and a.reading_weight:
+            from ..reader_ctc import ctc, load
+            reader,alphabet=load(a.reader)
+            def reading_of(ids):     # the one-tile human regions of the batch, each read on its window of the output
+                chosen=[(k,e.rows[i]) for k,i in enumerate(ids) if 'text' in e.rows[i]]
+                if not chosen:return lambda out:None
+                def term(out):
+                    crops=[out[k,0,y:y+h,x:x+w] for k,r in chosen for x,y,w,h in [r['window']]]
+                    return a.reading_weight*ctc(reader,crops,[r['text'] for _,r in chosen],alphabet)
+                return term
+            reading=reading_of
     terms={}
     for step in range(1,a.steps+1):
         if step==1:before=next(network.parameters()).detach().clone()
         if is_sep:
-            x,y,hint,erase,cross=e.labelled_batch();network.train();opt.zero_grad(set_to_none=True)
+            x,y,hint,erase,cross,ids=e.labelled_batch();network.train();opt.zero_grad(set_to_none=True)
             t=lambda v:torch.from_numpy(np.ascontiguousarray(v[:,None])).cuda()
-            loss,terms=separation_loss(network,t(x),t(y),t(hint),t(erase),t(cross),a.heads,a.erase_weight,a.cross_weight)
+            loss,terms=separation_loss(network,t(x),t(y),t(hint),t(erase),t(cross),a.heads,a.erase_weight,a.cross_weight,
+                                       reading(ids) if reading else None)
             require(torch.isfinite(loss).item(),'nonfinite training loss');value=float(loss.detach());loss.backward()
         else:
             x,y=e.batch();network.train();opt.zero_grad(set_to_none=True)

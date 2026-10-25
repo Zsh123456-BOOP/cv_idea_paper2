@@ -46,3 +46,13 @@ def test_the_loss_trains_the_heads_and_without_heads_only_h1():
     net.zero_grad(set_to_none=True)
     loss, terms = separation_loss(net, grey, target, hint, erase, cross, heads=False); loss.backward()
     assert set(terms) == {'restored'} and net.heads.weight.grad is None
+
+
+def test_a_reading_term_joins_the_loss_when_it_gives_one():
+    torch.manual_seed(42); net = RevSep(Body()); grey = torch.rand(1, 1, 8, 8); erase = torch.zeros(1, 1, 8, 8, dtype=torch.uint8)
+    seen = []
+    def reading(out): seen.append(out.shape); return out.mean()
+    _, terms = separation_loss(net, grey, grey, grey*0, erase, erase, reading=reading)
+    assert seen == [(1, 1, 8, 8)] and 'reading' in terms
+    _, terms = separation_loss(net, grey, grey, grey*0, erase, erase, reading=lambda out: None)
+    assert 'reading' not in terms

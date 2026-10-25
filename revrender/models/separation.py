@@ -8,8 +8,9 @@ redrawn from H1).  The output is composed (``compose``): a crossing takes H1, an
 scan -- with the heads' probabilities while training, at one half when inferring -- so away from the strike the scan passes through.
 
 Loss (``separation_loss``): NAFNet's PSNR loss on the composed output and on H1 (H1 stays a whole restorer: the composition can be
-taken off as an ablation), BCE plus Dice on erase and BCE on cross, both over the pixels their labels count.  Without heads
-(``heads=False``) the loss is the PSNR loss of H1 and the output H1: NAFNet with the hint channel.
+taken off as an ablation), BCE plus Dice on erase and BCE on cross, both over the pixels their labels count, and optionally a reading
+term (``reading``: the frozen reader's CTC loss on the output, ``reader_ctc``).  Without heads (``heads=False``) the loss is the PSNR
+loss of H1 and the output H1: NAFNet with the hint channel.
 """
 import numpy as np
 import torch
@@ -57,14 +58,18 @@ def masked_dice(logits, labels):
     return 1-(2*(p*y).sum()+1)/(p.sum()+y.sum()+1)
 
 
-def separation_loss(network, grey, target, hint, erase, cross, heads=True, erase_weight=1., cross_weight=1.):
-    """The loss of a batch (tensors (N, 1, H, W): grey, target and hint on [0, 1], erase and cross labels uint8) and its terms."""
+def separation_loss(network, grey, target, hint, erase, cross, heads=True, erase_weight=1., cross_weight=1., reading=None):
+    """The loss of a batch (tensors (N, 1, H, W): grey, target and hint on [0, 1], erase and cross labels uint8) and its terms;
+    ``reading``: a function of the output (composed, or H1 without heads) giving the weighted reading term, or None."""
     restored, erase_logits, cross_logits = network(grey, hint)
-    terms = {'restored': psnr_loss(restored, target)}
+    terms = {'restored': psnr_loss(restored, target)}; output = restored
     if heads:
-        terms['composed'] = psnr_loss(compose(grey, restored, erase_logits, cross_logits), target)
+        output = compose(grey, restored, erase_logits, cross_logits); terms['composed'] = psnr_loss(output, target)
         terms['erase'] = erase_weight*(masked_bce(erase_logits, erase)+masked_dice(erase_logits, erase))
         terms['cross'] = cross_weight*masked_bce(cross_logits, cross)
+    if reading is not None:
+        value = reading(output)
+        if value is not None: terms['reading'] = value
     return sum(terms.values()), {k: float(v.detach()) for k, v in terms.items()}
 
 

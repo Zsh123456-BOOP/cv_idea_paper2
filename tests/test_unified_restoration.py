@@ -154,3 +154,21 @@ def test_the_human_ceiling_erases_the_confirmed_pixels_in_the_very_window_of_the
     row=json.loads((tmp_path/'human'/'pack.json').read_text())['rows'][0]
     crop=np.asarray(Image.open(tmp_path/'human'/row['images']['erased']))
     assert row['model']=='dev__human' and crop.shape==(32,72) and (crop[6+9:6+11,6:66]==255).all() and (crop[6+5,6:66]==40).all()
+
+
+def test_compare_pairs_one_family_against_another_chosen_in_the_same_batch(tmp_path):
+    from argparse import Namespace
+    from revrender.eval.unified_restoration import compare
+    root = tmp_path/'eval'; (root/'pack').mkdir(parents=True); (root/'qwen8b').mkdir()
+    rows, readings = [], []
+    for w in ('w1', 'w2'):
+        for model, reading in (('A-s1', 'ab'), ('B-s2', 'a')):
+            rid = f'dev|{model}|{w}_q#1'; rows.append(dict(id=rid, split='dev', kind='line', model='dev__'+model, line_id=f'{w}_q#1', text='ab'))
+            readings.append(json.dumps({'id': rid, 'text': reading}))
+    (root/'pack/pack.json').write_text(json.dumps({'rows': rows})); (root/'qwen8b/predictions.jsonl').write_text('\n'.join(readings))
+    chosen = tmp_path/'chosen'; chosen.mkdir()
+    (chosen/'selection.json').write_text(json.dumps({'A': {'chosen': {'name': 'A-s1'}}, 'B': {'chosen': {'name': 'B-s2'}}}))
+    (chosen/'run_manifest.json').write_text(json.dumps({'config': {'evaluation': str(root), 'splits': ['dev']}}))
+    compare(Namespace(before=chosen, after=chosen, output_dir=tmp_path/'out', pair=['A=B']))
+    result = json.loads((tmp_path/'out'/'comparison.json').read_text())
+    assert set(result) == {'A', '_all'} and result['A']['before'] == .5 and result['A']['after'] == 1. and result['A']['difference'] == .5
