@@ -8,7 +8,7 @@ set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-# VARIANT names another run (its own marker and pack directories), GROUPS the diagnostics it packs (default D1 D2 D3).
+# VARIANT names another run (its own marker and pack directories), DIAGNOSTICS the diagnostics it packs (default D1 D2 D3).
 O=/home/zsh/hme/outputs; N=$O/paper2_clean; R=$O/paper2_restoration_diagnostics20261025${VARIANT:+_$VARIANT}; D=${N}_restoration_diagnostics${VARIANT:+_$VARIANT}
 E=${N}_revsep_stroke_versions_final; UP=$O/paper2_restoration_sources20261008
 DEV_EXPORT=$O/paper2_test_export20261022/export.json; DEV_PAGES=$O/paper2_test_text20261018_page/site/images
@@ -23,7 +23,7 @@ index() { nvidia-smi --query-gpu=index,uuid --format=csv,noheader | awk -F', ' -
 if ! done_ pack; then
     until card=$(open_card 8000); do sleep 30; done; [ "$card" != "$CARD3" ] || export ALLOW_GPU3=1
     bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$(numa_of "$card")" "$D" -- "$PY" -m revrender.eval.restoration_diagnostics pack --evaluation "$E" \
-        --upstream "$UP" --dev-export "$DEV_EXPORT" --dev-pages "$DEV_PAGES" --groups ${GROUPS:-D1 D2 D3} --output-dir "$D" > "$R/pack.log" 2>&1
+        --upstream "$UP" --dev-export "$DEV_EXPORT" --dev-pages "$DEV_PAGES" --groups ${DIAGNOSTICS:-D1 D2 D3} --output-dir "$D" > "$R/pack.log" 2>&1
     mark pack; fi
 for reading in qwen8b qwen8b_repeat; do
     if ! done_ "$reading"; then
