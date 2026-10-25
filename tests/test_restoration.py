@@ -146,3 +146,16 @@ def test_a_hinted_batch_reads_human_hints_simulates_synthetic_ones_and_labels_bo
     assert erase[0][7:9,2:14].all() and (cross[0][x[0]<200]==255).all() and erase[1][7:9,2:14].all()
     e.args.hint=False
     assert not e.labelled_batch()[2].any()
+
+
+def test_a_version_is_kept_when_its_blocks_to_fix_fall_though_the_score_is_negative(tmp_path):
+    from revrender.baselines.restoration import Experiment
+    from types import SimpleNamespace
+    import time
+    e=Experiment.__new__(Experiment);e.args=SimpleNamespace(batch_size=1,steps=100,min_steps=1,patience=0,select='blocks')
+    e.out=tmp_path;e.native_rows=[{}]
+    im=np.full((12,12),255,np.uint8);im[4:8,4:8]=0;e.native={'image_0':im,'mask_0':im==0}
+    e.x=im[None];e.y=np.full_like(e.x,255);e.val=np.array([],int)
+    e.best=(-np.inf,None,'');e.start=time.monotonic();e.stale=0;e.stop=False;e.candidate_improved=False
+    e.evaluate(lambda x:x,1,lambda path:path.mkdir())
+    assert e.best[1]==1 and (tmp_path/'step_1').is_dir()

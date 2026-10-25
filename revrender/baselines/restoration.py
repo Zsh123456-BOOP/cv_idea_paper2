@@ -89,7 +89,7 @@ class Experiment:
         self.native=np.load(args.human_validation.with_suffix('.npz'))
         self.native_rows=json.loads(args.human_validation.read_text())
         require(not {r['group_uuid'] for r in self.native_rows}&{r['group_uuid'] for r in self.rows},'human validation writer leaked')
-        self.best=(-1,None,'');self.start=time.monotonic()
+        self.best=(-np.inf,None,'')   # scores may be negative (--select edits or blocks: fewer the better);self.start=time.monotonic()
         self.stale=0;self.stop=False;self.last_step=0
         self.unpaired_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(1)[0])
         self.candidate_improved=False
