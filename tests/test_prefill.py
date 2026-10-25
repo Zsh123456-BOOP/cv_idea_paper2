@@ -17,15 +17,15 @@ def test_edits_count_the_strike_left_and_the_writing_erased_over_the_strike():
 
 
 def test_the_switch_rule_wants_fewer_pixels_to_fix_and_no_more_writing_erased(tmp_path):
-    region = lambda i, w, f, e: {'id': i, 'writer': w, 'to_fix': f, 'missed': 0, 'writing_erased': e, 'strike': 10, 'writing': 100}
+    region = lambda i, w, f, e: {'id': i, 'writer': w, 'to_fix': f, 'blocks': 10*f, 'missed': 0, 'writing_erased': e, 'strike': 10, 'writing': 100}
     cur = [region(f'r{k}', f'w{k%5}', .5, 2) for k in range(20)]; new = [region(f'r{k}', f'w{k%5}', .3, 3) for k in range(20)]
     (tmp_path/'s.json').write_text(json.dumps({m: {'sets': {'h': {'regions': r}}} for m, r in (('cur', cur), ('new', new))}))
     from types import SimpleNamespace
-    switch(SimpleNamespace(scores=tmp_path/'s.json', set='h', current='cur', candidate='new', output=tmp_path/'a.json'))
+    switch(SimpleNamespace(scores=tmp_path/'s.json', set='h', current='cur', candidate='new', output=tmp_path/'a.json', measure='blocks'))
     assert json.loads((tmp_path/'a.json').read_text())['replace']
     worse = [dict(r, writing_erased=10) for r in new]
     (tmp_path/'t.json').write_text(json.dumps({m: {'sets': {'h': {'regions': r}}} for m, r in (('cur', cur), ('new', worse))}))
-    switch(SimpleNamespace(scores=tmp_path/'t.json', set='h', current='cur', candidate='new', output=tmp_path/'b.json'))
+    switch(SimpleNamespace(scores=tmp_path/'t.json', set='h', current='cur', candidate='new', output=tmp_path/'b.json', measure='blocks'))
     assert not json.loads((tmp_path/'b.json').read_text())['replace']        # writing erased up 8 points
 
 

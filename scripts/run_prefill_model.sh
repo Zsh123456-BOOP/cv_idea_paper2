@@ -8,7 +8,8 @@
 #  3. four teachers (NAFNet, DE-GAN, COR (b) and RevSep, the versions the stroke version's deciding batch chose) on the library's eligible
 #     regions (pseudo_regions predict --prefill-set); their mean the soft target (combine --soft), the human regions a quarter of the
 #     regions, a pseudo-labelled region's weight 0.5.
-#  4. NAFNet trained from scratch ([prefill], versions kept on the held-out writers' pixels to fix: --select edits), beside the
+#  4. NAFNet trained from scratch ([prefill], versions kept on the held-out writers' blocks to fix: --select blocks; the forward test
+#     showed the share of pixels to fix runs against the annotator's effort, the blocks with it), beside the
 #     ablations: real only ([real_only]), pseudo weight 1, human share one half, the hint channel (RevSep --no-heads), three teachers
 #     (no RevSep), the 201 regions alone.
 #  5. every chosen version, the soft student and NAFNet (b) scored on the held-out writers and the fixed 16 (eval.prefill score); the
@@ -78,10 +79,10 @@ if ! done_ data; then
     TILE_ARGS="--detector $DET" combine hint "$SET" .25 .5 "${TEACHERS[@]}"
     [ -e "${N}_prefill_tiles_real/run_manifest.json" ] || "$PY" -m revrender.data.restoration_pairs human --review-set "$SET" --no-replay --output-dir "${N}_prefill_tiles_real" > "$R/tiles_real.log" 2>&1
     mark data; fi
-arm_job() {   # CARD NUMA ARM: one arm trained from scratch, its versions kept on the held-out writers' pixels to fix
+arm_job() {   # CARD NUMA ARM: one arm trained from scratch, its versions kept on the held-out writers' blocks to fix
     local card="$1" numa="$2" arm="$3" model=NAFNet data="${N}_prefill_tiles_$3" budget=prefill
     case "$arm" in real) budget=real_only ;; hint) model=RevSep; export RESTORER_FLAGS="--no-heads" ;; esac
-    RESTORER_MEMORY=10000 RESTORER_ARGS="--select edits" finetune_restorer "$model" "$card" "$numa" - "$data" "${N}_prefill_model_$arm" "$budget" > "$R/train_$arm.log" 2>&1
+    RESTORER_MEMORY=10000 RESTORER_ARGS="--select blocks" finetune_restorer "$model" "$card" "$numa" - "$data" "${N}_prefill_model_$arm" "$budget" > "$R/train_$arm.log" 2>&1
 }
 ARMS=(main real pw1 share50 hint three old201)
 if ! done_ train; then

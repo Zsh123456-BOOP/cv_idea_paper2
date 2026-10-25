@@ -173,12 +173,14 @@ class Experiment:
 
     def evaluate(self,predict,step,save,variant='',final_candidate=True):
         suffix=('_'+variant) if variant else ''
-        counts=np.zeros(5,np.int64);native_out={};tiles=[];edits=[]
+        from ..eval.prefill import edits as edit_counts
+        counts=np.zeros(5,np.int64);native_out={};tiles=[];edits=[];blocks=[]
         for i,_ in enumerate(self.native_rows):
             im=self.native[f'image_{i}'].astype(np.float32)/255;gold=self.native[f'mask_{i}']
             pred=restore_native(predict,im,self.native_hint(i));require(np.isfinite(pred).all(),'nonfinite restoration')
             count=removal_counts(im,pred,gold);counts+=count;native_out[f'image_{i}']=np.rint(pred*255).astype(np.uint8)
             edits.append((count[1]+count[2])/max(1,count[0]+count[2]))   # pixels to fix (missed + writing erased) over the strike's
+            blocks.append(edit_counts(im,gold,pred)['blocks'])            # blocks to fix: about one stroke of the eraser or brush each
             canvas=Image.new('L',(768,256),255)
             for j,a in enumerate((im,pred,np.where(gold,1,im))):
                 tile=Image.fromarray(np.rint(a*255).astype(np.uint8));tile.thumbnail((252,252));canvas.paste(tile,(j*256+(256-tile.width)//2,(256-tile.height)//2))
@@ -191,13 +193,14 @@ class Experiment:
             sse+=float(((p-y)**2).sum());base+=float(((x-y)**2).sum());n+=y.size
             changed.extend(np.abs(p-y)[np.abs(x-y)>.05].tolist())
             preserve.extend(np.abs(p-y)[(y<200/255)&(np.abs(x-y)<=.05)].tolist())
-        result={'step':step,'human_removal':removal_metrics(counts),'human_edits':float(np.mean(edits)),
+        result={'step':step,'human_removal':removal_metrics(counts),'human_edits':float(np.mean(edits)),'human_blocks':float(np.mean(blocks)),
                 'synthetic_psnr':-10*np.log10(max(sse/n,1e-12)) if n else None,
                 'identity_synthetic_psnr':-10*np.log10(max(base/n,1e-12)) if n else None,
                 'synthetic_changed_mae':float(np.mean(changed)) if changed else 0.,
                 'synthetic_preserved_ink_mae':float(np.mean(preserve)) if preserve else 0.}
-        # by the removal F1 of the human validation, or (--select edits, the prefill model) by its pixels to fix, fewer the better
-        score=-result['human_edits'] if getattr(self.args,'select','f1')=='edits' else result['human_removal']['f1']
+        # by the removal F1 of the human validation, or (the prefill model) by its pixels or blocks to fix, fewer the better
+        select=getattr(self.args,'select','f1')
+        score={'edits':-result['human_edits'],'blocks':-result['human_blocks']}.get(select,result['human_removal']['f1'])
         improved=score>self.best[0]
         self.last_step=step
         self.candidate_improved|=improved
@@ -236,7 +239,8 @@ def main(argv=None):
     p.add_argument('--min-steps',type=int,default=0)
     p.add_argument('--patience',type=int,default=0)
     p.add_argument('--ema',action='store_true')
-    p.add_argument('--select',choices=['f1','edits'],default='f1',help="keep a version when the human validation's removal F1 rises, or its pixels to fix fall")
+    p.add_argument('--select',choices=['f1','edits','blocks'],default='f1',
+                   help="keep a version when the human validation's removal F1 rises, or its pixels (edits) or blocks to fix fall")
     p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
     p.add_argument('--human-validation-hints',type=Path,help='RevSep: the detector hints of the human validation crops (data.separation hints)')
     p.add_argument('--hint',action=argparse.BooleanOptionalAction,default=True,help='RevSep: the hint channel (off: zeros)')

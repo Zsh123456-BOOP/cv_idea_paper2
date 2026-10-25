@@ -11,7 +11,11 @@ least ``BLOCK`` pixels of either kind: about one stroke of the eraser or of the 
 to fix at most ``FREE``), and pooled, the writing erased over the writing.  A region carrying the annotator's own edit count and
 seconds (``new_native``) also correlates them with its pixels to fix.  ``switch`` applies the rule written before any reading: the
 candidate replaces the current prefill when its pixels to fix, paired region by region, fall (mean difference below 0, the upper end
-of its writer-resampled 95% interval below +1 point) and its writing erased rises by at most 2 points.
+of its writer-resampled 95% interval below +1 point) and its writing erased rises by at most 2 points.  Revised before any candidate
+was trained (2026-10-25): on training batch 1 the share of pixels to fix ran against the annotator's seconds and edits (Spearman
+-0.2 to -0.4, a small region's share swings widest) while the blocks to fix followed them (+0.67 to +0.70), so ``--measure blocks``
+(the default) pairs blocks, the candidate replacing when their mean difference is below 0 and the interval's upper end below
++``BLOCK_MARGIN`` of a block; the share is also reported pooled over the regions (``pooled_to_fix``).
 """
 import argparse
 import json
@@ -26,6 +30,7 @@ INK = 200/255
 ERASED = .2
 BLOCK = 8
 FREE = .02
+BLOCK_MARGIN = .25
 
 
 def blocks(mask):
@@ -46,7 +51,8 @@ def summary_of(regions):
     return {'regions': len(regions), 'to_fix': float(np.mean(to_fix)), 'blocks': float(np.mean([r['blocks'] for r in regions])),
             'no_edit_share': float(np.mean([v <= FREE for v in to_fix])),
             'writing_erased': sum(r['writing_erased'] for r in regions)/max(1, sum(r['writing'] for r in regions)),
-            'missed_share': sum(r['missed'] for r in regions)/max(1, sum(r['strike'] for r in regions))}
+            'missed_share': sum(r['missed'] for r in regions)/max(1, sum(r['strike'] for r in regions)),
+            'pooled_to_fix': sum(r['missed']+r['writing_erased'] for r in regions)/max(1, sum(r['strike'] for r in regions))}
 
 
 def spearman(a, b):
@@ -92,15 +98,16 @@ def switch(args):
     scores = json.loads(args.scores.read_text())
     a = {r['id']: r for r in scores[args.current]['sets'][args.set]['regions']}; b = {r['id']: r for r in scores[args.candidate]['sets'][args.set]['regions']}
     ids = sorted(set(a) & set(b)); writers = sorted({a[i]['writer'] for i in ids}); by = {w: [i for i in ids if a[i]['writer'] == w] for w in writers}
-    diff = lambda chosen: float(np.mean([b[i]['to_fix']-a[i]['to_fix'] for i in chosen]))
+    key = args.measure; margin = BLOCK_MARGIN if key == 'blocks' else .01
+    diff = lambda chosen: float(np.mean([b[i][key]-a[i][key] for i in chosen]))
     rng = np.random.default_rng(SEED); draws = [diff([i for w in rng.choice(writers, len(writers)) for i in by[w]]) for _ in range(1000)]
     interval = [float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))]
     erased = lambda s: sum(s[i]['writing_erased'] for i in ids)/max(1, sum(s[i]['writing'] for i in ids))
     rise = erased(b)-erased(a); d = diff(ids)
-    result = {'set': args.set, 'current': args.current, 'candidate': args.candidate, 'regions': len(ids), 'writers': len(writers),
-              'to_fix_difference': d, 'interval': interval, 'writing_erased_rise': rise,
-              'replace': bool(d < 0 and interval[1] < .01 and rise <= .02),
-              'rule': 'replace when the paired pixels to fix fall (mean < 0, writer-resampled 95% upper end < +1 point) and writing erased rises by at most 2 points'}
+    result = {'set': args.set, 'current': args.current, 'candidate': args.candidate, 'regions': len(ids), 'writers': len(writers), 'measure': key,
+              'difference': d, 'interval': interval, 'writing_erased_rise': rise,
+              'replace': bool(d < 0 and interval[1] < margin and rise <= .02),
+              'rule': f'replace when the paired {key} fall (mean < 0, writer-resampled 95% upper end < {margin}) and writing erased rises by at most 2 points'}
     write_json(args.output, {**result, 'inputs': {str(args.scores): digest(args.scores)}}); print(json.dumps(result), flush=True)
 
 
@@ -112,6 +119,7 @@ def main(argv=None):
     w = sub.add_parser('switch')
     for key in ('scores', 'output'): w.add_argument('--'+key, type=Path, required=True)
     for key in ('set', 'current', 'candidate'): w.add_argument('--'+key, required=True)
+    w.add_argument('--measure', choices=('blocks', 'to_fix'), default='blocks')
     args = p.parse_args(argv); {'score': score, 'switch': switch}[args.command](args)
 
 
