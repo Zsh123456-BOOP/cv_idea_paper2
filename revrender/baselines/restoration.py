@@ -72,11 +72,14 @@ def restore_native(predict, grey, hint=None):
 
 class Experiment:
     hinted=False    # a model told where the revision is (HINTED)
+    w=None          # per-pixel loss weights of the data (weights.npy)
 
     def __init__(self,args):
         self.args=args;self.out=make_output_dir(args.output_dir)
         self.rows=json.loads((args.data/'records.json').read_text())
         self.x=np.load(args.data/(args.arm+'.npy'),mmap_mode='r');self.y=np.load(args.data/'targets.npy',mmap_mode='r')
+        # Per-pixel loss weights (data.pseudo_regions: 0 where the teachers disagree); honoured by NAFNet's loss.
+        self.w=np.load(args.data/'weights.npy',mmap_mode='r') if (args.data/'weights.npy').exists() else None
         self.train=np.array([i for i,r in enumerate(self.rows) if r['split']=='train'])
         self.val=np.array([i for i,r in enumerate(self.rows) if r['split']=='val'])
         rng=np.random.default_rng(SEED);self.val=rng.choice(self.val,min(args.validation_limit,len(self.val)),replace=False)
@@ -109,17 +112,19 @@ class Experiment:
         require(not {r['group_uuid'] for r in self.rows if r['split']=='train'} &
                 {r['group_uuid'] for r in self.rows if r['split']=='val'},'synthetic validation writer leaked')
         write_manifest(self.out,config=to_jsonable(args),inputs={str(p):digest(p) for p in inputs},
-            upstream=self.source,selection='maximum removal F1 on 16 independent human regions; threshold 0.2 fixed',
+            upstream=self.source,selection='maximum removal F1 on 16 independent human regions; threshold 0.2 fixed',weighted=self.w is not None,
             synthetic_validation_indices=self.val.tolist(),limitations='human labels do not provide true clean images or hidden-stroke truth',
             adaptation='native 256 square tiles; image-only; synthetic-only; paired supervision except independent clean-domain sampling for CycleGAN; task adaptation, not original benchmark scores')
 
     def sample(self):
         return self.rng.choice(self.train,self.args.batch_size,replace=False)
 
-    def batch(self,unpaired=False):
+    def batch(self,unpaired=False,weights=False):
         ids=self.sample()
         targets=self.unpaired_rng.choice(self.train,self.args.batch_size,replace=False) if unpaired else ids
-        return self.x[ids].astype(np.float32)/255,self.y[targets].astype(np.float32)/255
+        x,y=self.x[ids].astype(np.float32)/255,self.y[targets].astype(np.float32)/255
+        if not weights:return x,y
+        return x,y,(self.w[ids].astype(np.float32) if self.w is not None else np.ones_like(x))
 
     def hints_of(self,ids,x,y,rng):
         """The hints of pairs ``ids`` (their uint8 x, y): a human tile's detector hint jittered, a synthetic one's simulated

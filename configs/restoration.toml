@@ -103,3 +103,10 @@ evaluations = 8
 passes = 180
 learning_rate_scale = 1.0
 evaluations = 10
+
+# A student on the pseudo-labelled library (data.pseudo_regions, scripts/run_pseudo_student.sh; 2026-10-25): from the same chosen
+# synthetic version as [finetune_long], a tenth of the learning rate, a few passes over ten thousand regions.
+[pseudo]
+passes = 4
+learning_rate_scale = 0.1
+evaluations = 8

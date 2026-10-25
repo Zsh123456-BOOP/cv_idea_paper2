@@ -19,7 +19,8 @@ chosen_of() {   # SELECTION FAMILY: the chosen version's weights (a box remover'
 }
 finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT [BUDGET]: a restorer trained on DATA from INIT ('-': its own random start) with a
     # budget of configs/restoration.toml (default [finetune] from INIT); RevSep with the hints of the validation (VAL_HINTS) and the
-    # switches in RESTORER_FLAGS (--no-hint, --no-heads)
+    # switches in RESTORER_FLAGS (--no-hint, --no-heads); RESTORER_ARGS: further arguments of any restorer; RESTORER_MEMORY: the free MiB
+    # the card must have (default 20000)
     local model="$1" card="$2" numa="$3" init="$4" data="$5" out="$6" budget="${7:-}" runtime=$PY upstream=$UP start=()
     [ "$init" = - ] || start=(--init "$init"); [ -z "$budget" ] || start+=(--budget "$budget")
     [ "$model" != RevSep ] || start+=(--human-validation-hints "$VAL_HINTS" ${RESTORER_FLAGS:-})
@@ -32,9 +33,9 @@ finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT [BUDGET]: a restorer tra
             for d in /home/zsh/hme/envs/paper2_restoration_tf/lib/python3.12/site-packages/nvidia/*/lib; do export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; done
         elif [ "$model" = StainRestorer ]; then export PYTHONPATH="$ROOT:/home/zsh/hme/envs/paper2_stain_deps"; fi
         idle=0; if [ "$card" = "$C3" ]; then idle=1; export ALLOW_GPU3=1; fi
-        wait_for_gpu_memory "$card" 20000 "$idle"
+        wait_for_gpu_memory "$card" "${RESTORER_MEMORY:-20000}" "$idle"
         bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$runtime" -m revrender.baselines.restoration --model "$model" \
             --arm gold_pixels --protocol "$ROOT/configs/restoration.toml" --data "$data" --upstream "$upstream" \
-            --human-validation "$VAL/validation_native.json" "${start[@]}" --output-dir "$out" > "$out.log" 2>&1 < /dev/null
+            --human-validation "$VAL/validation_native.json" "${start[@]}" ${RESTORER_ARGS:-} --output-dir "$out" > "$out.log" 2>&1 < /dev/null
     )
 }

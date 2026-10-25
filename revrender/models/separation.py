@@ -42,9 +42,10 @@ def compose(grey, restored, erase, cross, hard=False):
     return c*restored + (1-c)*(e + (1-e)*grey)
 
 
-def psnr_loss(value, target):
-    """NAFNet's PSNR loss (the baseline's, ``restoration_torch.train``)."""
-    return 10/np.log(10)*torch.log(((value-target)**2).mean((1, 2, 3))+1e-8).mean()
+def psnr_loss(value, target, weight=None):
+    """NAFNet's PSNR loss (the baseline's, ``restoration_torch.train``); with a per-pixel ``weight``, its weighted mean error."""
+    error = ((value-target)**2).mean((1, 2, 3)) if weight is None else ((value-target)**2*weight).mean((1, 2, 3))/weight.mean((1, 2, 3))
+    return 10/np.log(10)*torch.log(error+1e-8).mean()
 
 
 def masked_bce(logits, labels):

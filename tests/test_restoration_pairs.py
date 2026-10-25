@@ -65,8 +65,8 @@ def test_native_tiles_whiten_only_the_pixels_to_remove_and_cover_the_whole_crop(
     from revrender.data.restoration_pairs import tiles
     image=np.full((40,600),255,np.uint8);image[10:30,::7]=50;mask=np.zeros(image.shape,bool);mask[19:21,:]=True;image[mask]=30
     out=tiles(image,mask)
-    assert len(out)==3 and all(t.shape==(SIZE,SIZE) and g.shape==(SIZE,SIZE) for t,g in out)
-    t,g=out[0];changed=t!=g
+    assert len(out)==3 and all(t.shape==(SIZE,SIZE) and g.shape==(SIZE,SIZE) and (w==1).all() for t,g,w in out)
+    t,g,_=out[0];changed=t!=g
     assert changed.any() and (g[changed]==255).all() and (t[changed]==30).all()
 
 

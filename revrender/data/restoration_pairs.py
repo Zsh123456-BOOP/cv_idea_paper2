@@ -267,10 +267,13 @@ def canvas_tiles(array, fill):
     return [canvas[y:y+SIZE, x:x+SIZE] for y in at(ph) for x in at(pw)]
 
 
-def tiles(image, mask):
-    """The tiles of a native crop (``canvas_tiles`` on white), each with its target: the crop with the pixels to remove made white."""
-    target = image.copy(); target[mask.astype(bool)] = 255
-    return list(zip(canvas_tiles(image, 255), canvas_tiles(target, 255)))
+def tiles(image, mask, weight=None, clean=None):
+    """The tiles of a native crop (``canvas_tiles`` on white), each with its target (the crop with the pixels to remove made white, or
+    the given ``clean`` image) and its per-pixel loss weight (1 where none is given)."""
+    if clean is None: target = image.copy(); target[mask.astype(bool)] = 255
+    else: target = np.asarray(clean, np.uint8)
+    weights = np.ones(image.shape, np.uint8) if weight is None else np.asarray(weight, np.uint8)
+    return list(zip(canvas_tiles(image, 255), canvas_tiles(target, 255), canvas_tiles(weights, 1)))
 
 
 def question_gold(page, revisions):
@@ -300,17 +303,17 @@ def question_pairs(export, pages, ids, review_set, source, arm, whole, destinati
             images.append(tile); targets.append(target)
             rows.append({'id': f'{name}~{n}', 'group_uuid': writer, 'split': 'train', 'source': kind, 'clean': bool((tile == target).all())})
     for k, r in enumerate(native):
-        add(tiles(arrays[f'image_{k}'], arrays[f'mask_{k}']), r['group_uuid'], r['id'], 'human_confirmed')
+        add([t[:2] for t in tiles(arrays[f'image_{k}'], arrays[f'mask_{k}'])], r['group_uuid'], r['id'], 'human_confirmed')
     for image_id in chosen:
         revisions = data['pages'][image_id]['revisions']
         require(revisions and all(r.get('confirmed') for r in revisions if not r.get('deleted')), f'{image_id}: a region is not confirmed')
         with Image.open(pages/(image_id+'.png')) as page:
             if whole:
-                grey, gold, _ = question_gold(page, revisions); add(tiles(grey, gold), image_id.split('_')[0], image_id, 'whole_question')
+                grey, gold, _ = question_gold(page, revisions); add([t[:2] for t in tiles(grey, gold)], image_id.split('_')[0], image_id, 'whole_question')
             else:
                 for r in revisions:
                     if r.get('confirmed') and not r.get('deleted'):
-                        image, mask = reviewed_crop(page, r); add(tiles(image, mask), image_id.split('_')[0], image_id+'#'+r['id'], 'question_region')
+                        image, mask = reviewed_crop(page, r); add([t[:2] for t in tiles(image, mask)], image_id.split('_')[0], image_id+'#'+r['id'], 'question_region')
     train = {r['group_uuid'] for r in rows}
     for i, r in enumerate(pairs):
         if r['split'] == 'val' and r['group_uuid'] not in train:
@@ -374,7 +377,10 @@ def human_pairs(review_set, source, arm, destination, no_replay=False, detector=
     restorers' human validation, as in their synthetic training.  ``no_replay``: the human regions alone.  ``detector``: a detection
     run whose masks hint each human tile (``data.separation.detector_hint``, hint.npy; a synthetic tile's hint is simulated).
     ``texts``: an export holding the regions' struck text; a region within one tile whose text is confirmed and readable gives its tile
-    ``text`` and ``window`` (x, y, width, height of the region on the tile), for RevSep's recognition loss."""
+    ``text`` and ``window`` (x, y, width, height of the region on the tile), for RevSep's recognition loss.  A review set with per-pixel
+    weights (``weight_<k>``, ``data.pseudo_regions``) gives ``weights.npy`` beside the tiles, 1 on every other row; a region with its
+    own ``target_<k>`` image (the teachers' mean) is tiled against that instead of the whitened mask; a region keeps the source its
+    review set's record gives it."""
     from .separation import detector_hint
     from ..eval.coverage import prepare
     struck = {r['id']: r for p in json.loads(texts.read_text())['pages'].values() for r in p.get('revisions', [])} if texts else {}
@@ -383,15 +389,18 @@ def human_pairs(review_set, source, arm, destination, no_replay=False, detector=
     native = json.loads((review_set/'training_native.json').read_text()); arrays = np.load(review_set/'training_native.npz')
     pairs = json.loads((source/'records.json').read_text())
     x = np.load(source/(arm+'.npy'), mmap_mode='r'); y = np.load(source/'targets.npy', mmap_mode='r')
-    data, targets, rows, hints = [], [], [], []
+    data, targets, rows, hints, weights = [], [], [], [], []
+    weighted = any(name.startswith('weight_') for name in arrays.files); source_of = {r['id']: r['source'] for r in records}
     for k, r in enumerate(native):
         if detector:
             hints += canvas_tiles(detector_hint(pages.read_output(detector, r['page'])[1], r['box'], arrays[f'image_{k}']), 0)
-        made = tiles(arrays[f'image_{k}'], arrays[f'mask_{k}']); h, w = arrays[f'image_{k}'].shape; s = struck.get(r['id'], {})
+        made = tiles(arrays[f'image_{k}'], arrays[f'mask_{k}'], arrays[f'weight_{k}'] if weighted else None,
+                     arrays[f'target_{k}'] if f'target_{k}' in arrays.files else None)
+        h, w = arrays[f'image_{k}'].shape; s = struck.get(r['id'], {})
         readable = len(made) == 1 and s.get('text_confirmed') and not s.get('unreadable') and prepare(s.get('text', '')).replace('?', '')
-        for n, (tile, target) in enumerate(made):
-            data.append(tile); targets.append(target)
-            rows.append({'id': f"{r['id']}~{n}", 'group_uuid': r['group_uuid'], 'split': 'train', 'source': 'human_confirmed',
+        for n, (tile, target, weight) in enumerate(made):
+            data.append(tile); targets.append(target); weights.append(weight)
+            rows.append({'id': f"{r['id']}~{n}", 'group_uuid': r['group_uuid'], 'split': 'train', 'source': source_of.get(r['id'], 'human_confirmed'),
                          'clean': bool((tile == target).all()),
                          **({'text': s['text'], 'window': [(SIZE-w)//2, (SIZE-h)//2, w, h]} if readable else {})})
     replay = [] if no_replay else [r for r in records if r['source'] == 'synthetic_replay' and r['split'] == 'train']
@@ -406,7 +415,8 @@ def human_pairs(review_set, source, arm, destination, no_replay=False, detector=
             rows.append({'id': r['id'], 'group_uuid': r['group_uuid'], 'split': 'val', 'source': 'synthetic_validation', 'clean': r['clean']})
     np.save(out/(arm+'.npy'), np.stack(data)); np.save(out/'targets.npy', np.stack(targets)); write_json(out/'records.json', rows)
     if detector: np.save(out/'hint.npy', np.stack(hints + [np.zeros((SIZE, SIZE), np.uint8)]*(len(rows)-len(hints))))
-    summary = {'counts': dict(Counter(r['source']+'/'+r['split'] for r in rows)), 'human_regions': len(native),
+    if weighted: np.save(out/'weights.npy', np.concatenate([np.stack(weights), np.ones((len(data)-len(weights), SIZE, SIZE), np.uint8)]))
+    summary = {'counts': dict(Counter(r['source']+'/'+r['split'] for r in rows)), 'human_regions': len(native), 'weighted': weighted,
                'train_tiles': sum(r['split'] == 'train' for r in rows), 'review_set': str(review_set), 'source_pairs': str(source),
                **({'tiles_with_text': sum('text' in r for r in rows)} if texts else {})}
     write_json(out/'summary.json', summary)

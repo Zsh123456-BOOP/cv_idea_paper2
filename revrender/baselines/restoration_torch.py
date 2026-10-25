@@ -140,6 +140,9 @@ def train(e):
         'ema_rule':'official .9999 parameter average every 100 updates after step 2000; initial model copy; raw and EMA validation candidates' if ema is not None else None,
         'adaptation':'256 native tiles; batch4; seed42; no rotation; task-specific budget; Restormer fixed patches and scaled flat/cosine schedule',
         'initialization':str(a.init) if a.init else 'official random initialization','learning_rate_scale':scale}
+    if e.w is not None:
+        require(a.model=='NAFNet','per-pixel weights are honoured by NAFNet only')
+        config['loss']+=", weighted per pixel by the data's weights (0 where the pseudo-label teachers disagree)"
     if is_sep:
         config.update(architecture='RevSep (models.separation): the unchanged official NAFNet body on grey, hint and zeros; a 1x1 erase/cross head on its last decoder features',
             loss=('PSNR loss of the composed output and of H1, erase BCE+Dice, cross BCE' if a.heads else 'PSNR loss of H1'),
@@ -189,7 +192,7 @@ def train(e):
                                        reading(ids) if reading else None)
             require(torch.isfinite(loss).item(),'nonfinite training loss');value=float(loss.detach());loss.backward()
         else:
-            x,y=e.batch();network.train();opt.zero_grad(set_to_none=True)
+            x,y,w=e.batch(weights=True);network.train();opt.zero_grad(set_to_none=True)
             # These architectures have no batch norm. Accumulate an effective batch4.
             size=1 if is_rest or is_stain else len(x);value=0.
             for start in range(0,len(x),size):
@@ -198,6 +201,9 @@ def train(e):
                 elif is_cor:loss=F.binary_cross_entropy(network(xx),yy)
                 elif is_rest:loss=F.l1_loss(network(xx),yy)
                 elif is_stain:loss=stain_loss(network(xx),yy)
+                elif e.w is not None:   # NAFNet on weighted data (data.pseudo_regions)
+                    from ..models.separation import psnr_loss
+                    loss=psnr_loss(network(xx),yy,torch.from_numpy(np.ascontiguousarray(w[start:start+size,None])).cuda().expand_as(yy))
                 else:loss=10/np.log(10)*torch.log(((network(xx)-yy)**2).mean((1,2,3))+1e-8).mean()
                 require(torch.isfinite(loss).item(),'nonfinite training loss')
                 loss=loss*(len(xx)/len(x));value+=float(loss.detach());loss.backward()
