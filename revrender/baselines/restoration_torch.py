@@ -140,8 +140,9 @@ def train(e):
         'ema_rule':'official .9999 parameter average every 100 updates after step 2000; initial model copy; raw and EMA validation candidates' if ema is not None else None,
         'adaptation':'256 native tiles; batch4; seed42; no rotation; task-specific budget; Restormer fixed patches and scaled flat/cosine schedule',
         'initialization':str(a.init) if a.init else 'official random initialization','learning_rate_scale':scale}
-    if e.w is not None or (e.s!=1).any():
-        require(a.model=='NAFNet','per-pixel and per-sample weights are honoured by NAFNet only')
+    weighted=e.w is not None or (e.s!=1).any()
+    if weighted:
+        require(a.model in ('NAFNet','RevSep'),'per-pixel and per-sample weights are honoured by NAFNet and RevSep only')
         config['loss']+=", weighted per pixel by the data's weights (0 where the pseudo-label teachers disagree) and per sample by its records' weight"
     if is_sep:
         config.update(architecture='RevSep (models.separation): the unchanged official NAFNet body on grey, hint and zeros; a 1x1 erase/cross head on its last decoder features',
@@ -194,7 +195,8 @@ def train(e):
                                        reading(ids) if reading else None,tuple(map(t,strokes)) if strokes else None,a.hint_from,
                                        (a.centre_weight,a.width_weight,a.stroke_weight) if a.stroke else (1.,1.,1.),
                                        (t(gate[0]),torch.from_numpy(np.ascontiguousarray(gate[1][:,None])).cuda()) if gate else None,
-                                       (a.writing_weight,a.near_weight) if gate else (1.,1.),a.gate_hard)
+                                       (a.writing_weight,a.near_weight) if gate else (1.,1.),a.gate_hard,
+                                       (t(e.w[ids].astype(np.float32)) if e.w is not None else None,torch.from_numpy(e.s[ids]).cuda()) if weighted else None)
             require(torch.isfinite(loss).item(),'nonfinite training loss');value=float(loss.detach());loss.backward()
         else:
             x,y,w,sw=e.batch(weights=True);network.train();opt.zero_grad(set_to_none=True)

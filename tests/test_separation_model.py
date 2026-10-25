@@ -97,3 +97,11 @@ def test_the_writing_term_weighs_the_struck_writing_more():
     _, light = separation_loss(net, grey, grey, grey*0, zero, zero, writing=(labels, near), gate_weights=(1., 1.))
     _, heavy = separation_loss(net, grey, grey, grey*0, zero, zero, writing=(labels, near), gate_weights=(1., 8.))
     assert light['writing'] != heavy['writing'] and net(grey, grey)[4].shape == grey.shape
+
+
+def test_pixel_and_sample_weights_reach_the_psnr_terms():
+    torch.manual_seed(42); net = RevSep(Body()); grey = torch.rand(2, 1, 8, 8); target = torch.rand(2, 1, 8, 8); zero = torch.zeros(2, 1, 8, 8, dtype=torch.uint8)
+    _, plain = separation_loss(net, grey, target, grey*0, zero, zero, heads=False)
+    _, same = separation_loss(net, grey, target, grey*0, zero, zero, heads=False, weights=(torch.ones_like(grey), torch.ones(2)))
+    _, tilted = separation_loss(net, grey, target, grey*0, zero, zero, heads=False, weights=(torch.ones_like(grey), torch.tensor([1., .1])))
+    assert abs(plain['restored']-same['restored']) < 1e-5 and abs(plain['restored']-tilted['restored']) > 1e-4

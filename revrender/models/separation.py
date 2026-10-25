@@ -111,13 +111,15 @@ def masked_dice(logits, labels, probabilities=False):
 
 
 def separation_loss(network, grey, target, hint, erase, cross, heads=True, erase_weight=1., cross_weight=1., reading=None,
-                    strokes=None, hint_from='detector', stroke_weights=(1., 1., 1.), writing=None, gate_weights=(1., 1.), gate_hard=False):
+                    strokes=None, hint_from='detector', stroke_weights=(1., 1., 1.), writing=None, gate_weights=(1., 1.), gate_hard=False,
+                    weights=None):
     """The loss of a batch (tensors (N, 1, H, W): grey, target and hint on [0, 1], erase and cross labels uint8) and its terms;
     ``reading``: a function of the output (composed, or H1 without heads) giving the weighted reading term, or None; ``strokes``: the
     stroke version's (mask, centreline, half-width) labels, weighted by ``stroke_weights``; ``writing``: the gate's (labels, near the
-    strike) with ``gate_weights`` (the term's, the near writing's)."""
+    strike) with ``gate_weights`` (the term's, the near writing's); ``weights``: (per-pixel, per-sample) weights of the PSNR terms."""
     restored, erase_logits, cross_logits, stroke, drawn, writing_logits = run(network, grey, hint, hint_from)
-    terms = {'restored': psnr_loss(restored, target)}; output = restored
+    pixel, sample = weights if weights is not None else (None, None)
+    terms = {'restored': psnr_loss(restored, target, pixel, sample)}; output = restored
     if stroke is not None:
         mask, centre, half = strokes; on = centre == 1; wc, ww, ws = stroke_weights
         terms['centre'] = wc*(masked_bce(stroke[0], centre)+masked_dice(stroke[0], centre))
@@ -128,7 +130,8 @@ def separation_loss(network, grey, target, hint, erase, cross, heads=True, erase
         terms['writing'] = gate_weights[0]*(F.binary_cross_entropy_with_logits(writing_logits, (labels == 1).float(), weight=weight, reduction='sum')
                                             / weight.sum().clamp(min=1))
     if heads:
-        output = compose(grey, restored, erase_logits, cross_logits, writing=writing_logits, gate_hard=gate_hard); terms['composed'] = psnr_loss(output, target)
+        output = compose(grey, restored, erase_logits, cross_logits, writing=writing_logits, gate_hard=gate_hard)
+        terms['composed'] = psnr_loss(output, target, pixel, sample)
         terms['erase'] = erase_weight*(masked_bce(erase_logits, erase)+masked_dice(erase_logits, erase))
         terms['cross'] = cross_weight*masked_bce(cross_logits, cross)
     if reading is not None:
