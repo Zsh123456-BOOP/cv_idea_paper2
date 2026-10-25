@@ -33,7 +33,7 @@ finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT [BUDGET]: a restorer tra
             runtime=/home/zsh/hme/envs/paper2_restoration_tf/bin/python; export TF_USE_LEGACY_KERAS=1 LD_LIBRARY_PATH=""
             for d in /home/zsh/hme/envs/paper2_restoration_tf/lib/python3.12/site-packages/nvidia/*/lib; do export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; done
         elif [ "$model" = StainRestorer ]; then export PYTHONPATH="$ROOT:/home/zsh/hme/envs/paper2_stain_deps"; fi
-        idle=0; if [ "$card" = "$C3" ]; then idle=1; export ALLOW_GPU3=1; fi
+        idle=0; if [ "$card" = "$CARD3" ]; then idle=1; export ALLOW_GPU3=1; fi
         wait_for_gpu_memory "$card" "${RESTORER_MEMORY:-20000}" "$idle"
         bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$runtime" -m revrender.baselines.restoration --model "$model" \
             --arm gold_pixels --protocol "$ROOT/configs/restoration.toml" --data "$data" --upstream "$upstream" \
