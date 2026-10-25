@@ -31,7 +31,7 @@ MODELS=${MODELS:-$ROOT/configs/unified_restoration.json}
 # each model with the architecture its runtime follows (a candidate version's name carries its step)
 "$PY" -c 'import json,sys
 for m in json.load(open(sys.argv[1])):
-    print(m["name"], "own" if m["type"]=="own" else json.load(open(m["run"]+"/run_manifest.json"))["config"]["model"])' "$MODELS" > "$OUT/kinds.txt"
+    print(m["name"], m["type"] if m["type"] in ("own","detector") else json.load(open(m["run"]+"/run_manifest.json"))["config"]["model"])' "$MODELS" > "$OUT/kinds.txt"
 while read -r name kind; do
   RUNTIME="$PY"
   export PYTHONPATH="$ROOT"

@@ -9,6 +9,11 @@
 # Then the recognition loss: the reader R (reader_ctc) on the reader corpus's clean lines, and RevSep fine-tuned the same way with R's
 # CTC loss on the one-tile human regions (their struck text, restoration_pairs human --texts; [training.RevSep] reading_weight), its
 # versions read in one batch with those of the plain fine-tuning and compared with it.
+# Day 5, the deciding batch: the restorers' (b) for the four not yet fine-tuned so (Restormer, DocDiff, CycleGAN, StainRestorer: from
+# their chosen synthetic version, the 201 regions alone, [finetune_long], as run_real_only.sh did the other three); then every kept
+# version of the seven (b) runs, of RevSep and its two ablations, RevSep's H1 without the composition, and the control that whitens
+# the detector's masks, read in one batch and chosen there; RevSep paired with every other family (the pre-registered rule: read-back
+# more than 3 points above the best baseline, the writer-resampled interval above 0, the strike missed next to writing down).
 # Unattended; a step whose marker is in $R is skipped.  Cards 0, 1 and 2 train, cards 1 and 2 (or 3 while nobody is on it) evaluate.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
@@ -83,4 +88,29 @@ if ! done_ versions_reading; then
     [ -e "$R/compare_reading" ] || "$PY" -m revrender.eval.unified_restoration compare --before "$E/chosen" --after "$E/chosen" --pair RevSep-reading=RevSep \
         --output-dir "$R/compare_reading" >> "$R/versions_reading.log" 2>&1
     mark versions_reading; fi
+BASELINES=(COR-Generator NAFNet DE-GAN Restormer DocDiff Strikethrough-CycleGAN StainRestorer)
+if ! done_ train_b4; then
+    b() { finetune_restorer "$1" "$2" "$3" "$(chosen_of "${N}_v4_versions_synthetic/chosen" "$1")" "${N}_v4_finetune_tiles_human" "${N}_finetune_long_$1" finetune_long; }
+    ( b Restormer "$C0" 0; b StainRestorer "$C0" 0 ) > "$R/train_b4_lane0.log" 2>&1 & A=$!
+    ( b DocDiff "$C1" 0 ) > "$R/train_b4_lane1.log" 2>&1 & B=$!
+    ( b Strikethrough-CycleGAN "$C2" 1 ) > "$R/train_b4_lane2.log" 2>&1 & C=$!
+    wait $A; wait $B; wait $C; mark train_b4; fi
+if ! done_ versions_final; then
+    E=${N}_revsep_versions_final; runs=()
+    for m in "${BASELINES[@]}"; do runs+=(--run "$m=${N}_finetune_long_$m"); done
+    for arm in "${ARMS[@]}"; do runs+=(--run "$arm=${N}_revsep_finetune_long_$arm"); done
+    if [ ! -e "$R/candidates_final.json" ]; then
+        "$PY" -m revrender.eval.unified_restoration candidates "${runs[@]}" --upstream "$UP" --stain-upstream "$STAIN_UP" --output "$R/candidates_base.json" >> "$R/versions_final.log" 2>&1
+        "$PY" -c 'import json,sys
+specs=json.load(open(sys.argv[1]))
+h1=[dict(s,name=s["name"].replace("RevSep-","RevSep-H1-",1),family="RevSep-H1",composed=False) for s in specs if s["family"]=="RevSep"]
+json.dump(specs+h1+[dict(name="Detector",family="Detector",step=0,type="detector")],open(sys.argv[2],"w"),indent=1)' "$R/candidates_base.json" "$R/candidates_final.json"
+    fi
+    evaluate_versions "$R/candidates_final.json" "$E" "$R/versions_final.log"
+    [ -e "$R/zones_final.json" ] || "$PY" -m revrender.eval.restoration_errors zones --evaluation "$E" --splits val dev --output "$R/zones_final.json" >> "$R/versions_final.log" 2>&1
+    for other in "${BASELINES[@]}" RevSep-nohint RevSep-noheads RevSep-H1 Detector; do
+        [ -e "$R/compare_final_$other" ] || "$PY" -m revrender.eval.unified_restoration compare --before "$E/chosen" --after "$E/chosen" \
+            --pair RevSep="$other" --output-dir "$R/compare_final_$other" >> "$R/versions_final.log" 2>&1
+    done
+    mark versions_final; fi
 touch "$R/COMPLETE"; stamp complete

@@ -172,3 +172,8 @@ def test_compare_pairs_one_family_against_another_chosen_in_the_same_batch(tmp_p
     compare(Namespace(before=chosen, after=chosen, output_dir=tmp_path/'out', pair=['A=B']))
     result = json.loads((tmp_path/'out'/'comparison.json').read_text())
     assert set(result) == {'A', '_all'} and result['A']['before'] == .5 and result['A']['after'] == 1. and result['A']['difference'] == .5
+
+
+def test_the_detector_control_is_frozen_without_weights():
+    from revrender.eval.unified_restoration import freeze_specs
+    assert freeze_specs([dict(name='Detector', family='Detector', step=0, type='detector')])[0]['sha256'] == {}

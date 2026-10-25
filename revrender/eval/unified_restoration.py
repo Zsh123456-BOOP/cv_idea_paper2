@@ -3,7 +3,8 @@
 Every restorer receives identical source crops; architecture-specific inference geometry remains as trained.  ``choose`` picks each
 family's version from candidate versions evaluated together (read-back on validation), ``compare`` pairs two such choices.  With
 ``--detector`` every pixel case and OCR crop also gets the detector's masks on it (``data.separation.detector_hint``, hints.npz), which
-only a hinted model (RevSep) reads; a spec with ``"composed": false`` reads RevSep's H1 without its composition.
+only a hinted model (RevSep) reads; a spec with ``"composed": false`` reads RevSep's H1 without its composition, and a spec of type
+``detector`` is the control that whitens exactly the detector's masks (no model).
 """
 import argparse
 import json
@@ -41,6 +42,8 @@ def freeze_specs(specs):
         item = dict(spec)
         if spec['type'] == 'own':
             files = [Path(spec['checkpoint']), *map(Path, spec.get('provenance_files', []))]
+        elif spec['type'] == 'detector':
+            files = []
         else:
             require(spec['type'] == 'baseline', 'unsupported model type')
             run = Path(spec['run']); selection = json.loads((run/'selection.json').read_text())
@@ -284,6 +287,9 @@ def infer_model(args):
             grey = np.rint(raw*255).astype(np.uint8)
             mask = predict_crops(model, [grey])[0]
             return np.where(mask, 1., raw).astype(np.float32)
+    elif spec['type'] == 'detector':
+        hinted = True
+        def restore(raw, hint=None): return np.where(hint > 0, 1., raw).astype(np.float32)
     else:
         from ..baselines.restoration_export import selected_predictor
         predictor, _, manifest = selected_predictor(Path(spec['run']), Path(spec['upstream']), spec.get('checkpoint'), spec.get('composed', True))
