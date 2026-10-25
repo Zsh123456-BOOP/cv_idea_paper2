@@ -143,16 +143,21 @@ class Experiment:
 
     def labelled_batch(self):
         """A batch for RevSep: grey, target and hint on [0, 1], the erase and cross labels (``data.separation.pair_labels``), its rows,
-        and with --stroke the (mask, centreline, half-width) labels (``data.separation.stroke_labels``)."""
+        with --stroke the (mask, centreline, half-width) labels (``data.separation.stroke_labels``), with --writing-gate the writing
+        labels and the struck writing (``data.separation.writing_labels``)."""
         from ..data.separation import pair_labels
         from ..data.separation import stroke_labels
         ids=self.sample();x=self.x[ids];y=self.y[ids];labels=[pair_labels(a,b,self.human[i]) for i,a,b in zip(ids,x,y)]
-        strokes=None
+        strokes=None;gate=None
+        if getattr(self.args,'writing_gate',False):
+            from ..data.separation import writing_labels
+            made=[writing_labels(a,b,self.human[i]) for i,a,b in zip(ids,x,y)]
+            gate=(np.stack([m[0] for m in made]),np.stack([m[1] for m in made]))
         if self.args.stroke:
             made=[stroke_labels(a,b,self.human[i],None if self.human[i] else [s[i] for s in self.strokes]) for i,a,b in zip(ids,x,y)]
             strokes=tuple(np.stack([m[k] for m in made]) for k in range(3))
         return (x.astype(np.float32)/255,y.astype(np.float32)/255,self.hints_of(ids,x,y,self.hint_rng),
-                np.stack([e for e,_ in labels]),np.stack([c for _,c in labels]),ids,strokes)
+                np.stack([e for e,_ in labels]),np.stack([c for _,c in labels]),ids,strokes,gate)
 
     def native_hint(self,i):
         if not self.hinted:return None
@@ -234,6 +239,10 @@ def main(argv=None):
     p.add_argument('--hint-from',choices=['detector','stroke','both'],default='detector',
                    help="RevSep --stroke: the second pass's range: none (detector: one pass), the drawn mask, or both side by side")
     p.add_argument('--strokes',type=Path,help='RevSep --stroke: the stroke geometry of the synthetic pairs (data.separation strokes)')
+    p.add_argument('--writing-gate',action=argparse.BooleanOptionalAction,default=False,
+                   help='RevSep: the writing gate (models.separation, plan 保字门): erase only where the writing head says no')
+    p.add_argument('--near-weight',type=float,help="RevSep --writing-gate: the struck writing's weight in the writing loss (default the protocol's)")
+    p.add_argument('--gate-hard',action=argparse.BooleanOptionalAction,default=False,help='RevSep --writing-gate: the hard gate while training too')
     p.add_argument('--heads',action=argparse.BooleanOptionalAction,default=True,
                    help='RevSep: the erase and cross heads and the composition (off: H1 alone, NAFNet with the hint channel)')
     p.add_argument('--budget',help="a budget section of the protocol (passes over the data, evaluations, learning-rate scale): "

@@ -18,10 +18,11 @@ from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_js
 from .restoration import module_file, removal_counts, removal_metrics, restore_native, upstream_of, verified_source
 
 
-def selected_predictor(run,upstream,checkpoint=None,composed=True,soften=None,erase_threshold=.5):
+def selected_predictor(run,upstream,checkpoint=None,composed=True,soften=None,erase_threshold=.5,writing_threshold=.5):
     """The predictor of a run's selected checkpoint, or of ``checkpoint`` (a step directory of the run) when given.  A hinted model's
     (RevSep's) takes the hint as its second argument (none: zeros); ``composed=False``: its H1 alone, without the composition;
-    ``soften``: the scan lightened by its erase probability at that temperature; ``erase_threshold``: its erase head's (``models.separation.separate``)."""
+    ``soften``: the scan lightened by its erase probability at that temperature; ``erase_threshold``: its erase head's, ``writing_threshold``
+    the writing gate's (``models.separation.separate``)."""
     manifest=json.loads((run/'run_manifest.json').read_text());model=manifest['config']['model']
     weights=run/(checkpoint or json.loads((run/'selection.json').read_text())['checkpoint'])
     source=verified_source(upstream_of(upstream,model));require(source==manifest['upstream'],'upstream mismatch')
@@ -43,14 +44,15 @@ def selected_predictor(run,upstream,checkpoint=None,composed=True,soften=None,er
         import torch
         from .restoration_torch import build, predict_image
         torch.manual_seed(SEED);torch.set_num_threads(4)
-        network,diffusion,_=build(model,upstream_of(upstream,model),stroke=manifest['config'].get('stroke',False));checkpoint=weights/'weights.pt'
+        network,diffusion,_=build(model,upstream_of(upstream,model),stroke=manifest['config'].get('stroke',False),
+                                  gate=manifest['config'].get('writing_gate',False));checkpoint=weights/'weights.pt'
         state=torch.load(checkpoint,map_location='cpu',weights_only=False);network.load_state_dict(state['model']);network.eval()
         if model=='RevSep':
             from ..models.separation import separate
             config=manifest['config']
             def predict(x,hint=None):
                 hint=np.zeros_like(x) if hint is None or not config['hint'] else hint
-                return separate(network,x,hint,config['heads'],composed,config.get('hint_from','detector'),soften,erase_threshold)
+                return separate(network,x,hint,config['heads'],composed,config.get('hint_from','detector'),soften,erase_threshold,writing_threshold)
         else:
             @torch.no_grad()
             def predict(x):

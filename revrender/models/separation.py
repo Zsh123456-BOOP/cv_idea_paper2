@@ -18,6 +18,12 @@ pixel within its half-width -- into the strike's mask S, crossings included.  Wh
 ``detector`` -- one pass, head A only supervised; ``stroke`` -- a second pass with S (detached) in place of the detector's range;
 ``both`` -- the detector's range and S side by side.  Head A's loss: BCE plus Dice on the centreline, L1 on the half-width along it,
 Dice of S against the strike's mask (``data.separation.stroke_labels``).
+
+The writing gate (``gate=True``, plan 保字门 of 2026-10-25): a further logit, whether a pixel's ink is writing, independent of erase
+(both hold where a strike crosses writing).  While training the composition erases with sigmoid(erase)*(1-sigmoid(writing)); its loss
+is BCE on the writing labels (``data.separation.writing_labels``) whose writing pixels near the strike weigh ``near_weight``.  Its
+inference (``gated``) is hard and never redraws: a pixel is made white when erase is above its threshold and writing below its own,
+every other pixel keeps the scan.
 """
 import numpy as np
 import torch
@@ -29,22 +35,22 @@ SOFTNESS = .3       # pixels: the edge of a drawn disc (two pixels beyond the ha
 
 
 class RevSep(torch.nn.Module):
-    def __init__(self, body, width=32, stroke=False):
+    def __init__(self, body, width=32, stroke=False, gate=False):
         super().__init__()
-        self.body = body; self.heads = torch.nn.Conv2d(width, 4 if stroke else 2, 1); self.features = None
+        self.body = body; self.heads = torch.nn.Conv2d(width, 2+2*stroke+gate, 1); self.features = None; self.stroke, self.gate = stroke, gate
         body.ending.register_forward_pre_hook(self.keep)
 
     def keep(self, module, inputs):
         self.features = inputs[0]
 
     def forward(self, grey, hint, extra=None):
-        """(H1, erase logits, cross logits, head A) of grey crops, their hints and a third channel (zeros when None), each (N, 1, H, W)
-        on [0, 1]; head A is (centreline logits, half-widths) of the stroke version, else None."""
+        """(H1, erase logits, cross logits, head A, writing logits) of grey crops, their hints and a third channel (zeros when None), each
+        (N, 1, H, W) on [0, 1]; head A is (centreline logits, half-widths) of the stroke version, the writing logits the gate's; else None."""
         h, w = grey.shape[-2:]
         restored = self.body(torch.cat([grey, hint, torch.zeros_like(grey) if extra is None else extra], 1))[:, :1]
         logits = self.heads(self.features)[..., :h, :w]; self.features = None
-        stroke = (logits[:, 2:3], RADIUS*torch.sigmoid(logits[:, 3:])) if logits.shape[1] == 4 else None
-        return restored, logits[:, :1], logits[:, 1:2], stroke
+        stroke = (logits[:, 2:3], RADIUS*torch.sigmoid(logits[:, 3:4])) if self.stroke else None
+        return restored, logits[:, :1], logits[:, 1:2], stroke, logits[:, -1:] if self.gate else None
 
 
 def render(centre, half):
@@ -61,20 +67,28 @@ def render(centre, half):
 
 
 def run(network, grey, hint, hint_from='detector'):
-    """(H1, erase, cross, head A, S) of a batch: one pass, or for the stroke version with ``hint_from`` stroke / both a second pass
-    whose range is S (detached), alone or beside the detector's."""
-    restored, erase, cross, stroke = network(grey, hint)
-    if stroke is None: return restored, erase, cross, None, None
+    """(H1, erase, cross, head A, S, writing) of a batch: one pass, or for the stroke version with ``hint_from`` stroke / both a second
+    pass whose range is S (detached), alone or beside the detector's."""
+    restored, erase, cross, stroke, writing = network(grey, hint)
+    if stroke is None: return restored, erase, cross, None, None, writing
     drawn = render(torch.sigmoid(stroke[0]), stroke[1])
-    if hint_from == 'detector': return restored, erase, cross, stroke, drawn
+    if hint_from == 'detector': return restored, erase, cross, stroke, drawn, writing
     second = network(grey, drawn.detach()) if hint_from == 'stroke' else network(grey, hint, drawn.detach())
-    return (*second[:3], stroke, drawn)
+    return (*second[:3], stroke, drawn, second[4])
 
 
-def compose(grey, restored, erase, cross, hard=False):
-    """The output: H1 where a strike crosses writing, white where it is erased, the scan elsewhere (logits; ``hard``: at one half)."""
+def compose(grey, restored, erase, cross, hard=False, writing=None, gate_hard=False):
+    """The output: H1 where a strike crosses writing, white where it is erased, the scan elsewhere (logits; ``hard``: at one half).
+    With the gate's ``writing`` logits the erase probability is erase*(1-writing) (``gate_hard``: erase above a half and writing not)."""
     e, c = ((erase > 0).float(), (cross > 0).float()) if hard else (torch.sigmoid(erase), torch.sigmoid(cross))
+    if writing is not None: e = ((erase > 0) & (writing <= 0)).float() if gate_hard else e*(1-torch.sigmoid(writing))
     return c*restored + (1-c)*(e + (1-e)*grey)
+
+
+def gated(grey, erase, writing, erase_threshold=.5, writing_threshold=.5):
+    """The gate's inference: white where erase is above its threshold and writing below its own, the scan everywhere else."""
+    white = (torch.sigmoid(erase) > erase_threshold) & (torch.sigmoid(writing) < writing_threshold)
+    return torch.where(white, torch.ones_like(grey), grey)
 
 
 def psnr_loss(value, target, weight=None):
@@ -95,19 +109,24 @@ def masked_dice(logits, labels, probabilities=False):
 
 
 def separation_loss(network, grey, target, hint, erase, cross, heads=True, erase_weight=1., cross_weight=1., reading=None,
-                    strokes=None, hint_from='detector', stroke_weights=(1., 1., 1.)):
+                    strokes=None, hint_from='detector', stroke_weights=(1., 1., 1.), writing=None, gate_weights=(1., 1.), gate_hard=False):
     """The loss of a batch (tensors (N, 1, H, W): grey, target and hint on [0, 1], erase and cross labels uint8) and its terms;
     ``reading``: a function of the output (composed, or H1 without heads) giving the weighted reading term, or None; ``strokes``: the
-    stroke version's (mask, centreline, half-width) labels, weighted by ``stroke_weights``."""
-    restored, erase_logits, cross_logits, stroke, drawn = run(network, grey, hint, hint_from)
+    stroke version's (mask, centreline, half-width) labels, weighted by ``stroke_weights``; ``writing``: the gate's (labels, near the
+    strike) with ``gate_weights`` (the term's, the near writing's)."""
+    restored, erase_logits, cross_logits, stroke, drawn, writing_logits = run(network, grey, hint, hint_from)
     terms = {'restored': psnr_loss(restored, target)}; output = restored
     if stroke is not None:
         mask, centre, half = strokes; on = centre == 1; wc, ww, ws = stroke_weights
         terms['centre'] = wc*(masked_bce(stroke[0], centre)+masked_dice(stroke[0], centre))
         terms['width'] = ww*((stroke[1][on]-half[on]).abs().mean() if on.any() else stroke[1].sum()*0)
         terms['stroke'] = ws*masked_dice(drawn, mask, probabilities=True)
+    if writing_logits is not None:
+        labels, near = writing; counted = labels != IGNORE; weight = torch.where(near & (labels == 1), gate_weights[1], 1.)*counted
+        terms['writing'] = gate_weights[0]*(F.binary_cross_entropy_with_logits(writing_logits, (labels == 1).float(), weight=weight, reduction='sum')
+                                            / weight.sum().clamp(min=1))
     if heads:
-        output = compose(grey, restored, erase_logits, cross_logits); terms['composed'] = psnr_loss(output, target)
+        output = compose(grey, restored, erase_logits, cross_logits, writing=writing_logits, gate_hard=gate_hard); terms['composed'] = psnr_loss(output, target)
         terms['erase'] = erase_weight*(masked_bce(erase_logits, erase)+masked_dice(erase_logits, erase))
         terms['cross'] = cross_weight*masked_bce(cross_logits, cross)
     if reading is not None:
@@ -126,14 +145,15 @@ def centreline(network, grey, hint):
 
 
 @torch.no_grad()
-def separate(network, grey, hint, heads=True, composed=True, hint_from='detector', soften=None, erase_threshold=.5):
+def separate(network, grey, hint, heads=True, composed=True, hint_from='detector', soften=None, erase_threshold=.5, writing_threshold=.5):
     """The restored crops (N, H, W numpy on [0, 1]) of grey crops and their hints: composed at one half (the erase head at
     ``erase_threshold``), or H1 alone; ``soften`` (a temperature T): the scan lightened by the erase probability at T,
-    scan + sigmoid(erase/T)*(1-scan), no H1 and no crossing."""
+    scan + sigmoid(erase/T)*(1-scan), no H1 and no crossing.  The gated version answers by ``gated`` at the two thresholds."""
     network.eval()
     g = torch.from_numpy(np.ascontiguousarray(grey[:, None], np.float32)).cuda()
     h = torch.from_numpy(np.ascontiguousarray(hint[:, None], np.float32)).cuda()
-    restored, erase, cross, _, _ = run(network, g, h, hint_from); restored = restored.clamp(0, 1)
+    restored, erase, cross, _, _, writing = run(network, g, h, hint_from); restored = restored.clamp(0, 1)
+    if writing is not None: return gated(g, erase, writing, erase_threshold, writing_threshold)[:, 0].cpu().numpy()
     if soften: return (g+torch.sigmoid(erase/soften)*(1-g))[:, 0].clamp(0, 1).cpu().numpy()
     if erase_threshold != .5: erase = erase-float(np.log(erase_threshold/(1-erase_threshold)))   # its logit at the threshold is 0
     out = compose(g, restored, erase, cross, hard=True) if heads and composed else restored

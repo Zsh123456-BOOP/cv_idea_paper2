@@ -88,3 +88,13 @@ def test_the_stroke_geometry_holds_the_whole_strike_and_its_half_width():
     alpha = np.zeros((20, 40), np.float32); alpha[8:13, 3:37] = 1
     mask, centre, half = stroke_geometry(alpha)
     assert mask.sum() == 5*34 and centre[10, 10] == 1 and centre[:8].sum() == 0 and abs(half[10, 10]-3) < 1e-6
+
+
+def test_writing_labels_are_the_hosts_ink_or_the_kept_ink_with_the_struck_writing_marked():
+    from revrender.data.separation import writing_labels
+    y = np.full((20, 40), 250, np.uint8); y[4:16, 18:21] = 60; x = y.copy(); x[9:11, 2:38] = 30
+    labels, near = writing_labels(x, y, human=False)
+    assert labels[5, 19] == 1 and labels[9, 5] == 0 and near[6, 5] and not near[0, 0]
+    h = x.copy(); target = x.copy(); target[9:11, 2:38] = 255; target[9:11, 18:21] = 60
+    labels, near = writing_labels(h, target, human=True)
+    assert labels[4, 19] == 1 and labels[10, 5] == IGNORE or labels[10, 5] == 0

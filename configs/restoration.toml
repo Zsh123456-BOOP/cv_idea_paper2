@@ -52,6 +52,11 @@ reading_weight = 0.03
 centre_weight = 100.0
 width_weight = 20.0
 stroke_weight = 50.0
+# With --writing-gate only (plan 保字门): the writing head's BCE weighs as the erase head's (both per-pixel BCE; 100 from the gradient
+# balance above); the struck writing (4 pixels round the strike) counts near_weight times, chosen once from 2, 4, 8 on the validation's
+# read-back (--near-weight; 4 the default).
+writing_weight = 100.0
+near_weight = 4.0
 
 [training.Restormer]
 steps = 80000

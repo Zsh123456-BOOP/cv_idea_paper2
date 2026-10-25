@@ -2,6 +2,7 @@
 
     python -m revrender.eval.restoration_diagnostics pack --evaluation EVAL --upstream UP --dev-export EXPORT --dev-pages DIR --output-dir OUT
     python -m revrender.eval.restoration_diagnostics score --diagnostics OUT --readings OUT/qwen8b [OUT/qwen8b_repeat] --output OUT/scores.json
+    python -m revrender.eval.restoration_diagnostics writing --evaluation EVAL --dev-export EXPORT --dev-pages DIR --output OUT.json
 
 ``pack`` takes a finished unified evaluation (``eval.unified_restoration``: its chosen versions and their restored OCR crops) and writes
 a line pack of the scan, the chosen RevSep, RevSep-both, NAFNet and DE-GAN as they are, and:
@@ -19,7 +20,9 @@ It also measures, on those development strikes, what the pixel scores do not see
 (no threshold, grey levels), the mean gradient on the writing's edge relative to the scan's, and the share of the struck writing
 it erases (and of the rest of the writing).  ``score`` gives each version's
 read-back, paired with RevSep's on the strikes both read, its 95% interval by resampling writers and by resampling strikes (1,000,
-seed 42), and with a second reading of the same pack the reading's own spread.  Nothing is trained.
+seed 42), and with a second reading of the same pack the reading's own spread.  ``writing`` gives, for every version of a unified
+evaluation, the share of the struck writing and of the rest of the writing it erases on those development strikes (the gate's
+mechanism check).  Nothing is trained.
 """
 import argparse
 import json
@@ -121,6 +124,23 @@ def pack(args):
     print(json.dumps({'rows': len(pack_rows), 'strikes': len(scans), 'with_pixels': len(masks)}), flush=True)
 
 
+def writing(args):
+    require(not args.output.exists(), 'output exists')
+    root = args.evaluation; scans = json.loads((root/'inputs/pack.json').read_text())['rows']
+    masks = strike_masks(scans, args.dev_export, args.dev_pages); scan_of = {r['line_id']: root/'inputs'/r['images']['erased'] for r in scans if r['split'] == 'dev'}
+    counts = {}
+    for r in json.loads((root/'pack/pack.json').read_text())['rows']:
+        strike = masks.get(r['line_id'])
+        if strike is None or r['split'] != 'dev': continue
+        scan = grey_of(scan_of[r['line_id']]); image = grey_of(r['images']['erased'])
+        writing = (scan < 200/255) & ~strike; near = writing & ndimage.binary_dilation(strike, iterations=STRUCK); erased = (image-scan) > ERASED
+        c = counts.setdefault(r['model'].split('__', 1)[1], np.zeros(4, np.int64)); c += [(erased & near).sum(), near.sum(), (erased & writing & ~near).sum(), (writing & ~near).sum()]
+    result = {m: {'struck_writing_erased': float(c[0]/max(1, c[1])), 'other_writing_erased': float(c[2]/max(1, c[3]))} for m, c in counts.items()}
+    write_json(args.output, {'definitions': {'struck': STRUCK, 'erased': ERASED}, 'strikes': len(masks), 'versions': result,
+                             'inputs': {str(p): digest(p) for p in [root/'pack/pack.json', args.dev_export]}})
+    for m, v in sorted(result.items()): print(f"{m:32s} struck {100*v['struck_writing_erased']:5.1f}  other {100*v['other_writing_erased']:5.1f}")
+
+
 def scores_of(readings, pack_rows):
     from .revision_boxes import held
     rows = {r['id']: r for r in pack_rows}; scores = {}
@@ -168,9 +188,11 @@ def main(argv=None):
     k = sub.add_parser('pack')
     for key in ('evaluation', 'upstream', 'dev-export', 'dev-pages', 'output-dir'): k.add_argument('--'+key, type=Path, required=True)
     k.add_argument('--groups', nargs='+', choices=('D1', 'D2', 'D3', 'D4', 'D5'), default=['D1', 'D2', 'D3'])
+    w = sub.add_parser('writing')
+    for key in ('evaluation', 'dev-export', 'dev-pages', 'output'): w.add_argument('--'+key, type=Path, required=True)
     s = sub.add_parser('score'); s.add_argument('--diagnostics', type=Path, required=True)
     s.add_argument('--readings', type=Path, nargs='+', required=True); s.add_argument('--output', type=Path, required=True)
-    args = p.parse_args(argv); {'pack': pack, 'score': score}[args.command](args)
+    args = p.parse_args(argv); {'pack': pack, 'score': score, 'writing': writing}[args.command](args)
 
 
 if __name__ == '__main__':

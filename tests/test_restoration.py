@@ -139,7 +139,7 @@ def test_a_hinted_batch_reads_human_hints_simulates_synthetic_ones_and_labels_bo
     e.x,e.y=x,y;e.train=np.arange(2);e.rng=np.random.default_rng(42);e.hint_rng=np.random.default_rng(1)
     e.human=np.array([True,False]);e.stored_hints=np.zeros((2,16,16),np.uint8);e.stored_hints[0,7:9,2:6]=1
     e.sample=lambda:np.array([0,1])
-    gx,gy,hint,erase,cross,ids,strokes=e.labelled_batch()
+    gx,gy,hint,erase,cross,ids,strokes,gate=e.labelled_batch()
     assert gx.dtype==np.float32 and gx.max()<=1 and hint.shape==(2,16,16)
     assert hint[0][x[0]<200].sum()<=4*3 and not hint[0][7:9,10:14].any()       # the stored hint, within a pixel
     assert hint[1][7:9,2:14].all()                                            # simulated on the strike

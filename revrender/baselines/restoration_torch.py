@@ -20,7 +20,7 @@ def package(name,path):
     return m
 
 
-def build(model,root,architecture=None,stroke=False):
+def build(model,root,architecture=None,stroke=False,gate=False):
     if model=='NAFNet':
         # Avoid BasicSR's unrelated dataset/extension auto-imports. Architecture files
         # are unchanged, including their own LayerNorm and local pooling code.
@@ -34,7 +34,7 @@ def build(model,root,architecture=None,stroke=False):
         return network,None,None
     if model=='RevSep':
         from ..models.separation import RevSep
-        return RevSep(build('NAFNet',root,architecture)[0],stroke=stroke).cuda(),None,None
+        return RevSep(build('NAFNet',root,architecture)[0],stroke=stroke,gate=gate).cuda(),None,None
     if model=='Restormer':
         m=module_file('official_restormer',root/'basicsr/models/archs/restormer_arch.py')
         return m.Restormer(**(architecture or {})).cuda(),None,None
@@ -105,7 +105,7 @@ def train(e):
     a=e.args;require(torch.cuda.is_available(),'CUDA required')
     torch.set_num_threads(4);torch.manual_seed(SEED);torch.cuda.manual_seed_all(SEED)
     torch.backends.cudnn.benchmark=False
-    network,diffusion,lap=build(a.model,upstream_of(a.upstream,a.model),stroke=getattr(a,'stroke',False))
+    network,diffusion,lap=build(a.model,upstream_of(a.upstream,a.model),stroke=getattr(a,'stroke',False),gate=getattr(a,'writing_gate',False))
     if a.init:network.load_state_dict(torch.load(a.init/'weights.pt',map_location='cuda',weights_only=False)['model'])
     scale=a.learning_rate_scale
     is_doc=a.model=='DocDiff';is_cor=a.model=='COR-Generator';is_rest=a.model=='Restormer'
@@ -148,7 +148,8 @@ def train(e):
             loss=('PSNR loss of the composed output and of H1, erase BCE+Dice, cross BCE' if a.heads else 'PSNR loss of H1'),
             heads=a.heads,hint=a.hint,erase_weight=a.erase_weight,cross_weight=a.cross_weight,hint_reach=a.hint_reach,hint_drop=a.hint_drop,
             reader=str(a.reader) if a.reader else None,reading_weight=a.reading_weight,stroke=a.stroke,hint_from=a.hint_from,
-            stroke_weights=[a.centre_weight,a.width_weight,a.stroke_weight] if a.stroke else None)
+            stroke_weights=[a.centre_weight,a.width_weight,a.stroke_weight] if a.stroke else None,writing_gate=a.writing_gate,
+            gate_weights=[a.writing_weight,a.near_weight] if a.writing_gate else None,gate_hard=a.gate_hard)
     if is_stain:
         import torchmetrics
         config.update(initialization=str(a.init) if a.init else 'random; no author checkpoint',torchmetrics=torchmetrics.__version__,
@@ -187,11 +188,13 @@ def train(e):
     for step in range(1,a.steps+1):
         if step==1:before=next(network.parameters()).detach().clone()
         if is_sep:
-            x,y,hint,erase,cross,ids,strokes=e.labelled_batch();network.train();opt.zero_grad(set_to_none=True)
+            x,y,hint,erase,cross,ids,strokes,gate=e.labelled_batch();network.train();opt.zero_grad(set_to_none=True)
             t=lambda v:torch.from_numpy(np.ascontiguousarray(v[:,None])).cuda()
             loss,terms=separation_loss(network,t(x),t(y),t(hint),t(erase),t(cross),a.heads,a.erase_weight,a.cross_weight,
                                        reading(ids) if reading else None,tuple(map(t,strokes)) if strokes else None,a.hint_from,
-                                       (a.centre_weight,a.width_weight,a.stroke_weight) if a.stroke else (1.,1.,1.))
+                                       (a.centre_weight,a.width_weight,a.stroke_weight) if a.stroke else (1.,1.,1.),
+                                       (t(gate[0]),torch.from_numpy(np.ascontiguousarray(gate[1][:,None])).cuda()) if gate else None,
+                                       (a.writing_weight,a.near_weight) if gate else (1.,1.),a.gate_hard)
             require(torch.isfinite(loss).item(),'nonfinite training loss');value=float(loss.detach());loss.backward()
         else:
             x,y,w=e.batch(weights=True);network.train();opt.zero_grad(set_to_none=True)

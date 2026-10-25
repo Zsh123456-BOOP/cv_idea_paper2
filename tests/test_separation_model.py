@@ -16,8 +16,8 @@ class Body(torch.nn.Module):
 
 def test_revsep_reads_grey_and_hint_and_its_heads_see_the_endings_input():
     torch.manual_seed(42); net = RevSep(Body()); grey = torch.rand(2, 1, 16, 24); hint = (torch.rand(2, 1, 16, 24) > .5).float()
-    restored, erase, cross, stroke = net(grey, hint)
-    assert restored.shape == erase.shape == cross.shape == (2, 1, 16, 24) and stroke is None and net.features is None   # nothing held
+    restored, erase, cross, stroke, writing = net(grey, hint)
+    assert restored.shape == erase.shape == cross.shape == (2, 1, 16, 24) and stroke is None and writing is None and net.features is None   # nothing held
     stacked = torch.cat([grey, hint, torch.zeros_like(grey)], 1)
     assert torch.allclose(restored, net.body(stacked)[:, :1])
     logits = net.heads(net.body.intro(stacked))
@@ -67,7 +67,7 @@ def test_the_drawn_mask_covers_the_centreline_within_its_half_width():
 
 def test_the_stroke_version_draws_its_mask_and_feeds_it_to_a_second_pass():
     torch.manual_seed(42); net = RevSep(Body(), stroke=True); grey = torch.rand(1, 1, 16, 16); hint = torch.zeros_like(grey)
-    restored, erase, cross, stroke = net(grey, hint)
+    restored, erase, cross, stroke, _ = net(grey, hint)
     assert stroke[0].shape == (1, 1, 16, 16) and 0 < stroke[1].min() and stroke[1].max() < RADIUS
     calls = []
     original = net.forward
@@ -81,3 +81,19 @@ def test_the_stroke_terms_join_the_loss_and_reach_head_a():
     mask = zero.clone(); mask[..., 7:9, 2:14] = 1; centre = zero.clone(); centre[..., 8, 2:14] = 1; half = centre.float()*1.5
     loss, terms = separation_loss(net, grey, grey, grey*0, zero, zero, strokes=(mask, centre, half), hint_from='both')
     assert {'centre', 'width', 'stroke'} <= set(terms); loss.backward(); assert net.heads.weight.grad[2:].abs().sum() > 0
+
+
+def test_the_writing_gate_keeps_what_it_calls_writing_and_never_redraws():
+    from revrender.models.separation import gated
+    grey = torch.full((1, 1, 1, 3), .3); erase = torch.tensor([[[[5., 5., -5.]]]]); writing = torch.tensor([[[[-5., 5., -5.]]]])
+    assert gated(grey, erase, writing).flatten().tolist() == pytest.approx([1., .3, .3])
+    restored = torch.full_like(grey, .9); cross = torch.full_like(grey, -9.)
+    assert compose(grey, restored, erase*10, cross, writing=writing*10).flatten().tolist() == pytest.approx([1., .3, .3], abs=1e-4)
+
+
+def test_the_writing_term_weighs_the_struck_writing_more():
+    torch.manual_seed(42); net = RevSep(Body(), gate=True); grey = torch.rand(1, 1, 8, 8); zero = torch.zeros(1, 1, 8, 8, dtype=torch.uint8)
+    labels = zero.clone(); labels[..., 2:4, :] = 1; near = torch.zeros(1, 1, 8, 8, dtype=torch.bool); near[..., 2:4, :4] = True
+    _, light = separation_loss(net, grey, grey, grey*0, zero, zero, writing=(labels, near), gate_weights=(1., 1.))
+    _, heavy = separation_loss(net, grey, grey, grey*0, zero, zero, writing=(labels, near), gate_weights=(1., 8.))
+    assert light['writing'] != heavy['writing'] and net(grey, grey)[4].shape == grey.shape

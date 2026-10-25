@@ -3,7 +3,8 @@
 Every restorer receives identical source crops; architecture-specific inference geometry remains as trained.  ``choose`` picks each
 family's version from candidate versions evaluated together (read-back on validation), ``compare`` pairs two such choices.  With
 ``--detector`` every pixel case and OCR crop also gets the detector's masks on it (``data.separation.detector_hint``, hints.npz), which
-only a hinted model (RevSep) reads; a spec with ``"composed": false`` reads RevSep's H1 without its composition, and a spec of type
+only a hinted model (RevSep) reads; a spec with ``"composed": false`` reads RevSep's H1 without its composition, one with
+``erase_threshold`` / ``writing_threshold`` sets RevSep's thresholds (the writing gate's), and a spec of type
 ``detector`` is the control that whitens exactly the detector's masks (no model).
 """
 import argparse
@@ -292,7 +293,8 @@ def infer_model(args):
         def restore(raw, hint=None): return np.where(hint > 0, 1., raw).astype(np.float32)
     else:
         from ..baselines.restoration_export import selected_predictor
-        predictor, _, manifest = selected_predictor(Path(spec['run']), Path(spec['upstream']), spec.get('checkpoint'), spec.get('composed', True))
+        predictor, _, manifest = selected_predictor(Path(spec['run']), Path(spec['upstream']), spec.get('checkpoint'), spec.get('composed', True),
+                                                    erase_threshold=spec.get('erase_threshold', .5), writing_threshold=spec.get('writing_threshold', .5))
         hinted = manifest['config']['model'] in HINTED
         def restore(raw, hint=None): return restore_native(predictor, raw, hint if hinted else None)
     hints = np.load(inputs/'hints.npz') if (inputs/'hints.npz').exists() else None
@@ -398,6 +400,26 @@ def choose(args):
     print(json.dumps({f: c['chosen'] for f, c in chosen.items()}), flush=True)
 
 
+def grid(args):
+    """Each family's thresholds (plan 保字门): of its versions evaluated together (one per threshold pair), the one with the highest
+    read-back on ``--splits`` (the higher pixel F1 on them on a tie), or with ``--by pixel_f1`` the highest pixel F1; written as
+    ``choose`` writes, so ``compare`` reads it."""
+    root = args.evaluation; specs = json.loads((root/'inputs/models.json').read_text()); scores = row_scores(root, args.splits); chosen = {}
+    for family in sorted({s['family'] for s in specs}):
+        table = []
+        for spec in (s for s in specs if s['family'] == family):
+            parts = json.loads((root/'runs'/spec['name']/'pixels.json').read_text())['splits']
+            tp, fp, fn = (sum(parts[x][k] for x in args.splits if x in parts) for k in ('tp', 'fp', 'fn'))
+            table.append(dict(name=spec['name'], step=spec['step'], erase_threshold=spec.get('erase_threshold', .5), writing_threshold=spec.get('writing_threshold', .5),
+                              pixel_f1=2*tp/max(1, 2*tp+fp+fn), read_back=float(np.mean(list(scores[spec['name']].values())))))
+        key = (lambda t: (t['pixel_f1'], t['read_back'])) if args.by == 'pixel_f1' else (lambda t: (t['read_back'], t['pixel_f1']))
+        pick = max(table, key=key); chosen[family] = dict(chosen=pick, versions=table, spec=next(s for s in specs if s['name'] == pick['name']))
+    out = make_output_dir(args.output_dir); write_json(out/'selection.json', chosen)
+    write_manifest(out, config={'evaluation': str(root), 'splits': list(args.splits), 'by': args.by},
+                   inputs={str(p): digest(p) for p in [root/'inputs/models.json', root/'qwen8b/predictions.jsonl']})
+    print(json.dumps({f: c['chosen'] for f, c in chosen.items()}), flush=True)
+
+
 def compare(args):
     """The paired difference in read-back between two chosen versions of every family (``choose`` outputs: before and after), on the
     validation strikes both read, with 95% intervals by resampling writers (seed 42).  ``--pair AFTER=BEFORE``: family AFTER of the
@@ -465,11 +487,14 @@ def main(argv=None):
     p = sub.add_parser('choose')
     for key in ('evaluation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     p.add_argument('--splits', nargs='+', default=['val'], help='the splits read-back and pixel F1 are pooled over (val, dev)')
+    p = sub.add_parser('grid')
+    for key in ('evaluation','output-dir'):p.add_argument('--'+key,type=Path,required=True)
+    p.add_argument('--splits', nargs='+', default=['val']); p.add_argument('--by', choices=('read_back', 'pixel_f1'), default='read_back')
     p = sub.add_parser('compare')
     for key in ('before','after','output-dir'):p.add_argument('--'+key,type=Path,required=True)
     p.add_argument('--pair', action='append', help='AFTER=BEFORE: compare these two families (default: every family both choices have)')
     args = parser.parse_args(argv)
-    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs,'candidates':candidates,'choose':choose,'compare':compare,
+    {'prepare':prepare_inputs,'infer':infer_model,'merge':merge,'extend':extend_inputs,'candidates':candidates,'choose':choose,'grid':grid,'compare':compare,
      'human-pack':human_pack,'ceiling':ceiling}[args.command](args)
 
 

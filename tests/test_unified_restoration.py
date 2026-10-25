@@ -177,3 +177,11 @@ def test_compare_pairs_one_family_against_another_chosen_in_the_same_batch(tmp_p
 def test_the_detector_control_is_frozen_without_weights():
     from revrender.eval.unified_restoration import freeze_specs
     assert freeze_specs([dict(name='Detector', family='Detector', step=0, type='detector')])[0]['sha256'] == {}
+
+
+def test_grid_picks_the_thresholds_that_read_best_or_by_pixel_f1(tmp_path):
+    from revrender.eval.unified_restoration import grid
+    root=_evaluation(tmp_path,[('W1','W',1,.7,['ab','ab']),('W2','W',1,.5,['abcd','abcd'])]);out=tmp_path
+    grid(SimpleNamespace(evaluation=root,output_dir=out/'r',splits=['val'],by='read_back'));grid(SimpleNamespace(evaluation=root,output_dir=out/'f',splits=['val'],by='pixel_f1'))
+    assert json.loads((out/'r'/'selection.json').read_text())['W']['chosen']['name']=='W2'
+    assert json.loads((out/'f'/'selection.json').read_text())['W']['chosen']['name']=='W1'

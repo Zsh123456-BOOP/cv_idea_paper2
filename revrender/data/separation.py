@@ -23,6 +23,10 @@ the mask they draw, crossings included.  A synthetic pair knows it exactly (``st
 is opacity at least one half, the centreline its skeleton, the half-width the distance to its edge there).  A human region only
 knows what the annotator erased (``stroke_labels``): that mask, its skeleton and widths, and the kept ink next to it -- where the
 strike may run under writing -- counted for none of them.
+
+The writing gate (plan 保字门) learns which ink is writing (``writing_labels``): on a synthetic pair the clean host's ink, crossings
+included; on a human tile the ink the annotator kept, a pixel round their erased pixels not counted.  Writing within ``NEAR`` pixels
+of the strike is marked, its loss weighed more (D5: the read-back the restorers lose sits on the struck writing).
 """
 import argparse
 import json
@@ -40,6 +44,7 @@ from .restoration_pairs import REMOVED
 IGNORE = 255        # a label no loss counts
 UNDER = 3           # pixels: kept ink this close to a human region's erased strike may lie under it (stroke labels unknown there)
 WIDTH_STEP = 4      # the stored half-width is in quarter pixels
+NEAR = 4            # pixels: writing this close to the strike is the struck writing (restoration_diagnostics.STRUCK)
 FAINT = 8           # darkened by more than this but no more than REMOVED: a strike's faint edge, labelled for neither head
 HUMAN = 'human_confirmed'   # the source of a human region's tiles in a pair set (``restoration_pairs.human_pairs``)
 
@@ -98,6 +103,18 @@ def stroke_labels(x, y, human, truth=None):
     mask, centre, width = stroke_geometry(((y.astype(np.int16)-x) > 0).astype(np.float32))
     unknown = (x < 200) & ~mask.astype(bool) & ndimage.binary_dilation(mask.astype(bool), iterations=UNDER)
     return np.where(unknown, IGNORE, mask).astype(np.uint8), np.where(unknown, IGNORE, centre).astype(np.uint8), width
+
+
+def writing_labels(x, y, human):
+    """(writing labels uint8 with IGNORE, near the strike bool) of a pair: the struck tile ``x`` and its target ``y``."""
+    darkened = y.astype(np.int16)-x
+    if human:
+        erased = darkened > 0; edge = ndimage.binary_dilation(erased) & ~ndimage.binary_erosion(erased)
+        labels = np.where(edge, IGNORE, (x < 200) & ~erased).astype(np.uint8); strike = erased
+    else:
+        labels = (y < 200).astype(np.uint8); strike = darkened > REMOVED
+    near = ndimage.binary_dilation(strike, iterations=NEAR) if strike.any() else strike
+    return labels, near
 
 
 def pair_alpha(record, bank):
