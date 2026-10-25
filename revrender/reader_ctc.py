@@ -119,7 +119,7 @@ def main(argv=None):
         loss = ctc(reader, images, [t for _, t in part], alphabet)
         opt.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(reader.parameters(), 5.); opt.step(); schedule.step()
         if step % args.eval_every == 0 or step == args.steps:
-            cer = error('val'); record = {'step': step, 'loss': float(loss), 'val_character_error': cer, 'seconds': round(time.monotonic()-start)}
+            cer = error('val'); record = {'step': step, 'loss': loss.item(), 'val_character_error': cer, 'seconds': round(time.monotonic()-start)}
             if cer < best[0]:
                 best = (cer, step); torch.save({'model': reader.state_dict(), 'alphabet': alphabet, 'step': step}, out/'reader.pt')
             log.write(json.dumps(record)+'\n'); log.flush(); print(json.dumps(record), flush=True)

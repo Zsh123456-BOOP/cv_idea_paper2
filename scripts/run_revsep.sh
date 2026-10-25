@@ -6,13 +6,17 @@
 # with the hint channel).  Every crop of the evaluations gets the detector's masks (data.separation, DETECTOR).  The error zones of
 # every version (eval.restoration_errors zones): the strike missed next to writing, the writing erased next to the strike.  The
 # baselines' (b) versions were read in another batch: the deciding comparison is a later batch with all of them together.
+# Then the recognition loss: the reader R (reader_ctc) on the reader corpus's clean lines, and RevSep fine-tuned the same way with R's
+# CTC loss on the one-tile human regions (their struck text, restoration_pairs human --texts; [training.RevSep] reading_weight), its
+# versions read in one batch with those of the plain fine-tuning and compared with it.
 # Unattended; a step whose marker is in $R is skipped.  Cards 0, 1 and 2 train, cards 1 and 2 (or 3 while nobody is on it) evaluate.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 O=/home/zsh/hme/outputs; N=$O/paper2_clean; R=$O/paper2_revsep20261025
-V4=${N}_restoration_pairs20261007_v4; SET=${N}_v4_finetune_set; TILES=${N}_revsep_tiles_human
+V4=${N}_restoration_pairs20261007_v4; SET=${N}_v4_finetune_set; TILES=${N}_revsep_tiles_human; TEXT_TILES=${N}_revsep_tiles_human_text
+READER=${N}_revsep_reader; TEXTS=$O/paper2_pixel_round_struck20261012_inputs/training_annotations.json
 VAL=$O/paper2_fixed_validation20261007; VAL_HINTS=${N}_revsep_validation_hints/hints.npz
 UP=$O/paper2_restoration_sources20261008; STAIN_UP=$O/paper2_stainrestorer_resources20261009/upstream
 export DETECTOR=$O/paper2_pages_clean_run_unlabeled3976_tight
@@ -57,4 +61,26 @@ done_ train_synthetic || { train synthetic - "$V4" ""; mark train_synthetic; }
 done_ versions_synthetic || { versions synthetic; mark versions_synthetic; }
 done_ train_finetune_long || { train finetune_long "${N}_revsep_versions_synthetic/chosen" "$TILES" finetune_long; mark train_finetune_long; }
 done_ versions_finetune_long || { versions finetune_long; mark versions_finetune_long; }
+if ! done_ reader; then
+    [ -e "$READER/reader.pt" ] || bash "$ROOT/scripts/launch_gpu_job.sh" "$C0" 0 "$READER" -- "$PY" -m revrender.reader_ctc \
+        --corpus "${N}_reader_corpus/corpus.jsonl" --pages /home/zsh/hme/data/unlabeled_v1/images --output-dir "$READER" > "$READER.log" 2>&1
+    mark reader; fi
+if ! done_ tiles_text; then
+    [ -e "$TEXT_TILES/run_manifest.json" ] || "$PY" -m revrender.data.restoration_pairs human --review-set "$SET" --source "$V4" --no-replay \
+        --detector "$DETECTOR" --texts "$TEXTS" --output-dir "$TEXT_TILES" > "$R/tiles_text.log" 2>&1
+    for f in gold_pixels.npy targets.npy hint.npy; do cmp "$TEXT_TILES/$f" "$TILES/$f"; done
+    mark tiles_text; fi
+if ! done_ train_reading; then
+    RESTORER_FLAGS="--reader $READER/reader.pt" finetune_restorer RevSep "$C0" 0 "$(chosen_of "${N}_revsep_versions_synthetic/chosen" RevSep)" \
+        "$TEXT_TILES" "${N}_revsep_finetune_long_RevSep-reading" finetune_long > "$R/train_reading.log" 2>&1
+    mark train_reading; fi
+if ! done_ versions_reading; then
+    E=${N}_revsep_versions_reading
+    [ -e "$R/candidates_reading.json" ] || "$PY" -m revrender.eval.unified_restoration candidates --run RevSep="${N}_revsep_finetune_long_RevSep" \
+        --run RevSep-reading="${N}_revsep_finetune_long_RevSep-reading" --upstream "$UP" --stain-upstream "$STAIN_UP" --output "$R/candidates_reading.json" >> "$R/versions_reading.log" 2>&1
+    evaluate_versions "$R/candidates_reading.json" "$E" "$R/versions_reading.log"
+    [ -e "$R/zones_reading.json" ] || "$PY" -m revrender.eval.restoration_errors zones --evaluation "$E" --splits val dev --output "$R/zones_reading.json" >> "$R/versions_reading.log" 2>&1
+    [ -e "$R/compare_reading" ] || "$PY" -m revrender.eval.unified_restoration compare --before "$E/chosen" --after "$E/chosen" --pair RevSep-reading=RevSep \
+        --output-dir "$R/compare_reading" >> "$R/versions_reading.log" 2>&1
+    mark versions_reading; fi
 touch "$R/COMPLETE"; stamp complete
