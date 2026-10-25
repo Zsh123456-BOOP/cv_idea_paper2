@@ -117,6 +117,15 @@ def separation_loss(network, grey, target, hint, erase, cross, heads=True, erase
 
 
 @torch.no_grad()
+def centreline(network, grey, hint):
+    """Head A's centreline probabilities (N, H, W numpy) of grey crops and their hints (the stroke version's first pass)."""
+    network.eval()
+    g = torch.from_numpy(np.ascontiguousarray(grey[:, None], np.float32)).cuda()
+    h = torch.from_numpy(np.ascontiguousarray(hint[:, None], np.float32)).cuda()
+    return torch.sigmoid(network(g, h)[3][0])[:, 0].cpu().numpy()
+
+
+@torch.no_grad()
 def separate(network, grey, hint, heads=True, composed=True, hint_from='detector'):
     """The restored crops (N, H, W numpy on [0, 1]) of grey crops and their hints: composed at one half, or H1 alone."""
     network.eval()

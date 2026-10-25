@@ -2,6 +2,8 @@
 
     python -m revrender.eval.restoration_errors zones --evaluation EVAL --output OUT.json
     python -m revrender.eval.restoration_errors strokes --review-set SET --pairs PAIRS [--sample 1000] --output OUT.json
+    python -m revrender.eval.restoration_errors centrelines --run RUN --checkpoint STEP --upstream UP --pairs V4 --strokes STROKES \
+        --evaluation EVAL --output OUT.json
 
 ``zones`` reads a unified evaluation (``eval.unified_restoration``: its frozen pixel cases and each model's restored crops) and splits
 the errors by where they fall: a strike pixel left in place next to writing (within ``NEAR`` pixels: where a strike crosses or
@@ -15,7 +17,12 @@ sample of the synthetic pairs (``data.restoration_pairs``: the pixels the strike
 writing's (twice the distance to the background along the ridge of each mask), the width ratio, the share of its pixels touching
 writing, how much darker it is than the writing, its length in heights of the writing, and its straightness (the minor over the major
 axis of its pixels).  The ratios are scale-free, so a pair drawn on an enlarged host compares with a native crop -- except the share
-touching writing, counted within one pixel (an enlarged host shows less of it).  Nothing is trained.
+touching writing, counted within one pixel (an enlarged host shows less of it).
+
+``centrelines`` scores the stroke version's head A itself (``models.separation``): its centreline (probability above one half) against
+the exact one of the synthetic validation pairs (``data.separation strokes``; their hints simulated with seed 42), precision and recall
+within ``TOLERANCE`` pixels; and on the real validation and development regions of an evaluation (its pixel cases and their detector
+hints) the share of the skeleton of the annotator's erased pixels within ``TOLERANCE`` of it.  Nothing is trained.
 """
 import argparse
 import json
@@ -31,6 +38,7 @@ from ..util import SEED, digest, require, write_json, provenance
 
 NEAR = 2            # pixels: a strike pixel this close to writing touches or crosses it
 PIECE = 15          # ink pixels: the smallest strike component the fragment shares count
+TOLERANCE = 2       # pixels: a centreline pixel this close to the true one is right
 
 
 def removed_of(image, restored):
@@ -145,15 +153,59 @@ def strokes(args):
         print(f"{key:20s} real {result['real']['quartiles'][key][1]:7.2f}  synthetic {result['synthetic']['quartiles'][key][1]:7.2f}")
 
 
+def near(a, b):
+    """Pixels of ``a`` within ``TOLERANCE`` of ``b``."""
+    return int((a & (ndimage.distance_transform_edt(~b) <= TOLERANCE)).sum()) if b.any() else 0
+
+
+def centrelines(args):
+    require(not args.output.exists(), 'output exists')
+    import torch
+    from skimage.morphology import skeletonize
+    from ..baselines.restoration import restore_native, upstream_of
+    from ..baselines.restoration_torch import build
+    from ..data.separation import simulated_hint
+    from ..models.separation import centreline
+    manifest = json.loads((args.run/'run_manifest.json').read_text()); config = manifest['config']
+    require(config.get('stroke'), 'not the stroke version')
+    network = build('RevSep', upstream_of(args.upstream, 'RevSep'), stroke=True)[0]
+    weights = args.run/args.checkpoint/'weights.pt'; network.load_state_dict(torch.load(weights, map_location='cpu', weights_only=False)['model'])
+    rows = json.loads((args.pairs/'records.json').read_text()); x = np.load(args.pairs/'gold_pixels.npy', mmap_mode='r'); y = np.load(args.pairs/'targets.npy', mmap_mode='r')
+    truth = np.load(args.strokes/'centre.npy', mmap_mode='r'); rng = np.random.default_rng(SEED); counts = np.zeros(4, np.int64)
+    for i in [i for i, r in enumerate(rows) if r['split'] == 'val' and not r['clean']]:
+        a, b = np.asarray(x[i]), np.asarray(y[i]); hint = simulated_hint(a, b, rng, config['hint_reach'], config['hint_drop']).astype(np.float32)
+        line = centreline(network, a[None].astype(np.float32)/255, hint[None])[0] > .5; true = np.asarray(truth[i]).astype(bool)
+        counts += [near(line, true), line.sum(), near(true, line), true.sum()]
+    cases = json.loads((args.evaluation/'inputs/pixels.json').read_text()); archive = np.load(args.evaluation/'inputs/pixels.npz')
+    hints = np.load(args.evaluation/'inputs/hints.npz'); real = {}
+    for k, case in enumerate(cases):
+        image = archive[f'image_{k}']; skeleton = skeletonize(archive[f'gold_{k}'] & (image < 200))
+        predict = lambda tile, hint: centreline(network, tile, hint)
+        line = restore_native(predict, image.astype(np.float32)/255, hints[f'pixel_{k}'].astype(np.float32)) > .5
+        real.setdefault(case['split'], np.zeros(2, np.int64)); real[case['split']] += [near(skeleton, line), skeleton.sum()]
+    p, r = counts[0]/max(1, counts[1]), counts[2]/max(1, counts[3])
+    result = {'synthetic_validation': {'precision': p, 'recall': r, 'f1': 2*p*r/max(1e-9, p+r), 'pairs': int(sum(1 for r_ in rows if r_['split'] == 'val' and not r_['clean']))},
+              'real_skeleton_recall': {s: v[0]/max(1, v[1]) for s, v in real.items()}, 'tolerance': TOLERANCE}
+    write_json(args.output, {**to_float(result), 'provenance': provenance(config={k: str(v) for k, v in vars(args).items()}, inputs={str(weights): digest(weights)})})
+    print(json.dumps(to_float(result)), flush=True)
+
+
+def to_float(d):
+    return {k: to_float(v) if isinstance(v, dict) else (float(v) if isinstance(v, (np.floating, np.integer)) else v) for k, v in d.items()}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__); sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('zones'); p.add_argument('--evaluation', type=Path, required=True); p.add_argument('--output', type=Path, required=True)
     p.add_argument('--splits', nargs='+', default=['val'], help='the pixel cases and strikes counted (val, dev)')
+    p = sub.add_parser('centrelines')
+    for key in ('run', 'upstream', 'pairs', 'strokes', 'evaluation', 'output'): p.add_argument('--'+key, type=Path, required=True)
+    p.add_argument('--checkpoint', required=True)
     p = sub.add_parser('strokes')
     for key in ('review-set', 'pairs', 'output'): p.add_argument('--'+key, type=Path, required=True)
     p.add_argument('--sample', type=int, default=1000)
     args = parser.parse_args(argv)
-    {'zones': zones, 'strokes': strokes}[args.command](args)
+    {'zones': zones, 'strokes': strokes, 'centrelines': centrelines}[args.command](args)
 
 
 if __name__ == '__main__':
