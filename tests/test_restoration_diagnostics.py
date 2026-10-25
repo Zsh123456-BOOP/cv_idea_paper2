@@ -6,7 +6,7 @@ from revrender.eval.restoration_diagnostics import edge_gradient, paired
 def test_paired_differences_give_writer_and_strike_intervals_on_the_shared_strikes():
     x = {f'w{k}_q#1': .5 for k in range(6)}; y = {**{f'w{k}_q#1': .7 for k in range(6)}, 'w9_q#1': 1.}
     r = paired(x, y, np.random.default_rng(42))
-    assert r['strikes'] == 6 and abs(r['difference']-.2) < 1e-9 and r['writer_interval'][0] <= .2 <= r['writer_interval'][1]
+    assert r['strikes'] == 6 and abs(r['difference']-.2) < 1e-9 and r['writer_interval'][0]-1e-9 <= .2 <= r['writer_interval'][1]+1e-9
     assert abs(r['strike_interval'][0]-.2) < 1e-9
 
 
