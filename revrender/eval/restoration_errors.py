@@ -7,7 +7,8 @@
 the errors by where they fall: a strike pixel left in place next to writing (within ``NEAR`` pixels: where a strike crosses or
 touches a character) or away from it; a writing pixel wrongly erased next to the strike or away from it.  It also splits each case by
 how the box remover's strip scales it (``data.gold.CANVAS``: enlarged or shrunk), the one input the restorers do not share, and gives
-every model's read-back per validation strike beside the scan's.
+every model's read-back per validation strike beside the scan's, and how whole each strike is erased (``fragments``: of the strike's
+components of at least ``PIECE`` ink pixels, the pixel shares in ones mostly erased (more than 80%), partly (20 to 80%) and barely).
 
 ``strokes`` measures each strike of the human regions (``data.review_set``'s native training and validation crops) and of a seeded
 sample of the synthetic pairs (``data.restoration_pairs``: the pixels the strike darkened by more than ``REMOVED``): its width and the
@@ -29,6 +30,7 @@ from ..data.restoration_pairs import REMOVED
 from ..util import SEED, digest, require, write_json, provenance
 
 NEAR = 2            # pixels: a strike pixel this close to writing touches or crosses it
+PIECE = 15          # ink pixels: the smallest strike component the fragment shares count
 
 
 def removed_of(image, restored):
@@ -45,6 +47,18 @@ def zone_counts(image, gold, domain, restored):
     return {k: (int(m.sum()), int(((~removed) if k.startswith('stroke') else removed)[m].sum())) for k, m in parts.items()}
 
 
+def fragment_counts(image, gold, domain, restored):
+    """Strike pixels in components (8-connected, at least ``PIECE``) mostly / partly / barely erased."""
+    stroke = gold.astype(bool) & (image < 200) & domain; removed = removed_of(image, restored) & domain
+    labels, n = ndimage.label(stroke, np.ones((3, 3))); counts = np.zeros(3, np.int64)
+    if not n: return counts
+    size = np.bincount(labels.ravel(), minlength=n+1); erased = np.bincount(labels.ravel(), removed.ravel(), minlength=n+1)
+    for k in range(1, n+1):
+        if size[k] < PIECE: continue
+        share = erased[k]/size[k]; counts[0 if share > .8 else 1 if share >= .2 else 2] += size[k]
+    return counts
+
+
 def zones(args):
     require(not args.output.exists(), 'output exists')
     root = args.evaluation
@@ -55,12 +69,13 @@ def zones(args):
     result = {}
     for spec in specs:
         restored = np.load(root/'runs'/spec['name']/'restored_pixels.npz')
-        totals = {}; by_scale = {'enlarged': np.zeros(3, np.int64), 'shrunk': np.zeros(3, np.int64)}
+        totals = {}; by_scale = {'enlarged': np.zeros(3, np.int64), 'shrunk': np.zeros(3, np.int64)}; pieces = np.zeros(3, np.int64)
         for k, case in enumerate(cases):
             if case['split'] not in args.splits: continue
             image, gold, domain = archive[f'image_{k}'], archive[f'gold_{k}'], archive[f'domain_{k}']
             for name, (n, wrong) in zone_counts(image, gold, domain, restored[f'image_{k}']).items():
                 totals.setdefault(name, [0, 0]); totals[name][0] += n; totals[name][1] += wrong
+            pieces += fragment_counts(image, gold, domain, restored[f'image_{k}'])
             ink = (image < 200) & domain; truth = gold.astype(bool) & ink; removed = removed_of(image, restored[f'image_{k}']) & domain
             scale = min(CANVAS[1]/image.shape[1], CANVAS[0]/image.shape[0])
             by_scale['enlarged' if scale >= 1 else 'shrunk'] += [(removed & truth).sum(), (removed & ~truth & ink).sum(), (~removed & truth).sum()]
@@ -69,9 +84,10 @@ def zones(args):
                                 'f1_by_strip_scale': f1, 'cases_by_strip_scale': {k: sum(1 for c, case in enumerate(cases) if case['split'] in args.splits
                                     and (min(CANVAS[1]/archive[f'image_{c}'].shape[1], CANVAS[0]/archive[f'image_{c}'].shape[0]) >= 1) == (k == 'enlarged'))
                                     for k in by_scale},
+                                'fragments': dict(zip(('mostly_erased', 'partly_erased', 'barely_erased'), (pieces/max(1, pieces.sum())).tolist())),
                                 'read_back': reads.get(spec['name'], {})}
     result['scan'] = {'read_back': reads.get('scan', {})}
-    write_json(args.output, {'definitions': {'near': NEAR, 'removed_above': REMOVED}, 'models': result,
+    write_json(args.output, {'definitions': {'near': NEAR, 'removed_above': REMOVED, 'piece': PIECE, 'mostly': .8, 'barely': .2}, 'models': result,
                              'provenance': provenance(config={'evaluation': str(root), 'splits': list(args.splits)}, inputs={str(root/'inputs/models.json'): digest(root/'inputs/models.json')})})
     for name, r in result.items():
         if 'error_rate' in r: print(name, {k: round(100*v, 1) for k, v in r['error_rate'].items()}, {k: round(100*v, 1) for k, v in r['f1_by_strip_scale'].items()})

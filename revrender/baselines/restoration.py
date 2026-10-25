@@ -104,6 +104,13 @@ class Experiment:
             require(args.human_validation_hints is not None or not args.hint,'the hints of the human validation are needed (data.separation hints)')
             self.native_hints=np.load(args.human_validation_hints) if args.hint else None
             self.hint_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(2)[1])
+            self.strokes=None
+            if args.stroke and args.strokes:
+                self.strokes=[np.load(args.strokes/f'{k}.npy',mmap_mode='r') for k in ('stroke','centre','width')]
+                require(len(self.strokes[0])==len(self.rows) and json.loads((args.strokes/'run_manifest.json').read_text())['inputs'][str(args.data/'records.json')]
+                        ==digest(args.data/'records.json'),'stroke geometry of other pairs')
+                inputs.append(args.strokes/'run_manifest.json')
+            require(not args.stroke or self.strokes is not None or self.human[self.train].all(),'synthetic pairs without their stroke geometry (data.separation strokes)')
             inputs+=[p for p in (args.data/'hint.npy',args.human_validation_hints) if p is not None and p.exists()]
         if args.protocol:inputs.append(args.protocol)
         if args.init:inputs+=[p for p in sorted(args.init.iterdir()) if p.is_file()]
@@ -135,11 +142,17 @@ class Experiment:
                          simulated_hint(a,b,rng,self.args.hint_reach,self.args.hint_drop) for i,a,b in zip(ids,x,y)]).astype(np.float32)
 
     def labelled_batch(self):
-        """A batch for RevSep: grey, target and hint on [0, 1], the erase and cross labels (``data.separation.pair_labels``), its rows."""
+        """A batch for RevSep: grey, target and hint on [0, 1], the erase and cross labels (``data.separation.pair_labels``), its rows,
+        and with --stroke the (mask, centreline, half-width) labels (``data.separation.stroke_labels``)."""
         from ..data.separation import pair_labels
+        from ..data.separation import stroke_labels
         ids=self.sample();x=self.x[ids];y=self.y[ids];labels=[pair_labels(a,b,self.human[i]) for i,a,b in zip(ids,x,y)]
+        strokes=None
+        if self.args.stroke:
+            made=[stroke_labels(a,b,self.human[i],None if self.human[i] else [s[i] for s in self.strokes]) for i,a,b in zip(ids,x,y)]
+            strokes=tuple(np.stack([m[k] for m in made]) for k in range(3))
         return (x.astype(np.float32)/255,y.astype(np.float32)/255,self.hints_of(ids,x,y,self.hint_rng),
-                np.stack([e for e,_ in labels]),np.stack([c for _,c in labels]),ids)
+                np.stack([e for e,_ in labels]),np.stack([c for _,c in labels]),ids,strokes)
 
     def native_hint(self,i):
         if not self.hinted:return None
@@ -217,6 +230,10 @@ def main(argv=None):
     p.add_argument('--hint',action=argparse.BooleanOptionalAction,default=True,help='RevSep: the hint channel (off: zeros)')
     p.add_argument('--reader',type=Path,help='RevSep: a frozen reader (reader_ctc) whose CTC loss on the output of the one-tile human regions joins the loss')
     p.add_argument('--reading-weight',type=float,default=0.,help='RevSep: the weight of that reading term')
+    p.add_argument('--stroke',action=argparse.BooleanOptionalAction,default=False,help='RevSep: the stroke head A and its drawn mask (models.separation)')
+    p.add_argument('--hint-from',choices=['detector','stroke','both'],default='detector',
+                   help="RevSep --stroke: the second pass's range: none (detector: one pass), the drawn mask, or both side by side")
+    p.add_argument('--strokes',type=Path,help='RevSep --stroke: the stroke geometry of the synthetic pairs (data.separation strokes)')
     p.add_argument('--heads',action=argparse.BooleanOptionalAction,default=True,
                    help='RevSep: the erase and cross heads and the composition (off: H1 alone, NAFNet with the hint channel)')
     p.add_argument('--budget',help="a budget section of the protocol (passes over the data, evaluations, learning-rate scale): "

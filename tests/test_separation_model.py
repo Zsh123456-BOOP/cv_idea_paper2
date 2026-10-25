@@ -2,7 +2,7 @@ import pytest
 
 torch = pytest.importorskip('torch')
 
-from revrender.models.separation import IGNORE, RevSep, compose, masked_bce, separation_loss
+from revrender.models.separation import IGNORE, RADIUS, RevSep, compose, masked_bce, render, run, separation_loss
 
 
 class Body(torch.nn.Module):
@@ -16,8 +16,8 @@ class Body(torch.nn.Module):
 
 def test_revsep_reads_grey_and_hint_and_its_heads_see_the_endings_input():
     torch.manual_seed(42); net = RevSep(Body()); grey = torch.rand(2, 1, 16, 24); hint = (torch.rand(2, 1, 16, 24) > .5).float()
-    restored, erase, cross = net(grey, hint)
-    assert restored.shape == erase.shape == cross.shape == (2, 1, 16, 24) and net.features is None   # nothing held between calls
+    restored, erase, cross, stroke = net(grey, hint)
+    assert restored.shape == erase.shape == cross.shape == (2, 1, 16, 24) and stroke is None and net.features is None   # nothing held
     stacked = torch.cat([grey, hint, torch.zeros_like(grey)], 1)
     assert torch.allclose(restored, net.body(stacked)[:, :1])
     logits = net.heads(net.body.intro(stacked))
@@ -56,3 +56,28 @@ def test_a_reading_term_joins_the_loss_when_it_gives_one():
     assert seen == [(1, 1, 8, 8)] and 'reading' in terms
     _, terms = separation_loss(net, grey, grey, grey*0, erase, erase, reading=lambda out: None)
     assert 'reading' not in terms
+
+
+def test_the_drawn_mask_covers_the_centreline_within_its_half_width():
+    centre = torch.zeros(1, 1, 21, 21); centre[0, 0, 10, 4:17] = 1; half = torch.full_like(centre, 2.)
+    drawn = render(centre, half)
+    assert drawn[0, 0, 10, 10] > .99 and drawn[0, 0, 12, 10] > .5 and drawn[0, 0, 15, 10] < .01 and drawn[0, 0, 10, 0] < .01
+    assert render(torch.zeros_like(centre), half).abs().max() < 1e-6
+
+
+def test_the_stroke_version_draws_its_mask_and_feeds_it_to_a_second_pass():
+    torch.manual_seed(42); net = RevSep(Body(), stroke=True); grey = torch.rand(1, 1, 16, 16); hint = torch.zeros_like(grey)
+    restored, erase, cross, stroke = net(grey, hint)
+    assert stroke[0].shape == (1, 1, 16, 16) and 0 < stroke[1].min() and stroke[1].max() < RADIUS
+    calls = []
+    original = net.forward
+    net.forward = lambda g, h, extra=None: calls.append((h is hint, extra is None)) or original(g, h, extra)
+    for mode, expected in (('detector', [(True, True)]), ('stroke', [(True, True), (False, True)]), ('both', [(True, True), (True, False)])):
+        calls.clear(); out = run(net, grey, hint, mode); assert calls == expected and out[4].shape == grey.shape
+
+
+def test_the_stroke_terms_join_the_loss_and_reach_head_a():
+    torch.manual_seed(42); net = RevSep(Body(), stroke=True); grey = torch.rand(1, 1, 16, 16); zero = torch.zeros(1, 1, 16, 16, dtype=torch.uint8)
+    mask = zero.clone(); mask[..., 7:9, 2:14] = 1; centre = zero.clone(); centre[..., 8, 2:14] = 1; half = centre.float()*1.5
+    loss, terms = separation_loss(net, grey, grey, grey*0, zero, zero, strokes=(mask, centre, half), hint_from='both')
+    assert {'centre', 'width', 'stroke'} <= set(terms); loss.backward(); assert net.heads.weight.grad[2:].abs().sum() > 0

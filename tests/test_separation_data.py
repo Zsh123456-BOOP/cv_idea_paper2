@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 
 from revrender.data.separation import IGNORE, detector_hint, jittered_hint, native_hints, pair_labels, simulated_hint
 from revrender.util import SEED
@@ -70,3 +71,20 @@ def test_a_hinted_restorer_gets_its_hint_tiled_with_the_crop():
     grey = np.full((40, 300), .9, np.float32); hint = np.zeros_like(grey); hint[10:20, 50:250] = 1
     assert np.array_equal(restore_native(lambda x, h: h, grey, hint), hint)
     assert np.array_equal(restore_native(lambda x: x, grey), grey)
+
+
+def test_a_human_tiles_stroke_labels_skip_the_kept_ink_next_to_the_strike():
+    pytest.importorskip('skimage')
+    from revrender.data.separation import stroke_labels
+    x = np.full((20, 40), 250, np.uint8); x[9:11, 2:38] = 30; x[4:16, 18:21] = 60; y = x.copy(); y[9:11, 2:38] = 255; y[9:11, 18:21] = 60
+    mask, centre, half = stroke_labels(x, y, human=True)
+    assert mask[9, 5] == 1 and centre[9:11, 5].sum() == 1 and half[centre == 1].max() >= 1
+    assert mask[9, 19] == IGNORE and centre[9, 19] == IGNORE and mask[2, 19] == 0      # under the kept writing: unknown; far: no
+
+
+def test_the_stroke_geometry_holds_the_whole_strike_and_its_half_width():
+    pytest.importorskip('skimage')
+    from revrender.data.separation import stroke_geometry
+    alpha = np.zeros((20, 40), np.float32); alpha[8:13, 3:37] = 1
+    mask, centre, half = stroke_geometry(alpha)
+    assert mask.sum() == 5*34 and centre[10, 10] == 1 and centre[:8].sum() == 0 and abs(half[10, 10]-3) < 1e-6

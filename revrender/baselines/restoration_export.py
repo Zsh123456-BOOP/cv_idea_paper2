@@ -42,14 +42,14 @@ def selected_predictor(run,upstream,checkpoint=None,composed=True):
         import torch
         from .restoration_torch import build, predict_image
         torch.manual_seed(SEED);torch.set_num_threads(4)
-        network,diffusion,_=build(model,upstream_of(upstream,model));checkpoint=weights/'weights.pt'
+        network,diffusion,_=build(model,upstream_of(upstream,model),stroke=manifest['config'].get('stroke',False));checkpoint=weights/'weights.pt'
         state=torch.load(checkpoint,map_location='cpu',weights_only=False);network.load_state_dict(state['model']);network.eval()
         if model=='RevSep':
             from ..models.separation import separate
             config=manifest['config']
             def predict(x,hint=None):
                 hint=np.zeros_like(x) if hint is None or not config['hint'] else hint
-                return separate(network,x,hint,config['heads'],composed)
+                return separate(network,x,hint,config['heads'],composed,config.get('hint_from','detector'))
         else:
             @torch.no_grad()
             def predict(x):

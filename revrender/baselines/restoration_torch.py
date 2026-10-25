@@ -20,7 +20,7 @@ def package(name,path):
     return m
 
 
-def build(model,root,architecture=None):
+def build(model,root,architecture=None,stroke=False):
     if model=='NAFNet':
         # Avoid BasicSR's unrelated dataset/extension auto-imports. Architecture files
         # are unchanged, including their own LayerNorm and local pooling code.
@@ -34,7 +34,7 @@ def build(model,root,architecture=None):
         return network,None,None
     if model=='RevSep':
         from ..models.separation import RevSep
-        return RevSep(build('NAFNet',root,architecture)[0]).cuda(),None,None
+        return RevSep(build('NAFNet',root,architecture)[0],stroke=stroke).cuda(),None,None
     if model=='Restormer':
         m=module_file('official_restormer',root/'basicsr/models/archs/restormer_arch.py')
         return m.Restormer(**(architecture or {})).cuda(),None,None
@@ -105,7 +105,7 @@ def train(e):
     a=e.args;require(torch.cuda.is_available(),'CUDA required')
     torch.set_num_threads(4);torch.manual_seed(SEED);torch.cuda.manual_seed_all(SEED)
     torch.backends.cudnn.benchmark=False
-    network,diffusion,lap=build(a.model,upstream_of(a.upstream,a.model))
+    network,diffusion,lap=build(a.model,upstream_of(a.upstream,a.model),stroke=getattr(a,'stroke',False))
     if a.init:network.load_state_dict(torch.load(a.init/'weights.pt',map_location='cuda',weights_only=False)['model'])
     scale=a.learning_rate_scale
     is_doc=a.model=='DocDiff';is_cor=a.model=='COR-Generator';is_rest=a.model=='Restormer'
@@ -147,7 +147,8 @@ def train(e):
         config.update(architecture='RevSep (models.separation): the unchanged official NAFNet body on grey, hint and zeros; a 1x1 erase/cross head on its last decoder features',
             loss=('PSNR loss of the composed output and of H1, erase BCE+Dice, cross BCE' if a.heads else 'PSNR loss of H1'),
             heads=a.heads,hint=a.hint,erase_weight=a.erase_weight,cross_weight=a.cross_weight,hint_reach=a.hint_reach,hint_drop=a.hint_drop,
-            reader=str(a.reader) if a.reader else None,reading_weight=a.reading_weight)
+            reader=str(a.reader) if a.reader else None,reading_weight=a.reading_weight,stroke=a.stroke,hint_from=a.hint_from,
+            stroke_weights=[a.centre_weight,a.width_weight,a.stroke_weight] if a.stroke else None)
     if is_stain:
         import torchmetrics
         config.update(initialization=str(a.init) if a.init else 'random; no author checkpoint',torchmetrics=torchmetrics.__version__,
@@ -156,7 +157,7 @@ def train(e):
     active=network
 
     def predict(x,hint=None):
-        if is_sep:return separate(active,x,np.zeros_like(x) if hint is None else hint,a.heads)
+        if is_sep:return separate(active,x,np.zeros_like(x) if hint is None else hint,a.heads,hint_from=a.hint_from)
         return predict_image(active,ema_diffusion if active is ema else diffusion,x,a.model)
 
     def save(path):
@@ -186,10 +187,11 @@ def train(e):
     for step in range(1,a.steps+1):
         if step==1:before=next(network.parameters()).detach().clone()
         if is_sep:
-            x,y,hint,erase,cross,ids=e.labelled_batch();network.train();opt.zero_grad(set_to_none=True)
+            x,y,hint,erase,cross,ids,strokes=e.labelled_batch();network.train();opt.zero_grad(set_to_none=True)
             t=lambda v:torch.from_numpy(np.ascontiguousarray(v[:,None])).cuda()
             loss,terms=separation_loss(network,t(x),t(y),t(hint),t(erase),t(cross),a.heads,a.erase_weight,a.cross_weight,
-                                       reading(ids) if reading else None)
+                                       reading(ids) if reading else None,tuple(map(t,strokes)) if strokes else None,a.hint_from,
+                                       (a.centre_weight,a.width_weight,a.stroke_weight) if a.stroke else (1.,1.,1.))
             require(torch.isfinite(loss).item(),'nonfinite training loss');value=float(loss.detach());loss.backward()
         else:
             x,y,w=e.batch(weights=True);network.train();opt.zero_grad(set_to_none=True)

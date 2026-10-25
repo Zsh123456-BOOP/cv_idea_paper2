@@ -1,6 +1,7 @@
 """What RevSep (``models.separation``) learns from a restorer pair, and where it is told the revision is.
 
     python -m revrender.data.separation hints --native SET/validation_native.json --detector DET --output-dir OUT
+    python -m revrender.data.separation strokes --pairs V4 --gold-bank BANK --human-validation VAL.json --same-student PAIRS --output-dir OUT
 
 Labels are per pixel 1, 0 or ``IGNORE`` (no loss), for its two heads: erase (a strike pixel on paper, made white) and cross (a strike
 pixel over writing, redrawn).  A synthetic pair (``data.restoration_pairs``) knows both: its strike is what it darkened by more than
@@ -15,9 +16,17 @@ A synthetic pair has no detection, so its hint is simulated so (``simulated_hint
 ``reach`` pixels, less random 4-pixel blocks; a human region's detector hint is grown or shrunk by a pixel (``jittered_hint``).  With
 reach 5 and drop .3, on 800 synthetic training pairs, it holds 85% of the strike at 69% precision against the strike on paper: cleaner
 than the detector (whose writing is denser round the strike, and still 59% at reach 10), so the real regions teach the rest.
+
+The stroke version (``models.separation`` with a stroke head) also learns the strike as an object: its centreline and half-width, and
+the mask they draw, crossings included.  A synthetic pair knows it exactly (``strokes``: its strike's opacity redrawn as
+``restoration_pairs.build`` drew it, from the record's seed, piece and placement, and checked against the pair's own pixels; the mask
+is opacity at least one half, the centreline its skeleton, the half-width the distance to its edge there).  A human region only
+knows what the annotator erased (``stroke_labels``): that mask, its skeleton and widths, and the kept ink next to it -- where the
+strike may run under writing -- counted for none of them.
 """
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -25,10 +34,12 @@ import numpy as np
 from scipy import ndimage
 
 from .. import pages
-from ..util import digest, make_output_dir, write_manifest
+from ..util import digest, make_output_dir, require, write_manifest
 from .restoration_pairs import REMOVED
 
 IGNORE = 255        # a label no loss counts
+UNDER = 3           # pixels: kept ink this close to a human region's erased strike may lie under it (stroke labels unknown there)
+WIDTH_STEP = 4      # the stored half-width is in quarter pixels
 FAINT = 8           # darkened by more than this but no more than REMOVED: a strike's faint edge, labelled for neither head
 HUMAN = 'human_confirmed'   # the source of a human region's tiles in a pair set (``restoration_pairs.human_pairs``)
 
@@ -71,6 +82,65 @@ def detector_hint(instances, window, crop):
     return (hint & (crop < 200)).astype(np.uint8)
 
 
+def stroke_geometry(alpha):
+    """(mask, centreline, half-width in pixels on the centreline) of a strike's opacity."""
+    from skimage.morphology import skeletonize
+    mask = alpha >= .5; centre = skeletonize(mask) if mask.any() else mask
+    return mask.astype(np.uint8), centre.astype(np.uint8), np.where(centre, ndimage.distance_transform_edt(mask), 0.).astype(np.float32)
+
+
+def stroke_labels(x, y, human, truth=None):
+    """(mask, centreline, half-width) labels of a pair: a synthetic one's from its stored geometry (``truth``: the three arrays of
+    ``strokes``), a human tile's from what its target whitened, with the kept ink within ``UNDER`` of it ``IGNORE`` in mask and line."""
+    if not human:
+        mask, centre, width = truth
+        return mask.astype(np.uint8), centre.astype(np.uint8), width.astype(np.float32)/WIDTH_STEP
+    mask, centre, width = stroke_geometry(((y.astype(np.int16)-x) > 0).astype(np.float32))
+    unknown = (x < 200) & ~mask.astype(bool) & ndimage.binary_dilation(mask.astype(bool), iterations=UNDER)
+    return np.where(unknown, IGNORE, mask).astype(np.uint8), np.where(unknown, IGNORE, centre).astype(np.uint8), width
+
+
+def pair_alpha(record, bank):
+    """The opacity of a pair's gold strike as ``restoration_pairs.build`` drew it (``bank``: the gold pieces it chose among)."""
+    from PIL import Image, ImageDraw
+    from .restoration_pairs import SIZE, material_alpha
+    if record['clean']: return np.zeros((SIZE, SIZE), np.float32)
+    if record['split'] == 'val':
+        lay = Image.new('L', (SIZE, SIZE), 0); l, t, w, h = record['placement']
+        ImageDraw.Draw(lay).line([(l, t+h//2), (l+w//2, t), (l+w-1, t+h-1)], fill=255, width=max(2, h//4))
+        return np.asarray(lay, np.float32)/255
+    alpha, piece = material_alpha(bank, random.Random(record['seed']), record['placement'])
+    require(piece == record['pieces']['gold_pixels'], f"{record['id']}: not the piece the pair was drawn with")
+    return alpha
+
+
+def strokes(pairs, gold_bank, human_validation, same_student, destination):
+    """The strike geometry of every pair of a pair set (its gold arm): stroke.npy (mask), centre.npy (centreline), width.npy (half-width
+    in quarter pixels on the centreline), row for row with its records; each redrawn strike must give the pair's own pixels."""
+    from .paste_strikes import Bank
+    from .prior_annotations import twins
+    from .restoration_pairs import canonical, draw_pair
+    other = twins(same_student); records = json.loads((pairs/'records.json').read_text())
+    x = np.load(pairs/'gold_pixels.npy', mmap_mode='r'); y = np.load(pairs/'targets.npy', mmap_mode='r')
+    excluded = {canonical(r['group_uuid'], other) for r in json.loads(human_validation.read_text())} | {r['group_uuid'] for r in records if r['split'] == 'val'}
+    bank = Bank(gold_bank); bank.pieces = [p for p in bank.pieces if canonical(p['writer'], other) not in excluded]
+    out = make_output_dir(destination); n = len(records); shape = x.shape
+    arrays = {k: np.lib.format.open_memmap(out/f'{k}.npy', mode='w+', dtype=np.uint8, shape=shape) for k in ('stroke', 'centre', 'width')}
+    for i, r in enumerate(records):
+        alpha = pair_alpha(r, bank); clean = np.asarray(y[i])
+        if not r['clean']:
+            image, _ = draw_pair(clean, alpha, float(np.percentile(clean[clean < 200], 30)))
+            require(np.array_equal(image, x[i]), f"{r['id']}: the redrawn strike does not give the pair's pixels")
+        mask, centre, width = stroke_geometry(alpha)
+        arrays['stroke'][i] = mask; arrays['centre'][i] = centre; arrays['width'][i] = np.clip(np.rint(width*WIDTH_STEP), 0, 255)
+    for a in arrays.values(): a.flush()
+    inputs = {str(p): digest(p) for p in [pairs/'records.json', pairs/'gold_pixels.npy', pairs/'targets.npy', human_validation, same_student,
+                                          gold_bank/'run_manifest.json']}
+    write_manifest(out, config={'pairs': str(pairs), 'gold_bank': str(gold_bank), 'human_validation': str(human_validation),
+                                'same_student': str(same_student)}, inputs=inputs, pairs=n, width_step=WIDTH_STEP,
+                   strikes=sum(not r['clean'] for r in records), files={f'{k}.npy': digest(out/f'{k}.npy') for k in arrays})
+
+
 def native_hints(native, detector, destination):
     """The detector hints of a native set's crops (``data.review_set``'s ``validation_native.json``: page and box of each), hint_<k>
     on crop k: a hinted restorer's human validation (``baselines.restoration --human-validation-hints``)."""
@@ -89,7 +159,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     h = sub.add_parser('hints', help=native_hints.__doc__)
     for name in ('native', 'detector', 'output-dir'): h.add_argument('--'+name, type=Path, required=True)
-    args = p.parse_args(argv); native_hints(args.native, args.detector, args.output_dir)
+    k = sub.add_parser('strokes', help=strokes.__doc__)
+    for name in ('pairs', 'gold-bank', 'human-validation', 'same-student', 'output-dir'): k.add_argument('--'+name, type=Path, required=True)
+    args = p.parse_args(argv)
+    if args.command == 'hints': native_hints(args.native, args.detector, args.output_dir)
+    else: strokes(args.pairs, args.gold_bank, args.human_validation, args.same_student, args.output_dir)
 
 
 if __name__ == '__main__':
