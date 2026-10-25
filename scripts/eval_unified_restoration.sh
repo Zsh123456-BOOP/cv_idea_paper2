@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Frozen checkpoints, shared inputs, one OCR engine for every model: the validation split (the old test set is retired).
-# Cards: GPU_A runs the restorations, GPU_A and GPU_B the OCR (TP2); defaults cards 1 and 2.  MODELS=<list> evaluates another list
+# Cards: the restorations go to every card with room at once (_common.sh open_card); GPU_A and GPU_B run the OCR (TP2), default cards 1
+# and 2.  MODELS=<list> evaluates another list
 # (candidate versions for eval.unified_restoration choose) in place of configs/unified_restoration.json.  DEV_EXPORT=<export of the
 # test page> DEV_PAGES=<its page images> adds the development half of the test questions (configs/test_halves.json).  DETECTOR=<a
 # detection run> gives every crop the detector's masks (hints.npz), which a hinted model (RevSep) reads.
@@ -25,14 +26,14 @@ LAB=$O/paper2_annotation_labels
   --output-dir "$OUT/inputs"
 mkdir "$OUT/runs"
 export GPU_A=${GPU_A:-GPU-d0bcc564-5bd9-b943-f995-8536415088e3} GPU_B=${GPU_B:-GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0}
-NUMA_A=0; case "$GPU_A" in *56971197*|*314fdf43*) NUMA_A=1 ;; esac
 case "$GPU_A,$GPU_B" in *314fdf43*) export ALLOW_GPU3=1 ;; esac   # card 3 only when the caller found nobody on it
 MODELS=${MODELS:-$ROOT/configs/unified_restoration.json}
 # each model with the architecture its runtime follows (a candidate version's name carries its step)
 "$PY" -c 'import json,sys
 for m in json.load(open(sys.argv[1])):
     print(m["name"], m["type"] if m["type"] in ("own","detector") else json.load(open(m["run"]+"/run_manifest.json"))["config"]["model"])' "$MODELS" > "$OUT/kinds.txt"
-while read -r name kind; do
+restore_version() {   # CARD NUMA NAME KIND: one version's restorations of the inputs
+  local card="$1" numa="$2" name="$3" kind="$4"
   RUNTIME="$PY"
   export PYTHONPATH="$ROOT"
   unset LD_LIBRARY_PATH
@@ -45,11 +46,14 @@ while read -r name kind; do
   elif [ "$kind" = StainRestorer ]; then
     export PYTHONPATH="$ROOT:/home/zsh/hme/envs/paper2_stain_deps"
   fi
-  wait_for_gpu_memory "$GPU_A" 14000
-  bash "$ROOT/scripts/launch_gpu_job.sh" "$GPU_A" "$NUMA_A" "$OUT/runs/$name" -- \
+  bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$OUT/runs/$name" -- \
     "$RUNTIME" -m revrender.eval.unified_restoration infer --inputs "$OUT/inputs" --name "$name" \
     --output-dir "$OUT/runs/$name" > "$OUT/runs/$name.log" 2>&1 < /dev/null
-done < "$OUT/kinds.txt"
+}
+# every version on whichever card has room (open_card: two of our jobs a card at most, card 3 only while nobody else is on it)
+while read -r name kind; do place_job 14000 restore_version "$name" "$kind"; done < "$OUT/kinds.txt"
+wait
+while read -r name kind; do test -e "$OUT/runs/$name/run_manifest.json" || { echo "no restorations: $name"; exit 1; }; done < "$OUT/kinds.txt"
 unset LD_LIBRARY_PATH
 export PYTHONPATH="$ROOT"
 "$PY" -m revrender.eval.unified_restoration merge --inputs "$OUT/inputs" --runs "$OUT/runs" --output-dir "$OUT/pack"

@@ -8,7 +8,7 @@
 # then one deciding batch with every kept version of the stroke arms, of RevSep and of the seven restorers' (b), chosen there, with
 # the error zones and fragment shares (eval.restoration_errors zones) and RevSep-both paired with every other family.  The rule: more
 # than 3 points of read-back above the best baseline, the writer-resampled interval above 0, the strike missed next to writing down.
-# Unattended; a step whose marker is in $R is skipped.  Cards 0, 1 and 2 train, cards 1 and 2 (or 3 while nobody is on it) evaluate.
+# Unattended; a step whose marker is in $R is skipped.  Every job goes to whichever card has room (_common.sh open_card).
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -33,14 +33,19 @@ mode() { case "$1" in RevSep-both) echo both ;; RevSep-stroke) echo stroke ;; Re
 
 done_ strokes || { [ -e "$STROKES/run_manifest.json" ] || "$PY" -m revrender.data.separation strokes --pairs "$V4" --gold-bank "${N}_strike_bank_strokes" \
     --human-validation "$VAL/validation_native.json" --same-student "$O/paper2_splits/same_student_pairs.json" --output-dir "$STROKES" > "$R/strokes.log" 2>&1; mark strokes; }
-train() {   # STAGE CHOSEN DATA BUDGET EXTRA: the three arms on cards 0, 1 and 2
-    local stage="$1" chosen="$2" data="$3" budget="$4" extra="$5" pids=() k=0 cards=("$C0" "$C1" "$C2") numas=(0 0 1)
+arm_job() {   # CARD NUMA ARM STAGE INIT DATA BUDGET EXTRA: one arm trained
+    local card="$1" numa="$2" arm="$3" stage="$4" init="$5" data="$6" budget="$7" extra="$8"
+    RESTORER_MEMORY=10000 RESTORER_FLAGS="--stroke --hint-from $(mode "$arm") $extra" finetune_restorer RevSep "$card" "$numa" "$init" "$data" \
+        "${N}_revsep_${stage}_$arm" $budget > "$R/train_${stage}_$arm.log" 2>&1
+}
+train() {   # STAGE CHOSEN DATA BUDGET EXTRA: the three arms at once, each on a card with room
+    local stage="$1" chosen="$2" data="$3" budget="$4" extra="$5"
     for arm in "${ARMS[@]}"; do
         local init=-; [ "$chosen" = - ] || init=$(chosen_of "$chosen" "$arm")
-        ( RESTORER_MEMORY=10000 RESTORER_FLAGS="--stroke --hint-from $(mode "$arm") $extra" finetune_restorer RevSep "${cards[$k]}" "${numas[$k]}" "$init" "$data" \
-            "${N}_revsep_${stage}_$arm" $budget ) > "$R/train_${stage}_$arm.log" 2>&1 & pids+=($!); k=$((k+1))
+        place_job 10000 arm_job "$arm" "$stage" "$init" "$data" "$budget" "$extra"
     done
-    for p in "${pids[@]}"; do wait "$p"; done
+    wait
+    for arm in "${ARMS[@]}"; do test -e "${N}_revsep_${stage}_$arm/selection.json"; done
 }
 versions() {   # STAGE LIST: the versions of LIST evaluated together, chosen, and their error zones
     local stage="$1" list="$2" evaluation=${N}_revsep_stroke_versions_$1
