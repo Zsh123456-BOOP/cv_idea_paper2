@@ -46,10 +46,12 @@ cross_weight = 100.0
 # With --reader only (the fine-tuning on the human regions): at weight 1 the reading term's gradient was a median 3.3 times the
 # composed image term's over the first 200 fine-tuning steps (paper2_clean_revsep_reading_calibration), so a tenth of it: 0.03.
 reading_weight = 0.03
-# With --stroke only (head A): set once from the gradient balance of a smoke run, then fixed.
-centre_weight = 1.0
-width_weight = 1.0
-stroke_weight = 1.0
+# With --stroke only (head A), set once so each term's gradient matches the composed image term's: at weight 1, over steps 50 to 1,000
+# of the synthetic training (--hint-from both), the composed term's gradient was a median 94, 20 and 51 times the centreline's,
+# the half-width's and the drawn mask's (paper2_clean_revsep_stroke_calibration).
+centre_weight = 100.0
+width_weight = 20.0
+stroke_weight = 50.0
 
 [training.Restormer]
 steps = 80000
