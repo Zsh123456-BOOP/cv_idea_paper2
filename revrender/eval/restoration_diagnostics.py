@@ -10,10 +10,14 @@ a line pack of the scan, the chosen RevSep, RevSep-both, NAFNet and DE-GAN as th
 - D2: on the development strikes whose pixels the annotator confirmed, RevSep-both with its writing (scan ink outside the annotator's
   erased pixels) put back to the scan, and RevSep with its strike pixels taken from RevSep-both; and (added after the first reading,
   not in the plan's rules) every one of the four with its writing put back, the read-back each loses to what it does to the writing;
-- D3: each of NAFNet, DE-GAN and RevSep averaged with the scan, (scan + output)/2.
+- D3: each of NAFNet, DE-GAN and RevSep averaged with the scan, (scan + output)/2;
+- D4 (plan 保字门): RevSep with its erase head at the stricter thresholds of ``THRESHOLDS``;
+- D5 (plan 保字门): each of the four with only its struck writing (within ``STRUCK`` pixels of the erased pixels) put back, or only
+  the rest of its writing.  ``--groups`` chooses which of D1 to D5 a pack holds (the scan and the four as they are always).
 
 It also measures, on those development strikes, what the pixel scores do not see: each version's mean change of the writing's grey
-(no threshold, grey levels) and the mean gradient on the writing's edge relative to the scan's.  ``score`` gives each version's
+(no threshold, grey levels), the mean gradient on the writing's edge relative to the scan's, and the share of the struck writing
+it erases (and of the rest of the writing).  ``score`` gives each version's
 read-back, paired with RevSep's on the strikes both read, its 95% interval by resampling writers and by resampling strikes (1,000,
 seed 42), and with a second reading of the same pack the reading's own spread.  Nothing is trained.
 """
@@ -30,6 +34,9 @@ from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_js
 REFERENCE = 'RevSep'
 FAMILIES = ('RevSep', 'RevSep-both', 'NAFNet', 'DE-GAN')
 TEMPERATURES = (1., 2.)
+THRESHOLDS = (.5, .6, .7, .8, .9)   # D4: RevSep's erase head at these (0.5 is RevSep itself)
+STRUCK = 4          # pixels: writing this close to the annotator's erased pixels is the struck writing (D5)
+ERASED = .2         # brightened by more than this: erased (baselines.restoration)
 
 
 def grey_of(path):
@@ -61,7 +68,7 @@ def edge_gradient(image, edge):
 def pack(args):
     from ..baselines.restoration import restore_native
     from ..baselines.restoration_export import selected_predictor
-    root = args.evaluation; chosen = json.loads((root/'chosen/selection.json').read_text())
+    root = args.evaluation; chosen = json.loads((root/'chosen/selection.json').read_text()); groups = set(args.groups)
     names = {f: chosen[f]['chosen']['name'] for f in FAMILIES}
     rows = json.loads((root/'pack/pack.json').read_text())['rows']
     by = {(r['model'].split('__', 1)[1], r['split'], r['line_id']): r for r in rows}
@@ -71,31 +78,44 @@ def pack(args):
     def add(name, r, image):
         path = f'crops/{len(pack_rows):05d}.png'; Image.fromarray(np.rint(np.clip(image, 0, 1)*255).astype(np.uint8)).save(out/path)
         pack_rows.append({**r, 'id': f"{r['split']}|{name}|{r['line_id']}", 'model': f"{r['split']}__{name}", 'images': {'erased': path}})
-    spec = chosen['RevSep']['spec']
-    soft = {T: selected_predictor(Path(spec['run']), args.upstream, spec['checkpoint'], soften=T)[0] for T in TEMPERATURES}
+    spec = chosen['RevSep']['spec']; at = lambda **kw: selected_predictor(Path(spec['run']), args.upstream, spec['checkpoint'], **kw)[0]
+    soft = {T: at(soften=T) for T in TEMPERATURES} if 'D1' in groups else {}
+    strict = {t: at(erase_threshold=t) for t in THRESHOLDS if t != .5} if 'D4' in groups else {}
     for n, r in enumerate(scans):
         scan = grey_of(root/'inputs'/r['images']['erased']); hint = hints[f'ocr_{n}'].astype(np.float32)
         outputs = {'scan': scan, **{f: grey_of(by[(names[f], r['split'], r['line_id'])]['images']['erased']) for f in FAMILIES}}
-        outputs.update({f'D1-T{int(T)}': restore_native(soft[T], scan, hint) for T in TEMPERATURES})
-        outputs.update({f'D3-half-{f}': (scan+outputs[f])/2 for f in ('NAFNet', 'DE-GAN', 'RevSep')})
+        outputs.update({f'D1-T{int(T)}': restore_native(p, scan, hint) for T, p in soft.items()})
+        outputs.update({f'D4-erase-above-{t}': restore_native(p, scan, hint) for t, p in strict.items()})
+        if 'D3' in groups: outputs.update({f'D3-half-{f}': (scan+outputs[f])/2 for f in ('NAFNet', 'DE-GAN', 'RevSep')})
         strike = masks.get(r['line_id'])
         if strike is not None:
-            writing = (scan < 200/255) & ~strike
-            outputs['D2-both-writing-kept'] = np.where(writing, scan, outputs['RevSep-both'])
-            outputs['D2-revsep-strike-from-both'] = np.where(strike, outputs['RevSep-both'], outputs['RevSep'])
-            outputs.update({f'D2-kept-{f}': np.where(writing, scan, outputs[f]) for f in FAMILIES if f != 'RevSep-both'})
+            writing = (scan < 200/255) & ~strike; near = writing & ndimage.binary_dilation(strike, iterations=STRUCK)
+            if 'D2' in groups:
+                outputs['D2-both-writing-kept'] = np.where(writing, scan, outputs['RevSep-both'])
+                outputs['D2-revsep-strike-from-both'] = np.where(strike, outputs['RevSep-both'], outputs['RevSep'])
+                outputs.update({f'D2-kept-{f}': np.where(writing, scan, outputs[f]) for f in FAMILIES if f != 'RevSep-both'})
+            if 'D5' in groups:
+                for f in FAMILIES:
+                    outputs[f'D5-near-kept-{f}'] = np.where(near, scan, outputs[f]); outputs[f'D5-far-kept-{f}'] = np.where(writing & ~near, scan, outputs[f])
             edge = writing & ndimage.binary_dilation(scan >= 200/255)
             for name, image in outputs.items():
-                m = measures.setdefault(name, {'writing_change': [], 'edge_gradient_ratio': []})
+                m = measures.setdefault(name, {'writing_change': [], 'edge_gradient_ratio': [], 'struck': np.zeros(2, np.int64), 'other': np.zeros(2, np.int64)})
                 if writing.any(): m['writing_change'].append(float((image-scan)[writing].mean())*255)
                 g, g0 = edge_gradient(image, edge), edge_gradient(scan, edge)
                 if g is not None and g0: m['edge_gradient_ratio'].append(g/g0)
+                erased = (image-scan) > ERASED
+                m['struck'] += [(erased & near).sum(), near.sum()]; m['other'] += [(erased & writing & ~near).sum(), (writing & ~near).sum()]
         for name, image in outputs.items(): add(name, r, image)
     write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': pack_rows})
-    summary = {name: {k: float(np.mean(v)) if v else None for k, v in m.items()} | {'strikes': len(m['writing_change'])} for name, m in measures.items()}
+    summary = {name: {'writing_change': float(np.mean(m['writing_change'])) if m['writing_change'] else None,
+                      'edge_gradient_ratio': float(np.mean(m['edge_gradient_ratio'])) if m['edge_gradient_ratio'] else None,
+                      'struck_writing_erased': float(m['struck'][0]/max(1, m['struck'][1])), 'other_writing_erased': float(m['other'][0]/max(1, m['other'][1])),
+                      'strikes': len(m['writing_change'])} for name, m in measures.items()}
     write_json(out/'measures.json', {'definitions': {'writing': 'scan ink (<200) outside the annotator erased pixels, development strikes with confirmed pixels',
                                                      'writing_change': 'mean (output - scan) on the writing, grey levels', 'edge_gradient_ratio':
-                                                     'mean Sobel gradient on the writing edge (writing next to paper), output over scan'}, 'versions': summary})
+                                                     'mean Sobel gradient on the writing edge (writing next to paper), output over scan',
+                                                     'struck_writing_erased': f'share of the writing within {STRUCK} pixels of the erased pixels brightened by more than {ERASED}',
+                                                     'other_writing_erased': 'the same share of the rest of the writing'}, 'versions': summary})
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [root/'chosen/selection.json', root/'pack/pack.json', args.dev_export]},
                    chosen=names, rows=len(pack_rows), development_strikes_with_pixels=len(masks))
     print(json.dumps({'rows': len(pack_rows), 'strikes': len(scans), 'with_pixels': len(masks)}), flush=True)
@@ -147,6 +167,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     k = sub.add_parser('pack')
     for key in ('evaluation', 'upstream', 'dev-export', 'dev-pages', 'output-dir'): k.add_argument('--'+key, type=Path, required=True)
+    k.add_argument('--groups', nargs='+', choices=('D1', 'D2', 'D3', 'D4', 'D5'), default=['D1', 'D2', 'D3'])
     s = sub.add_parser('score'); s.add_argument('--diagnostics', type=Path, required=True)
     s.add_argument('--readings', type=Path, nargs='+', required=True); s.add_argument('--output', type=Path, required=True)
     args = p.parse_args(argv); {'pack': pack, 'score': score}[args.command](args)

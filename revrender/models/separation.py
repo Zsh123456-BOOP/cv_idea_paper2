@@ -126,13 +126,15 @@ def centreline(network, grey, hint):
 
 
 @torch.no_grad()
-def separate(network, grey, hint, heads=True, composed=True, hint_from='detector', soften=None):
-    """The restored crops (N, H, W numpy on [0, 1]) of grey crops and their hints: composed at one half, or H1 alone; ``soften`` (a
-    temperature T): the scan lightened by the erase probability at T, scan + sigmoid(erase/T)*(1-scan), no H1 and no crossing."""
+def separate(network, grey, hint, heads=True, composed=True, hint_from='detector', soften=None, erase_threshold=.5):
+    """The restored crops (N, H, W numpy on [0, 1]) of grey crops and their hints: composed at one half (the erase head at
+    ``erase_threshold``), or H1 alone; ``soften`` (a temperature T): the scan lightened by the erase probability at T,
+    scan + sigmoid(erase/T)*(1-scan), no H1 and no crossing."""
     network.eval()
     g = torch.from_numpy(np.ascontiguousarray(grey[:, None], np.float32)).cuda()
     h = torch.from_numpy(np.ascontiguousarray(hint[:, None], np.float32)).cuda()
     restored, erase, cross, _, _ = run(network, g, h, hint_from); restored = restored.clamp(0, 1)
     if soften: return (g+torch.sigmoid(erase/soften)*(1-g))[:, 0].clamp(0, 1).cpu().numpy()
+    if erase_threshold != .5: erase = erase-float(np.log(erase_threshold/(1-erase_threshold)))   # its logit at the threshold is 0
     out = compose(g, restored, erase, cross, hard=True) if heads and composed else restored
     return out[:, 0].clamp(0, 1).cpu().numpy()
