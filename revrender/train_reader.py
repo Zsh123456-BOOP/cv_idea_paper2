@@ -11,6 +11,10 @@ the clean lines alone, the control that says how much of a gain is the writer's 
 ``--blank`` whites out the columns under the strokes' mask (the way ``recognize_lines`` conditions ``blanked_*`` do with a detector's masks) before
 the sample is read, so the reader learns to read what is left around a gap; leave out ``stack``, whose column holds writing that is valid.
 Seed 42; OUT/adapter is the adapter (``recognize_lines --backend hf --adapter OUT/adapter`` reads with it), OUT/train_log.jsonl the loss.
+
+``--pack`` (in place of ``--corpus``) teaches on a line pack of real crops instead (``data.struck_pack train``: each row's ``images.raw``
+and its ``text``, rows of split ``val`` the validation), asked in the words of ``--condition`` (e.g. ``raw_struck``: read only what is
+struck out).
 """
 import argparse
 import json
@@ -80,6 +84,20 @@ class Samples:
         return render(self.rows[i], self.crops, self.blank)
 
 
+class PackSamples:
+    """The rows of a line pack: (its scan crop, its text)."""
+
+    def __init__(self, root, rows):
+        self.root, self.rows = root, rows
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, i):
+        with Image.open(self.root/self.rows[i]['images']['raw']) as image:
+            return image.convert('RGB'), self.rows[i]['text']
+
+
 class Collate:
     """A batch for the model: the chat with the answer, the loss only on the answer."""
 
@@ -137,8 +155,10 @@ def evaluate(model, loader, device):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
-    p.add_argument('--corpus', type=Path, required=True)
-    p.add_argument('--pages', type=Path, action='append', required=True, help='a folder of scans <image_id>.jpg (repeatable)')
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument('--corpus', type=Path); source.add_argument('--pack', type=Path, help='a line pack of real crops and their text (data.struck_pack)')
+    p.add_argument('--condition', help='with --pack: the recognize_lines condition whose words ask (e.g. raw_struck)')
+    p.add_argument('--pages', type=Path, action='append', help='with --corpus: a folder of scans <image_id>.jpg (repeatable)')
     p.add_argument('--model', type=Path, required=True)
     p.add_argument('--kinds', nargs='+', choices=('clean', 'whole', 'paste', 'stack'), default=['clean', 'whole', 'paste', 'stack'])
     p.add_argument('--blank', action='store_true', help='white out the columns under the strokes before reading (not with stack)')
@@ -159,21 +179,32 @@ def main(argv=None):
     args = p.parse_args(argv)
     import torch
     from transformers import AutoProcessor
-    train_rows, val_rows = read_rows(args.corpus, args.kinds, 'train'), read_rows(args.corpus, args.kinds, 'val')[:args.val_limit]
+    if args.pack:
+        require(args.condition is not None, '--pack needs --condition')
+        pack_rows = json.loads((args.pack/'pack.json').read_text())['rows']
+        train_rows, val_rows = [r for r in pack_rows if r['split'] == 'train'], [r for r in pack_rows if r['split'] == 'val'][:args.val_limit]
+    else:
+        require(args.pages, '--corpus needs --pages')
+        train_rows, val_rows = read_rows(args.corpus, args.kinds, 'train'), read_rows(args.corpus, args.kinds, 'val')[:args.val_limit]
     require(train_rows, 'no training recipe of these kinds')
     require(not (args.blank and 'stack' in args.kinds), '--blank and the stack kind do not go together: the blanked column holds valid writing')
     out = make_output_dir(args.output_dir)
     torch.manual_seed(SEED)
     random.seed(SEED)
     np.random.seed(SEED)
-    crops = Crops(args.pages, read_rows(args.corpus))
     processor = AutoProcessor.from_pretrained(str(args.model))
     processor.tokenizer.padding_side = 'right'
-    collate = Collate(processor, prompt('raw_final' if args.words == 'final' else 'raw_neutral', {'boxes': []}))
+    if args.pack:
+        collate = Collate(processor, prompt(args.condition, {'boxes': []}))
+        train_set, val_set = PackSamples(args.pack, train_rows), PackSamples(args.pack, val_rows)
+    else:
+        crops = Crops(args.pages, read_rows(args.corpus))
+        collate = Collate(processor, prompt('raw_final' if args.words == 'final' else 'raw_neutral', {'boxes': []}))
+        train_set, val_set = Samples(train_rows, crops, args.blank), Samples(val_rows, crops, args.blank)
     generator = torch.Generator().manual_seed(SEED)
-    loader = torch.utils.data.DataLoader(Samples(train_rows, crops, args.blank), batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=args.workers,
+    loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=args.workers,
                                          generator=generator, drop_last=True, persistent_workers=args.workers > 0)
-    val_loader = torch.utils.data.DataLoader(Samples(val_rows, crops, args.blank), batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
+    val_loader = torch.utils.data.DataLoader(val_set, batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
     model = lora_model(args.model, args.rank, args.alpha, args.dropout).to('cuda')
     if args.checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
@@ -182,7 +213,8 @@ def main(argv=None):
     params = [q for q in model.parameters() if q.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0., betas=(.9, .999))
     schedule = lambda step: min(1., (step+1)/args.warmup)*(.1+.9*.5*(1+math.cos(math.pi*step/args.steps)))
-    write_manifest(out, config=to_jsonable(args), inputs={str(args.corpus): digest(args.corpus)}, train_recipes=len(train_rows), val_recipes=len(val_rows),
+    source = args.pack/'pack.json' if args.pack else args.corpus
+    write_manifest(out, config=to_jsonable(args), inputs={str(source): digest(source)}, train_recipes=len(train_rows), val_recipes=len(val_rows),
                    trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds)
     stream = (out/'train_log.jsonl').open('x', encoding='utf-8')
     started, iterator = time.monotonic(), cycle(loader)
