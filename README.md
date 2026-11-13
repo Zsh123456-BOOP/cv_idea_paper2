@@ -390,6 +390,17 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 - 移出同门标注集（2026-10-18，用户定）：只用未标注集书写者的页面（`--allowed-writers`：服务器 `/home/zsh/hme/work/replacement944_allowed_writers.txt`，本机 `work/labmate_guard/`，只有 UUID，不进 Git）；选题 `annotation_set --allowed-writers ... --exclude 旧selection --lines test=all`，建包 `pixel_library infer --allowed-writers ... --pages A --pages B --detector A --detector B --ids`。测试页重建：服务器 `paper2_test_text20261018.sh`（用户导出的进度并入 60 道保留题，13 道补题用预填），`struck_text crops --unconfirmed` 保留删光框的题（`empty_pages.json`），`page` 保留用户原文字（含空）。详见 RESULTS「移出同门标注集的测试题」。
 - 全量库换预填（2026-10-12）：同一输入只换检查点为 step400，`paper2_full_review20261012_step400`；页、区域 ID 和分组 ID 与 10-10 完全相同，模型版本变化后页面只替换未确认、未修改、未删除的区域（Chrome 中验证）。旧桌面目录移到 `work/page_backups/全部涂改标注_before_step400_*`。
 
+## 读被划内容的读者（2026-11-13）
+
+每处涂改读出被划的内容，读不出就给 `[读不出]`。数据是 `data.struck_dataset` 的合并集（`data.struck_pack folds`：去掉测试页及其书写者，按书写者 5 折）；读者是 `train_reader --pack … --fold K --keep-best` 教出来的 Qwen3-VL-8B，`recognize_lines --fold K` 读没见过的书写者；条件在 `recognize_lines` 的 `*_revision`：`raw`（原图）、`erased`（擦线图）、`pair`（两张图）、`mapped`（分层图经 `models.vlm_tokens.patch_embed_with_layer_map` 注入切块层）。擦线图和分层图要么来自人工像素（上限），要么来自每折单独训练的分离模型（`struck_pack fold-sets` / `separated`）。评分 `eval.transcription`：AR、CR、全对率、NED 和拒读，定义的出处在模块说明里；以前的「读回」是 CR。
+
+```bash
+bash scripts/run_layer_reader.sh                    # 人工像素部分：四种读者 × 5 折（CARDS 选卡，默认 1 号）
+PART=separator bash scripts/run_layer_reader.sh     # 分离模型部分：每折一个 NAFNet（SEP_CARDS，默认 0 号），读者等前一部分跑完
+```
+
+结果见 RESULTS 2026-11-13：两张图的读者最好，注入分层图没有过事先定的规则。
+
 ## 数据
 
 原始数据（`~/Desktop/cv_idea/未标注数据`、`标注好数据`）只读，用 `configs/paths.toml` 指过去，不复制。第一篇用的数据包在服务器上：
