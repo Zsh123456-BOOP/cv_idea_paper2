@@ -27,6 +27,9 @@ for, or ``[读不出]`` when it cannot be read.
   pair_revision    the scan and, as a second image, the erased crop, said to be a reference that may be wrong
   mapped_revision  the scan; the row's layer map (``images.map``: which ink is the strike) goes into the patch embedding beside it
                    (``models.vlm_tokens.patch_embed_with_layer_map``, the weights of ``--layer-map``)
+  pair_mapped_revision  the pair, and the layer map into the scan's patch embedding as well
+  bracket_revision      the scan and two erased crops, one that takes little away and one that takes much (``images.mild``, ``.strong``)
+  context_revision      the pair and, as a third image, the line the region stands in, the region boxed in blue (``images.context``)
 
 Token conditions (``--backend hf``, Qwen3-VL; ``models.vlm_tokens``) leave the image alone and hide visual tokens from the text, each
 token keeping its position:
@@ -67,6 +70,8 @@ UNREADABLE = '[读不出]'
 ILLEGIBLE = f'被划掉的内容完全认不出时，只输出 {UNREADABLE}。'
 CLEANED = '图中原来被划线划掉的内容，划线已经被去掉（可能没有去干净，也可能擦掉了一部分字迹）。转写这部分原来写的内容。'
 PAIR = '第一张是原图；第二张是去掉划线后的参考图，参考图可能有错，以原图为准。'
+BRACKET = '第一张是原图；后两张是去掉划线后的参考图：第二张擦得少，可能还留着划线；第三张擦得多，可能擦掉了字。参考图都可能有错，以原图为准。'
+CONTEXT = '第三张是这一处所在的那一行，蓝色框标出的就是这一处（框里是去掉划线后的样子）。只转写蓝色框里原来被划掉的内容，框外的内容不要输出，也不要照抄框外写的字。'
 CONDITIONS = {
     'raw_neutral': ('raw', (), None),
     'raw_final': ('raw', (FINAL,), None),
@@ -84,6 +89,9 @@ CONDITIONS = {
     'erased_revision': ('erased', (CLEANED, ILLEGIBLE), None),
     'pair_revision': (('raw', 'erased'), (PAIR, STRUCK, ILLEGIBLE), None),
     'mapped_revision': ('raw', (STRUCK, ILLEGIBLE), 'map'),
+    'pair_mapped_revision': (('raw', 'erased'), (PAIR, STRUCK, ILLEGIBLE), 'map'),
+    'bracket_revision': (('raw', 'mild', 'strong'), (BRACKET, STRUCK, ILLEGIBLE), None),
+    'context_revision': (('raw', 'erased', 'context'), (PAIR, CONTEXT, STRUCK, ILLEGIBLE), None),
     'hide_band_neutral': ('raw', (), 'band'),
     'hide_ink_neutral': ('raw', (), 'ink'),
     'soft_band_neutral': ('raw', (), 'soft_band'),
@@ -204,7 +212,7 @@ def main(argv=None):
                 requests = [(shown if len(shown) > 1 else shown[0], prompt(c, row),
                              hidden_flags(reader, CONDITIONS[c][2], row, shown[0], args.pack, args) if c in TOKEN_RULES else None,
                              args.soft if CONDITIONS[c][2] == 'soft_band' else 0.) for (c, row), shown in zip(batch, images)]
-                results = reader.read(requests, SYSTEM, args.max_new_tokens, maps=[opened(row, 'map') for _, row in batch] if args.layer_map else None)
+                results = reader.read(requests, SYSTEM, args.max_new_tokens, maps=[opened(row, 'map') for _, row in batch] if args.layer_map else None)      # of each job's first image
             else:
                 generated = model.chat([messages(shown[0], prompt(c, row), row.get('system', SYSTEM) if c == 'from_pack' else SYSTEM)
                                         for (c, row), shown in zip(batch, images)], sampling, use_tqdm=False)

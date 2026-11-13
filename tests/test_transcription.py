@@ -65,7 +65,7 @@ def test_layered_images_of_a_region():
 
 def test_revision_conditions():
     assert image_keys('pair_revision') == ('raw', 'erased') and image_keys('raw_revision') == ('raw',)
-    assert MAPPED == {'mapped_revision'} and CONDITIONS['mapped_revision'][0] == 'raw'
+    assert 'mapped_revision' in MAPPED and CONDITIONS['mapped_revision'][0] == 'raw'
     assert UNREADABLE in prompt('raw_revision', {'boxes': []}) and UNREADABLE in prompt('erased_revision', {'boxes': []})
 
 
@@ -76,3 +76,25 @@ def test_separator_views_of_a_region():
     canvas = struck_pack.pasted(np.zeros((4, 5), np.uint8), np.full((3, 4), 7, np.uint8), (8, 18, 12, 21), (10, 20))
     assert canvas.sum() == 7*2*1 and (canvas[0, :2] == 7).all()                   # the box overhangs the window's left and top
     assert struck_pack.pasted(np.zeros((2, 2), np.uint8), np.ones((2, 2), np.uint8), (50, 50, 52, 52), (0, 0)).sum() == 0
+
+
+def test_views_of_a_separated_region():
+    scan = np.array([[255, 60, 60, 60]], np.uint8); share = np.array([[0, 0, 64, 255]], np.uint8)
+    mild, strong = struck_pack.lightened(scan, share, 2), struck_pack.lightened(scan, share, .5)
+    assert (mild >= scan).all() and (strong >= mild).all()                       # an erasing only lightens; the strong one more
+    assert mild[0, 1] == strong[0, 1] == 60 and mild[0, 3] == strong[0, 3] == 255 and mild[0, 2] < strong[0, 2]
+    page = Image.fromarray(np.full((200, 600), 255, np.uint8)); erased = np.full((20, 40), 200, np.uint8)
+    band = struck_pack.in_context(page, erased, (300, 90, 340, 110))
+    assert band.mode == 'RGB' and band.size == (40+2*struck_pack.CONTEXT*20, 40)
+    b = np.asarray(band); x, y = struck_pack.CONTEXT*20, 10                       # the window's corner in the band
+    assert (b[y:y+20, x:x+40] == 200).all() and tuple(b[y-2, x]) == (0, 0, 255) and tuple(b[y+21, x+39]) == (0, 0, 255)
+    assert struck_pack.in_context(page, erased, (5, 0, 45, 20)).size == (45+struck_pack.CONTEXT*20, 30)      # clipped at the page's edge
+
+
+def test_conditions_of_several_images():
+    assert image_keys('context_revision') == ('raw', 'erased', 'context') and image_keys('bracket_revision') == ('raw', 'mild', 'strong')
+    assert MAPPED == {'mapped_revision', 'pair_mapped_revision'}
+    from revrender.models.vlm_tokens import layer_maps
+    a, b, layer = Image.new('RGB', (30, 20)), Image.new('RGB', (50, 10)), Image.new('RGB', (30, 20), (255, 255, 255))
+    maps = layer_maps([a, b], layer)
+    assert maps[0] is layer and maps[1].size == (50, 10) and not np.asarray(maps[1]).any()

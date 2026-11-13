@@ -21,8 +21,16 @@
 #  5. eval.transcription against each control in turn: the taught reader of the scan (the human part's), erase-then-read, the pair.
 #  The rule, written before any reading: the layer reader stands when the mapped reader beats each of those three by more than 3 points
 #  of AR with its writer interval above 0, exact not lower.
-# Unattended; a step whose marker is in $R is skipped.  CARDS (default "1") are the cards, by index, a reader job may go to, in that
-# order, one job to a card.
+# PART=views (after the separator part; the user's two questions and the first block of the design of 2026-11-13, each against the pair):
+#  1. data.struck_pack views: the separated pack with a mild and a strong erasing of each region and the line it stands in.
+#  2. smoke: two steps and eight regions of each new reader.
+#  3. three readers, five folds each: context (the pair and the line, the region boxed), pair_mapped (the pair and the layer map into
+#     the scan's patch embedding), bracket (the scan with the mild and the strong erasing).
+#  4. eval.transcription, the reference the pair's reader of the separator part.
+#  The rule, written before any reading, for each of the three: it adds to the method when it beats the pair by more than 3 points of AR
+#  with its writer interval above 0, exact and NED no worse.
+# Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
+# are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -31,13 +39,15 @@ O=/home/zsh/hme/outputs; N=$O/paper2_clean; R=$O/paper2_layer_reader20261113
 DATA=$O/paper2_struck_dataset20261113; PACK=${N}_revision_folds_human; MODEL=/home/zsh/hme/models/Qwen3-VL-8B-Instruct
 PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
+VIEWS=${N}_revision_folds_views
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; *) echo VIEWS_FAILED ;; esac; }
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
 exec 8>"$R/$([ "$PART" = human ] && echo lock || echo "$PART.lock")"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
 stamp() { echo "$* $(date -u +%FT%TZ)"; }
 done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
-trap 'stamp "failed at line $LINENO"; touch "$R/$([ "$PART" = human ] && echo FAILED || echo SEPARATOR_FAILED)"' ERR
+trap 'stamp "failed at line $LINENO"; touch "$R/$(failure)"' ERR
 
 CARDS_ALL=("${ALL_CARDS[@]}"); cards "${CARDS:-1}"
 alone() {   # FUNCTION ARGS...: run FUNCTION CARD NUMA ARGS... in the background on a card of ours with room and no other job of ours (the 8B fills a card)
@@ -49,15 +59,18 @@ job() {   # CARD NUMA OUT -- COMMAND...: one GPU job
     local card="$1" numa="$2" out="$3"; shift 4
     bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$@" > "$out.log" 2>&1
 }
+when_mapped() {   # ARM WORDS...: the words, for an arm whose reader takes the layer map
+    case "$1" in (*mapped) echo "${@:2}" ;; esac
+}
 teach() {   # OUT ARM FOLD [more arguments of train_reader]: a reader of the arm, fold left out
     local out="$1" arm="$2" k="$3"; shift 3
     echo "$PY" -m revrender.train_reader --pack "$PACK" --condition "${arm}_revision" --fold "$k" --model "$MODEL" --steps 100 --batch-size 2 --accumulate 8 \
-        --warmup 10 --eval-every 10 --keep-best --checkpointing --workers 2 $([ "$arm" != mapped ] || echo --layer-map) "$@" --output-dir "$out"
+        --warmup 10 --eval-every 10 --keep-best --checkpointing --workers 2 $(when_mapped "$arm" --layer-map) "$@" --output-dir "$out"
 }
 read_with() {   # OUT ARM READER [more arguments of recognize_lines]
     local out="$1" arm="$2" reader="$3"; shift 3
     echo "$PY" -m revrender.recognize_lines --pack "$PACK" --model "$MODEL" --backend hf --adapter "$reader/adapter" --batch-size 8 --conditions "${arm}_revision" \
-        $([ "$arm" != mapped ] || echo --layer-map "$reader/layer_map.pt") "$@" --output-dir "$out"
+        $(when_mapped "$arm" --layer-map "$reader/layer_map.pt") "$@" --output-dir "$out"
 }
 arm_job() {   # CARD NUMA ARM FOLD: teach, then read the fold left out
     local reader="${N}_revision_reader_${TAG}$3_f$4" reading="$R/read_${TAG}$3_f$4"
@@ -94,6 +107,7 @@ done_ score || { "$PY" -m revrender.eval.transcription --pack "$PACK" --arm "tau
     --arm "untaught_erased=$R/read_untaught@erased_revision" --reference taught_scan --output "$R/scores.json" > "$R/score.log" 2>&1; mark score; }
 touch "$R/COMPLETE"; stamp complete; exit 0; fi
 
+if [ "$PART" = separator ]; then
 source "$ROOT/scripts/_restorers.sh"
 if ! done_ sep_sets; then
     [ -e "$SETS/fold_4/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack fold-sets --dataset "$DATA/regions.json" --pages "$DATA/pages" \
@@ -105,12 +119,12 @@ sep_job() {   # CARD NUMA FOLD: the fold's separator
     VAL="$SETS/fold_$3" RESTORER_MEMORY=10000 finetune_restorer NAFNet "$1" "$2" - "${N}_revision_separator_tiles_f$3" "${N}_revision_separator_f$3" real_only > "$R/sep_train_f$3.log" 2>&1
 }
 if ! done_ sep_train; then
-    cards "${SEP_CARDS:-0}"
+    cards "${SEP_CARDS:-1}"
     for k in 0 1 2 3 4; do [ -e "${N}_revision_separator_f$k/selection.json" ] || place_job 10000 sep_job "$k"; done
     wait; for k in 0 1 2 3 4; do test -e "${N}_revision_separator_f$k/selection.json"; done
     mark sep_train; fi
 if ! done_ sep_pack; then
-    cards "${SEP_CARDS:-0}"
+    cards "${SEP_CARDS:-1}"
     [ -e "$SEP/run_manifest.json" ] || place_job 6000 job "$SEP" -- "$PY" -m revrender.data.struck_pack separated --pack "$PACK" --sets "$SETS" \
         $(for k in 0 1 2 3 4; do echo --separator "${N}_revision_separator_f$k"; done) --upstream "$UP" --output-dir "$SEP"
     wait; test -e "$SEP/run_manifest.json"; mark sep_pack; fi
@@ -131,4 +145,29 @@ if ! done_ sep_score; then
             --arm "taught_mapped=$(folds_of sep_mapped)" --arm "untaught_scan=$R/read_untaught@raw_revision" --reference "$reference" \
             --output "$R/scores_separator_vs_$reference.json" > "$R/sep_score_$reference.log" 2>&1
     done; mark sep_score; fi
-touch "$R/SEPARATOR_COMPLETE"; stamp 'separator part complete'
+touch "$R/SEPARATOR_COMPLETE"; stamp 'separator part complete'; exit 0; fi
+
+test "$PART" = views; test -e "$R/SEPARATOR_COMPLETE"
+if ! done_ views_pack; then
+    [ -e "$VIEWS/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack views --pack "$SEP" --sets "$SETS" --dataset "$DATA/regions.json" --pages "$DATA/pages" \
+        --pages "$O/paper2_full_review20261010/images" --hold-out test-page --output-dir "$VIEWS" > "$R/views_pack.log" 2>&1
+    mark views_pack; fi
+PACK=$VIEWS; TAG=views_; NEW=(context pair_mapped bracket)
+if ! done_ views_smoke; then
+    views_smoke_job() {   # CARD NUMA: two steps and eight regions of each new reader
+        local arm
+        for arm in "${NEW[@]}"; do
+            job "$1" "$2" "$R/views_smoke_reader_$arm" -- $(teach "$R/views_smoke_reader_$arm" "$arm" 0 --steps 2 --eval-every 1 --warmup 1)
+            job "$1" "$2" "$R/views_smoke_read_$arm" -- $(read_with "$R/views_smoke_read_$arm" "$arm" "$R/views_smoke_reader_$arm" --fold 0 --limit 8)
+            "$PY" -c "import json, sys; texts = {json.loads(l)['text'] for l in open(sys.argv[1])}; assert len(texts) > 2, f'eight regions read as {texts}'" "$R/views_smoke_read_$arm/predictions.jsonl"
+        done
+    }
+    alone views_smoke_job; wait; for arm in "${NEW[@]}"; do test -e "$R/views_smoke_read_$arm/complete.json"; done; mark views_smoke; fi
+if ! done_ views_arms; then
+    for arm in "${NEW[@]}"; do for k in 0 1 2 3 4; do [ -e "$R/read_views_${arm}_f$k/complete.json" ] || alone arm_job "$arm" "$k"; done; done
+    wait; for arm in "${NEW[@]}"; do for k in 0 1 2 3 4; do test -e "$R/read_views_${arm}_f$k/complete.json"; done; done
+    mark views_arms; fi
+done_ views_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" --arm "taught_pair=$(folds_of sep_pair)" --arm "taught_scan=$(folds_of raw)" \
+    --arm "context=$(folds_of views_context)" --arm "pair_mapped=$(folds_of views_pair_mapped)" --arm "bracket=$(folds_of views_bracket)" \
+    --reference taught_pair --output "$R/scores_views.json" > "$R/views_score.log" 2>&1; mark views_score; }
+touch "$R/VIEWS_COMPLETE"; stamp 'views part complete'

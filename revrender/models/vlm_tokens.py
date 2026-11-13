@@ -95,6 +95,11 @@ def patch_embed_with_layer_map(embed):
     return embed.layer_map
 
 
+def layer_maps(images, layer):
+    """A layer map for each image of a request: the given one for the first (the scan), nothing for the others."""
+    return [layer, *(Image.new('RGB', image.size) for image in images[1:])]
+
+
 def with_layer_maps(pixel_values, maps, image_processor):
     """The scans' patches with their layer maps' beside them: the maps go through the same image processor, so they are cut alike, and
     its normalisation is taken off again -- a map is 0 where it says nothing and 1 on the strike, so a patch without strike adds
@@ -139,7 +144,7 @@ class Reader:
     def read(self, jobs, system, max_new_tokens=256, maps=None):
         """Greedy readings of (image, words, hidden, soft) jobs: ``image`` one image or several, ``hidden`` the bool flags of the image's
         tokens (or None), ``soft`` 0 to remove the hidden tokens from every attention or a positive bias subtracted from their attention
-        logits; ``maps`` the layer map of each job's one image (a reader made with ``layer_map``).  A list of dicts (text, tokens, finish)."""
+        logits; ``maps`` the layer map of each job's first image (a reader made with ``layer_map``).  A list of dicts (text, tokens, finish)."""
         torch = self.torch
         shown = lambda image: [{'type': 'image', 'image': one} for one in (image if isinstance(image, (list, tuple)) else [image])]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': system}]},
@@ -152,7 +157,9 @@ class Reader:
         mask = torch.from_numpy(prefill_mask(bias)).to(self.device, dtype)
         ids, valid = ids.to(self.device), valid.to(self.device)
         positions, _ = self.model.model.get_rope_index(ids, batch['image_grid_thw'].to(self.device), None, attention_mask=valid.long())
-        pixels = batch['pixel_values'] if maps is None else with_layer_maps(batch['pixel_values'], maps, self.processor.image_processor)
+        several = lambda image: list(image) if isinstance(image, (list, tuple)) else [image]
+        pixels = batch['pixel_values'] if maps is None else with_layer_maps(
+            batch['pixel_values'], [m for job, layer in zip(jobs, maps) for m in layer_maps(several(job[0]), layer)], self.processor.image_processor)
         pixel_values, grid = pixels.to(self.device, dtype), batch['image_grid_thw'].to(self.device)
         length = ids.shape[1]
         from transformers import DynamicCache

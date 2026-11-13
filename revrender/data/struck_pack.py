@@ -5,6 +5,7 @@
     python -m revrender.data.struck_pack folds --dataset regions.json --pages DIR [...] --hold-out NAME [...] --output-dir OUT
     python -m revrender.data.struck_pack fold-sets --dataset regions.json --pages DIR [...] --hold-out NAME [...] --output-dir OUT
     python -m revrender.data.struck_pack separated --pack FOLDS_PACK --sets SETS --separator RUN x5 --upstream UP --output-dir OUT
+    python -m revrender.data.struck_pack views --pack SEPARATED_PACK --sets SETS --dataset regions.json --pages DIR [...] --hold-out NAME [...] --output-dir OUT
 
 ``train``: every region of the exports whose struck text is confirmed and readable (``eval.revision_boxes.prepare`` leaves something
 besides ``?``), cut as the unified evaluation cuts its OCR crops (the region's polygon box and six pixels, on the page the export names
@@ -26,8 +27,11 @@ its OCR window from the annotator's own pixels: the scan (``raw``), the scan wit
 fold in OUT/fold_K: ``training_native.*`` the other folds' regions (the ``val`` writers apart, as ``validation_native.*``, by which its
 versions are chosen) and ``heldout_native.*`` fold K's own, each row with its OCR window.  ``separated``: the folds pack again, but
 ``erased`` and ``map`` now come from those separators, each restoring only the regions of the fold it never trained on: ``erased`` the
-restored crop, ``map`` the share of each ink pixel's darkness it took away (0 none, white all).  The text is student work: OUT stays
-out of Git.
+restored crop, ``map`` the share of each ink pixel's darkness it took away (0 none, white all).  ``views``: a separated pack again
+with three more images of each region, all from what it already holds and the page: ``mild`` and ``strong``, the scan lightened by
+the square and by the square root of the map (an erasing that takes little, one that takes much; neither can darken a pixel), and
+``context``, the line the region stands in (``CONTEXT`` region heights to each side, half a height above and below) with the erased
+crop laid back in and a blue box round the region.  The text is student work: OUT stays out of Git.
 """
 import argparse
 import hashlib
@@ -47,6 +51,7 @@ from .prior_annotations import twins
 VALIDATION = .1
 FOLDS = 5
 INK = 200      # grey below which a pixel is ink, as the removal metrics read it
+CONTEXT = 6    # the line shown round a region: this many region heights to its left and to its right
 
 
 def validation_writer(writer):
@@ -233,6 +238,45 @@ def separated_pack(args):
     print(json.dumps({'regions': len(rows), 'strike_taken_away_mean': float(np.mean(known))}), flush=True)
 
 
+def lightened(scan, share, power):
+    """The scan with each pixel's darkness taken away by ``share ** power``: lighter where the map says strike, never darker."""
+    x, a = np.asarray(scan, np.float32)/255, (np.asarray(share, np.float32)/255)**power
+    return np.round(255*(x+a*(1-x))).astype(np.uint8)
+
+
+def in_context(page, erased, window):
+    """The line a region stands in, as an RGB image: the page round the region's window with the erased crop laid back in and a blue box
+    drawn just outside the window."""
+    from PIL import ImageDraw
+    l, t, r, b = window; h = b-t; width, height = page.size
+    left, top, right, bottom = max(0, l-CONTEXT*h), max(0, t-h//2), min(width, r+CONTEXT*h), min(height, b+h//2)
+    band = page.convert('L').crop((left, top, right, bottom)); band.paste(Image.fromarray(erased), (l-left, t-top))
+    band = band.convert('RGB'); ImageDraw.Draw(band).rectangle((l-left-2, t-top-2, r-left+1, b-top+1), outline=(0, 0, 255), width=2)
+    return band
+
+
+def views_pack(args):
+    chosen, files, _, _ = chosen_regions(args); place = {r['id']: (r['source'], r['page']) for r in chosen}
+    windows = {n['id']: n['window'] for k in range(FOLDS) for n in json.loads((args.sets/f'fold_{k}/heldout_native.json').read_text())}
+    source = json.loads((args.pack/'pack.json').read_text())['rows']
+    require({r['id'] for r in source} == set(windows) == set(place), 'the pack, the sets and the dataset hold different regions')
+    out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []
+    for key in sorted(set(place.values())):
+        with Image.open(files[key]) as page:
+            for row in (r for r in source if place[r['id']] == key):
+                opened = {name: np.asarray(Image.open(args.pack/row['images'][name]).convert('L')) for name in ('raw', 'erased', 'map')}
+                made = {**{name: Image.fromarray(array) for name, array in opened.items()},
+                        'mild': Image.fromarray(lightened(opened['raw'], opened['map'], 2)), 'strong': Image.fromarray(lightened(opened['raw'], opened['map'], .5)),
+                        'context': in_context(page, opened['erased'], windows[row['id']])}
+                images = {name: f'crops/{len(rows):05d}_{name}.png' for name in made}
+                for name, image in made.items(): image.save(out/images[name])
+                rows.append({**row, 'images': images})
+    write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
+    write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'dataset': str(args.dataset), 'context': CONTEXT},
+                   inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'), str(args.dataset): digest(args.dataset)}, regions=len(rows))
+    print(json.dumps({'regions': len(rows)}), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     t = sub.add_parser('train')
@@ -241,8 +285,10 @@ def main(argv=None):
     e = sub.add_parser('eval')
     for key in ('evaluation', 'output-dir'): e.add_argument('--'+key, type=Path, required=True)
     e.add_argument('--restorer', required=True, help='the version of the evaluation whose erased crops sit beside the scan')
-    for name in ('folds', 'fold-sets'):
+    for name in ('folds', 'fold-sets', 'views'):
         f = sub.add_parser(name)
+        if name == 'views':
+            for key in ('pack', 'sets'): f.add_argument('--'+key, type=Path, required=True)
         f.add_argument('--dataset', type=Path, required=True, help='regions.json of data.struck_dataset'); f.add_argument('--pages', type=Path, action='append', required=True)
         f.add_argument('--hold-out', action='append', default=[], help='part of the name of an export whose regions, and their writers, stay out (the test page)')
         f.add_argument('--output-dir', type=Path, required=True)
@@ -250,7 +296,7 @@ def main(argv=None):
     for key in ('pack', 'sets', 'upstream', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)
     d.add_argument('--separator', type=Path, action='append', required=True, help="a fold's separator run (baselines.restoration), given once per fold in order")
     args = p.parse_args(argv)
-    {'train': train_pack, 'eval': eval_pack, 'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack}[args.command](args)
+    {'train': train_pack, 'eval': eval_pack, 'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack, 'views': views_pack}[args.command](args)
 
 
 if __name__ == '__main__':

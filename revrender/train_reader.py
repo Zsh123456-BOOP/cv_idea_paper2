@@ -16,7 +16,7 @@ Seed 42; OUT/adapter is the adapter (``recognize_lines --backend hf --adapter OU
 and its ``text``, rows of split ``val`` the validation), asked in the words of ``--condition`` (e.g. ``raw_struck``: read only what is
 struck out).  A pack of ``data.struck_pack folds`` is taught with ``--fold K``: the writers of fold K are left out altogether (they are
 read afterwards, ``recognize_lines --fold K``), the rows marked ``val`` among the rest are the validation, and the answer is the row's
-``target``.  The ``*_revision`` conditions show the images they name (``pair_revision`` two); ``mapped_revision`` needs
+``target``.  The ``*_revision`` conditions show the images they name (``pair_revision`` two); the mapped ones need
 ``--layer-map``: the row's layer map goes in beside the scan through a projection of its own (``models.vlm_tokens``), taught at
 ``--map-lr`` and saved as OUT/layer_map.pt.  ``--keep-best`` keeps the adapter of the lowest validation loss instead of the last.
 """
@@ -118,8 +118,8 @@ class Collate:
         out = self.processor.apply_chat_template(conversations, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
         out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw')}
         if batch[0][2] is not None:
-            from .models.vlm_tokens import with_layer_maps
-            out['pixel_values'] = with_layer_maps(out['pixel_values'], [layer for _, _, layer in batch], self.processor.image_processor)
+            from .models.vlm_tokens import layer_maps, with_layer_maps
+            out['pixel_values'] = with_layer_maps(out['pixel_values'], [m for images, _, layer in batch for m in layer_maps(images, layer)], self.processor.image_processor)
         labels = out['input_ids'].clone()
         for b in range(labels.shape[0]):
             marks = (out['input_ids'][b] == self.start).nonzero().flatten()
