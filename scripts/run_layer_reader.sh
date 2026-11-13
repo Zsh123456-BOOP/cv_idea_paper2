@@ -29,6 +29,15 @@
 #  4. eval.transcription, the reference the pair's reader of the separator part.
 #  The rule, written before any reading, for each of the three: it adds to the method when it beats the pair by more than 3 points of AR
 #  with its writer interval above 0, exact and NED no worse.
+# PART=distilled (after the views part; does a better separator read better?  the second step of the design):
+#  1. fold sets again, each with what its fold keeps apart; three teachers a fold (NAFNet, DE-GAN, COR-Generator from their chosen
+#     synthetic versions, [finetune_long] on the other folds' real regions); each teacher restores the unlabelled library's regions.
+#  2. data.pseudo_regions combine --soft and a NAFNet student from its own random start ([prefill], versions kept by blocks to fix):
+#     the recipe of the prefill model, fold by fold.
+#  3. data.struck_pack separated with the students; the pair's reader on it; eval.transcription against the pair of the plain separators.
+#  4. --agreement: do the readings with and without the line differing mark the errors (the fourth block of the design)?
+#  The rule, written before any reading: the separator is worth more work when the pair's reader on the students' crops beats the pair's
+#  reader on the plain separators' by more than 3 points of AR with its writer interval above 0, exact and NED no worse.
 # Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
 # are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
@@ -40,7 +49,8 @@ DATA=$O/paper2_struck_dataset20261113; PACK=${N}_revision_folds_human; MODEL=/ho
 PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; *) echo VIEWS_FAILED ;; esac; }
+SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; *) echo DISTILLED_FAILED ;; esac; }
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
 exec 8>"$R/$([ "$PART" = human ] && echo lock || echo "$PART.lock")"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
@@ -147,7 +157,7 @@ if ! done_ sep_score; then
     done; mark sep_score; fi
 touch "$R/SEPARATOR_COMPLETE"; stamp 'separator part complete'; exit 0; fi
 
-test "$PART" = views; test -e "$R/SEPARATOR_COMPLETE"
+if [ "$PART" = views ]; then test -e "$R/SEPARATOR_COMPLETE"
 if ! done_ views_pack; then
     [ -e "$VIEWS/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack views --pack "$SEP" --sets "$SETS" --dataset "$DATA/regions.json" --pages "$DATA/pages" \
         --pages "$O/paper2_full_review20261010/images" --hold-out test-page --output-dir "$VIEWS" > "$R/views_pack.log" 2>&1
@@ -170,4 +180,70 @@ if ! done_ views_arms; then
 done_ views_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" --arm "taught_pair=$(folds_of sep_pair)" --arm "taught_scan=$(folds_of raw)" \
     --arm "context=$(folds_of views_context)" --arm "pair_mapped=$(folds_of views_pair_mapped)" --arm "bracket=$(folds_of views_bracket)" \
     --reference taught_pair --output "$R/scores_views.json" > "$R/views_score.log" 2>&1; mark views_score; }
-touch "$R/VIEWS_COMPLETE"; stamp 'views part complete'
+touch "$R/VIEWS_COMPLETE"; stamp 'views part complete'; exit 0; fi
+
+test "$PART" = distilled
+source "$ROOT/scripts/_restorers.sh"
+if ! done_ distilled_sets; then
+    [ -e "$SETS2/fold_4/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack fold-sets --dataset "$DATA/regions.json" --pages "$DATA/pages" \
+        --pages "$O/paper2_full_review20261010/images" --hold-out test-page --output-dir "$SETS2" > "$R/distilled_sets.log" 2>&1
+    mark distilled_sets; fi
+until [ -e "$R/VIEWS_COMPLETE" ]; do [ ! -e "$R/VIEWS_FAILED" ] || { echo 'the views part failed'; exit 1; }; sleep 60; done      # one card: after the views part
+cards "${SEP_CARDS:-1}"; TEACHERS=(NAFNet DE-GAN COR-Generator)
+teacher_job() {   # CARD NUMA FAMILY FOLD: a teacher of the fold, from its family's chosen synthetic version
+    VAL="$SETS2/fold_$4" RESTORER_MEMORY=10000 finetune_restorer "$3" "$1" "$2" "$(chosen_of "$SEL1/chosen" "$3")" "${N}_revision_separator_tiles_f$4" \
+        "${N}_revision_teacher_$3_f$4" finetune_long > "$R/distilled_teacher_$3_f$4.log" 2>&1
+}
+if ! done_ distilled_teachers; then
+    for k in 0 1 2 3 4; do for t in "${TEACHERS[@]}"; do [ -e "${N}_revision_teacher_${t}_f$k/selection.json" ] || place_job 10000 teacher_job "$t" "$k"; done; done
+    wait; for k in 0 1 2 3 4; do for t in "${TEACHERS[@]}"; do test -e "${N}_revision_teacher_${t}_f$k/selection.json"; done; done
+    mark distilled_teachers; fi
+label_job() {   # CARD NUMA FAMILY FOLD: the teacher's restoration of the library's regions this fold may learn from
+    local run="${N}_revision_teacher_$3_f$4" out="$R/distilled_labels_$3_f$4" runtime=$PY step
+    step=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint"])' "$run/selection.json")
+    (
+        unset LD_LIBRARY_PATH
+        if [ "$3" = DE-GAN ]; then
+            runtime=/home/zsh/hme/envs/paper2_restoration_tf/bin/python; export TF_USE_LEGACY_KERAS=1 LD_LIBRARY_PATH=""
+            for d in /home/zsh/hme/envs/paper2_restoration_tf/lib/python3.12/site-packages/nvidia/*/lib; do export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; done
+        fi
+        bash "$ROOT/scripts/launch_gpu_job.sh" "$1" "$2" "$out" -- "$runtime" -m revrender.data.pseudo_regions predict --library "$LIB" --run "$run" --checkpoint "$step" \
+            --upstream "$UP" --prefill-set "$SETS2/fold_$4" --output-dir "$out" > "$out.log" 2>&1
+    )
+}
+if ! done_ distilled_labels; then
+    for k in 0 1 2 3 4; do for t in "${TEACHERS[@]}"; do [ -e "$R/distilled_labels_${t}_f$k/run_manifest.json" ] || place_job 10000 label_job "$t" "$k"; done; done
+    wait; for k in 0 1 2 3 4; do for t in "${TEACHERS[@]}"; do test -e "$R/distilled_labels_${t}_f$k/run_manifest.json"; done; done
+    mark distilled_labels; fi
+if ! done_ distilled_data; then
+    for k in 0 1 2 3 4; do
+        [ -e "${N}_revision_distil_set_f$k/run_manifest.json" ] || "$PY" -m revrender.data.pseudo_regions combine \
+            --predictions $(for t in "${TEACHERS[@]}"; do echo "$R/distilled_labels_${t}_f$k"; done) --review-set "$SETS2/fold_$k" --soft --human-share .25 --pseudo-weight .5 \
+            --output-dir "${N}_revision_distil_set_f$k" >> "$R/distilled_data.log" 2>&1
+        [ -e "${N}_revision_distil_tiles_f$k/run_manifest.json" ] || "$PY" -m revrender.data.restoration_pairs human --review-set "${N}_revision_distil_set_f$k" --no-replay \
+            --output-dir "${N}_revision_distil_tiles_f$k" >> "$R/distilled_data.log" 2>&1
+    done; mark distilled_data; fi
+student_job() {   # CARD NUMA FOLD: the fold's student
+    VAL="$SETS2/fold_$3" RESTORER_MEMORY=10000 RESTORER_ARGS="--select blocks" finetune_restorer NAFNet "$1" "$2" - "${N}_revision_distil_tiles_f$3" \
+        "${N}_revision_distilled_f$3" prefill > "$R/distilled_student_f$3.log" 2>&1
+}
+if ! done_ distilled_students; then
+    for k in 0 1 2 3 4; do [ -e "${N}_revision_distilled_f$k/selection.json" ] || place_job 10000 student_job "$k"; done
+    wait; for k in 0 1 2 3 4; do test -e "${N}_revision_distilled_f$k/selection.json"; done
+    mark distilled_students; fi
+if ! done_ distilled_pack; then
+    [ -e "$DISTILLED/run_manifest.json" ] || place_job 6000 job "$DISTILLED" -- "$PY" -m revrender.data.struck_pack separated --pack "$PACK" --sets "$SETS2" \
+        $(for k in 0 1 2 3 4; do echo --separator "${N}_revision_distilled_f$k"; done) --upstream "$UP" --output-dir "$DISTILLED"
+    wait; test -e "$DISTILLED/run_manifest.json"; mark distilled_pack; fi
+cards "${CARDS:-1}"; PACK=$DISTILLED; TAG=distilled_
+if ! done_ distilled_arms; then
+    for k in 0 1 2 3 4; do [ -e "$R/read_distilled_pair_f$k/complete.json" ] || alone arm_job pair "$k"; done
+    [ -e "$R/read_distilled_untaught/complete.json" ] || alone job "$R/read_distilled_untaught" -- "$PY" -m revrender.recognize_lines --pack "$PACK" --model "$MODEL" --backend hf \
+        --batch-size 8 --conditions erased_revision --output-dir "$R/read_distilled_untaught"
+    wait; for k in 0 1 2 3 4; do test -e "$R/read_distilled_pair_f$k/complete.json"; done; test -e "$R/read_distilled_untaught/complete.json"
+    mark distilled_arms; fi
+done_ distilled_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" --arm "taught_pair=$(folds_of sep_pair)" --arm "distilled_pair=$(folds_of distilled_pair)" \
+    --arm "distilled_erase_then_read=$R/read_distilled_untaught" --arm "erase_then_read=$R/read_sep_untaught" --arm "taught_scan=$(folds_of raw)" \
+    --arm "human_pair=$(folds_of pair)" --arm "context=$(folds_of views_context)" --reference taught_pair --agreement context=taught_pair --agreement taught_pair=taught_scan \
+    --output "$R/scores_distilled.json" > "$R/distilled_score.log" 2>&1; mark distilled_score; }
+touch "$R/DISTILLED_COMPLETE"; stamp 'distilled part complete'

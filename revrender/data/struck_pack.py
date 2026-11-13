@@ -25,7 +25,9 @@ its OCR window from the annotator's own pixels: the scan (``raw``), the scan wit
 
 ``fold-sets``: the same regions and folds as the review sets a separator (a restorer of ``baselines.restoration``) trains on, one per
 fold in OUT/fold_K: ``training_native.*`` the other folds' regions (the ``val`` writers apart, as ``validation_native.*``, by which its
-versions are chosen) and ``heldout_native.*`` fold K's own, each row with its OCR window.  ``separated``: the folds pack again, but
+versions are chosen) and ``heldout_native.*`` fold K's own, each row with its OCR window; ``summary.json`` names what a student of
+teachers (``data.pseudo_regions``) must keep apart for this fold: fold K's writers, the ``val`` writers and the held-out ones, and every
+page the dataset labels.  ``separated``: the folds pack again, but
 ``erased`` and ``map`` now come from those separators, each restoring only the regions of the fold it never trained on: ``erased`` the
 restored crop, ``map`` the share of each ink pixel's darkness it took away (0 none, white all).  ``views``: a separated pack again
 with three more images of each region, all from what it already holds and the page: ``mild`` and ``strong``, the scan lightened by
@@ -173,7 +175,8 @@ def folds_pack(args):
 
 
 def fold_sets(args):
-    chosen, files, _, _ = chosen_regions(args); cut = {}
+    chosen, files, held, _ = chosen_regions(args); cut = {}
+    labelled = sorted({r['page'] for r in json.loads(args.dataset.read_text())})
     for key in sorted({(r['source'], r['page']) for r in chosen}):
         with Image.open(files[key]) as page:
             for r in (r for r in chosen if (r['source'], r['page']) == key):
@@ -190,6 +193,7 @@ def fold_sets(args):
             write_json(folder/f'{name}.json', [{'id': r['id'], 'group_uuid': r['writer'], 'page': r['page'], 'box': r['box'], 'region': r['region'], 'window': cut[r['id']][2]} for r in rows])
         write_json(folder/'records.json', [{'id': r['id'], 'group_uuid': r['writer'], 'split': 'train', 'source': 'human_confirmed'} for r in sides['training_native']])
         summary.append({name: len(rows) for name, rows in sides.items()})
+        write_json(folder/'summary.json', {'validation_writers': sorted({r['writer'] for r in chosen if r['fold'] == k or r['val']} | held), 'fixed_writers': [], 'pages': labelled})
         write_manifest(folder, config={'dataset': str(args.dataset), 'fold': k, 'hold_out': args.hold_out}, inputs={str(args.dataset): digest(args.dataset)}, **summary[-1])
     print(json.dumps(summary), flush=True)
 

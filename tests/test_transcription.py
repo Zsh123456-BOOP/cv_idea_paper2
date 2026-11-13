@@ -98,3 +98,10 @@ def test_conditions_of_several_images():
     a, b, layer = Image.new('RGB', (30, 20)), Image.new('RGB', (50, 10)), Image.new('RGB', (30, 20), (255, 255, 255))
     maps = layer_maps([a, b], layer)
     assert maps[0] is layer and maps[1].size == (50, 10) and not np.asarray(maps[1]).any()
+
+
+def test_agreement_of_two_arms():
+    rows = {'a': {'text': 'x=5'}, 'b': {'text': 'y'}, 'c': {'text': '2', 'readable': True}, 'd': {'text': '', 'readable': False}}
+    first = {'a': 'x=5', 'b': 'v', 'c': '2', 'd': UNREADABLE}; second = {'a': 'x=5', 'b': 'y', 'c': '7', 'd': 'q'}
+    got = transcription.agreement(first, second, rows)
+    assert got == {'regions': 4, 'differ': .75, 'exact_where_same': 1., 'exact_where_differ': .5, 'wrong_caught': 1., 'unreadable_differ': 1.}

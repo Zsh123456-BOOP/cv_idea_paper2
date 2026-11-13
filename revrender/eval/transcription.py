@@ -17,7 +17,9 @@ CER, CR and AR are over all the characters of the readable regions; exact and NE
 could not read (``readable`` false in the pack) should be answered with ``recognize_lines.UNREADABLE``: refusal precision, recall and F1
 (the degraded-region rule of KIE-HVQA: read what can be read, refuse what cannot); a refusal on a readable region reads nothing.  Each
 arm is paired with ``--reference`` on the regions both read: the differences of AR, exact and NED with 95% intervals by resampling
-writers (1,000 draws, seed 42).
+writers (1,000 draws, seed 42).  ``--agreement A=B``: whether two arms giving different readings of a region tells that A's is wrong
+(a reading refused is a reading of its own) -- how often they differ, A's exact share where they agree and where they differ, and, of
+the regions the annotator could not read, the share on which they differ.
 """
 import argparse
 import json
@@ -94,6 +96,18 @@ def paired(reference, version, writers, rng, draws=1000):
                                                        for m in full}}
 
 
+def agreement(first, second, rows):
+    """Do two arms' differing readings mark the first one's errors?  Counts over the regions both read."""
+    spelt = lambda text: prepare(UNREADABLE) if refused(text) else prepare(text)
+    ids = sorted(set(first) & set(second)); differ = {k for k in ids if spelt(first[k]) != spelt(second[k])}
+    can = [k for k in ids if rows[k].get('readable', True)]; cannot = [k for k in ids if not rows[k].get('readable', True)]
+    right = {k for k in can if spelt(first[k]) == prepare(rows[k]['text']).replace('?', '')}
+    share = lambda part, whole: len(part)/len(whole) if whole else None
+    same, other = [k for k in can if k not in differ], [k for k in can if k in differ]
+    return {'regions': len(ids), 'differ': share(differ, ids), 'exact_where_same': share(right & set(same), same), 'exact_where_differ': share(right & set(other), other),
+            'wrong_caught': share([k for k in other if k not in right], [k for k in can if k not in right]), 'unreadable_differ': share([k for k in cannot if k in differ], cannot)}
+
+
 def read_arm(spec):
     """(name, {region id: reading}, the files read) of ``NAME=DIR[,DIR...][@CONDITION]``."""
     name, _, rest = spec.partition('='); folders, _, condition = rest.partition('@'); readings, files = {}, []
@@ -114,6 +128,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--pack', type=Path, required=True); p.add_argument('--arm', action='append', required=True, help='NAME=DIR[,DIR...][@CONDITION]')
     p.add_argument('--reference', required=True, help='the arm every other is paired with'); p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--agreement', action='append', default=[], help='A=B: do the two arms differing mark the errors of A')
     args = p.parse_args(argv)
     require(not args.output.exists(), 'output exists')
     rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
@@ -129,7 +144,12 @@ def main(argv=None):
         result[name] = {'regions': len(arms[name]), 'readable': len(scored[name]), **rates(list(scored[name].values())), 'refusal': refusal(arms[name], readable)}
         if name != args.reference:
             result[name]['against_reference'] = paired(scored[args.reference], scored[name], writers, rng)
-    write_json(args.output, {'reference': args.reference, 'arms': result, 'inputs': inputs})
+    agreed = {}
+    for pair in args.agreement:
+        a, _, b = pair.partition('='); require(a in arms and b in arms, f'--agreement {pair}: not two arms')
+        agreed[pair] = agreement(arms[a], arms[b], rows)
+        print('agreement', pair, json.dumps({k: round(v, 3) if isinstance(v, float) else v for k, v in agreed[pair].items()}))
+    write_json(args.output, {'reference': args.reference, 'arms': result, 'agreement': agreed, 'inputs': inputs})
     for name, r in result.items():
         a, f = r.get('against_reference'), r['refusal']
         print(f"{name:28s} AR {100*r['ar']:6.1f} CR {100*r['cr']:5.1f} exact {100*r['exact']:5.1f} NED {100*r['ned']:5.1f} n={r['readable']}"
