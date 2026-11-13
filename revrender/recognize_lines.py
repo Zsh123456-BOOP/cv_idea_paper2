@@ -163,6 +163,7 @@ def main(argv=None):
     p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
     p.add_argument('--layer-map', type=Path, help='hf: the layer-map weights of train_reader --layer-map (mapped conditions)')
     p.add_argument('--fold', type=int, help='only the rows of this fold of the pack (the writers a reader of train_reader --fold never trained on)')
+    p.add_argument('--erased', type=Path, help="a folder of erased crops (<the row's place in the pack>.png; train_reader --separator's OUT/hints) in place of the pack's")
     p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')
     p.add_argument('--gpu-memory', type=float, default=.90, help='vllm: share of each card the engine may take (lower it when others hold memory there)')
     p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
@@ -182,6 +183,7 @@ def main(argv=None):
     require(args.backend == 'vllm' or 'from_pack' not in args.conditions, 'from_pack needs --backend vllm')
     pack = json.loads((args.pack/'pack.json').read_text())
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
+    places = {r['id']: i for i, r in enumerate(pack['rows'])}
     rows = [r for r in pack['rows'] if args.fold is None or r['fold'] == args.fold][:args.limit or None]
     require(rows, 'no row to read')
     jobs = [(c, row) for c in args.conditions for row in rows]
@@ -206,7 +208,7 @@ def main(argv=None):
     with (out/'predictions.jsonl').open('x', encoding='utf-8') as stream:
         for start in range(0, len(jobs), args.batch_size):
             batch = jobs[start:start+args.batch_size]
-            opened = lambda row, key: Image.open(args.pack/row['images'][key]).convert('RGB')
+            opened = lambda row, key: Image.open(args.erased/f"{places[row['id']]:05d}.png" if key == 'erased' and args.erased else args.pack/row['images'][key]).convert('RGB')
             images = [[opened(row, key) for key in image_keys(condition)] for condition, row in batch]
             if args.backend == 'hf':
                 requests = [(shown if len(shown) > 1 else shown[0], prompt(c, row),

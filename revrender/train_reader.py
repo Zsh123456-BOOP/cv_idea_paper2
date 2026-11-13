@@ -19,6 +19,13 @@ read afterwards, ``recognize_lines --fold K``), the rows marked ``val`` among th
 ``target``.  The ``*_revision`` conditions show the images they name (``pair_revision`` two); the mapped ones need
 ``--layer-map``: the row's layer map goes in beside the scan through a projection of its own (``models.vlm_tokens``), taught at
 ``--map-lr`` and saved as OUT/layer_map.pt.  ``--keep-best`` keeps the adapter of the lowest validation loss instead of the last.
+``--erased DIR`` takes every row's erased crop from DIR (``<row's place in the pack>.png``) instead of the pack.
+
+``--separator RUN`` (with ``pair_revision``): the erased crop is made while training by that separator (``models.hint_separator``: a
+NAFNet of ``baselines.restoration``, its hint never darker than the scan), and from step ``--separator-from`` on the separator learns
+too, at ``--separator-lr`` (0: never), from the loss on the reading and ``--anchor`` times its hints' distance from the crops a person
+erased (``--anchor-pack``).  OUT/separator.pt is the separator kept, OUT/hints its hint of every row of the pack (``--erased`` for the
+reading and for another reader's teaching).
 """
 import argparse
 import json
@@ -89,29 +96,35 @@ class Samples:
 
 
 class PackSamples:
-    """The rows of a line pack: (the images a condition shows, the text to give, the layer map of a mapped condition or None)."""
+    """The rows of a line pack: (the images a condition shows, the text to give, the layer map of a mapped condition or None, the crop
+    a person erased or None).  ``erased``: a folder the erased crops are taken from instead, by the row's place in the pack (``places``);
+    ``anchors``: the folder of a pack whose ``erased`` is a person's, with its rows by id."""
 
-    def __init__(self, root, rows, keys=('raw',), mapped=False):
-        self.root, self.rows, self.keys, self.mapped = root, rows, keys, mapped
+    def __init__(self, root, rows, keys=('raw',), mapped=False, erased=None, places=None, anchors=None):
+        self.root, self.rows, self.keys, self.mapped, self.erased, self.places, self.anchors = root, rows, keys, mapped, erased, places, anchors
 
     def __len__(self):
         return len(self.rows)
 
     def __getitem__(self, i):
         row = self.rows[i]
-        opened = lambda key: Image.open(self.root/row['images'][key]).convert('RGB')
-        return [opened(key) for key in self.keys], row.get('target', row['text']), opened('map') if self.mapped else None
+        path = lambda key: self.erased/f"{self.places[row['id']]:05d}.png" if key == 'erased' and self.erased else self.root/row['images'][key]
+        opened = lambda key: Image.open(path(key)).convert('RGB')
+        anchor = Image.open(self.anchors[0]/self.anchors[1][row['id']]['images']['erased']).convert('L') if self.anchors else None
+        return [opened(key) for key in self.keys], row.get('target', row['text']), opened('map') if self.mapped else None, anchor
 
 
 class Collate:
     """A batch for the model: the chat with the answer, the loss only on the answer."""
 
-    def __init__(self, processor, words):
-        self.processor, self.words = processor, words
+    def __init__(self, processor, words, scans=False):
+        self.processor, self.words, self.scans = processor, words, scans
         self.start = processor.tokenizer.convert_tokens_to_ids('<|im_start|>')
 
     def __call__(self, batch):
-        batch = [item if len(item) == 3 else ([item[0]], item[1], None) for item in batch]      # (images, text, layer map)
+        batch = [item if len(item) == 4 else ([item[0]], item[1], None, None) for item in batch]      # (images, text, layer map, anchor)
+        anchors = [np.asarray(anchor) if anchor is not None else None for *_, anchor in batch]
+        batch = [item[:3] for item in batch]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': SYSTEM}]},
                           {'role': 'user', 'content': [*({'type': 'image', 'image': image} for image in images), {'type': 'text', 'text': self.words}]},
                           {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _ in batch]
@@ -126,6 +139,8 @@ class Collate:
             labels[b, :int(marks[-1])+3] = -100                        # the system and user turns and "<|im_start|>assistant\n"
         labels[out['attention_mask'] == 0] = -100
         out['labels'] = labels
+        if self.scans:                                             # for a separator inside the training (models.hint_separator.lay_hints)
+            out['scans'], out['anchors'] = [np.asarray(images[0].convert('L')) for images, _, _ in batch], anchors
         return out
 
 
@@ -157,13 +172,20 @@ def cycle(loader):
         yield from loader
 
 
-def evaluate(model, loader, device):
+def on_device(batch, device):
+    """The batch's tensors on the device; what is not a tensor stays as it is."""
+    return {k: v.to(device) if hasattr(v, 'to') else v for k, v in batch.items()}
+
+
+def evaluate(model, loader, device, lay=None):
     import torch
     model.eval()
     total, count = 0., 0
     with torch.inference_mode():
         for batch in loader:
-            batch = {k: v.to(device) for k, v in batch.items()}
+            batch = on_device(batch, device)
+            if lay:
+                lay(batch)
             batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
             tokens = int((batch['labels'] != -100).sum())
             total += float(model(**batch).loss)*tokens
@@ -182,6 +204,13 @@ def main(argv=None):
     p.add_argument('--map-lr', type=float, default=2e-5, help='the learning rate of the layer-map projection: Adam moves each of a patch\'s '
                    '1,536 weights by about this a step, so a patch with strike in it shifts by this times its strike pixels (1e-3 wrecked the image in two steps)')
     p.add_argument('--keep-best', action='store_true', help='keep the adapter of the lowest validation loss, not the last')
+    p.add_argument('--erased', type=Path, help="with --pack: a folder of erased crops (<the row's place in the pack>.png) in place of the pack's")
+    p.add_argument('--separator', type=Path, help='with pair_revision: a NAFNet run of baselines.restoration that makes the erased crop while training')
+    p.add_argument('--upstream', type=Path, help="--separator: the restorers' official sources")
+    p.add_argument('--separator-lr', type=float, default=1e-4, help='--separator: its learning rate once it learns (0: it never does)')
+    p.add_argument('--separator-from', type=int, default=40, help='--separator: the step from which it learns (the reader first learns to read)')
+    p.add_argument('--anchor-pack', type=Path, help="--separator: a pack of the same rows whose erased crop is a person's (data.struck_pack folds)")
+    p.add_argument('--anchor', type=float, default=10., help="--separator: the weight of its hints' distance from the anchor crops")
     p.add_argument('--pages', type=Path, action='append', help='with --corpus: a folder of scans <image_id>.jpg (repeatable)')
     p.add_argument('--model', type=Path, required=True)
     p.add_argument('--kinds', nargs='+', choices=('clean', 'whole', 'paste', 'stack'), default=['clean', 'whole', 'paste', 'stack'])
@@ -206,6 +235,7 @@ def main(argv=None):
     if args.pack:
         require(args.condition is not None, '--pack needs --condition')
         require(args.layer_map == (args.condition in MAPPED), 'a mapped condition, and only it, is taught with --layer-map')
+        require(not args.separator or (args.condition == 'pair_revision' and args.upstream and not args.erased), '--separator goes with pair_revision and --upstream, without --erased')
         pack_rows = json.loads((args.pack/'pack.json').read_text())['rows']
         if args.fold is not None:
             rest = [r for r in pack_rows if r['fold'] != args.fold]
@@ -224,9 +254,10 @@ def main(argv=None):
     processor = AutoProcessor.from_pretrained(str(args.model))
     processor.tokenizer.padding_side = 'right'
     if args.pack:
-        collate = Collate(processor, prompt(args.condition, {'boxes': []}))
-        shown = image_keys(args.condition), args.condition in MAPPED
-        train_set, val_set = PackSamples(args.pack, train_rows, *shown), PackSamples(args.pack, val_rows, *shown)
+        collate = Collate(processor, prompt(args.condition, {'boxes': []}), scans=bool(args.separator))
+        anchors = (args.anchor_pack, {r['id']: r for r in json.loads((args.anchor_pack/'pack.json').read_text())['rows']}) if args.anchor_pack else None
+        shown = dict(keys=image_keys(args.condition), mapped=args.condition in MAPPED, erased=args.erased, places={r['id']: i for i, r in enumerate(pack_rows)}, anchors=anchors)
+        train_set, val_set = PackSamples(args.pack, train_rows, **shown), PackSamples(args.pack, val_rows, **shown)
     else:
         crops = Crops(args.pages, read_rows(args.corpus))
         collate = Collate(processor, prompt('raw_final' if args.words == 'final' else 'raw_neutral', {'boxes': []}))
@@ -244,9 +275,17 @@ def main(argv=None):
     layer = [q for name, q in model.named_parameters() if q.requires_grad and 'layer_map.' in name]
     groups = [{'params': [q for q in params if all(q is not m for m in layer)], 'base': args.lr}, *([{'params': layer, 'base': args.map_lr}] if layer else [])]
     optimizer = torch.optim.AdamW(groups, lr=args.lr, weight_decay=0., betas=(.9, .999))
+    separator = separator_optimizer = None
+    if args.separator:
+        from .models.hint_separator import hint, lay_hints, load
+        separator, separator_weights = load(args.separator, args.upstream); separator.eval()       # NAFNet has no dropout: one forward for teaching, validating and the hints
+        if args.separator_lr > 0:
+            separator_optimizer = torch.optim.AdamW(separator.parameters(), lr=args.separator_lr, weight_decay=0.)
+        lay = lambda batch: lay_hints(batch, separator, processor.image_processor)
     schedule = lambda step: min(1., (step+1)/args.warmup)*(.1+.9*.5*(1+math.cos(math.pi*step/args.steps)))
     source = args.pack/'pack.json' if args.pack else args.corpus
-    write_manifest(out, config=to_jsonable(args), inputs={str(source): digest(source)}, train_recipes=len(train_rows), val_recipes=len(val_rows),
+    write_manifest(out, config=to_jsonable(args), inputs={str(source): digest(source), **({str(separator_weights): digest(separator_weights)} if args.separator else {})},
+                   train_recipes=len(train_rows), val_recipes=len(val_rows),
                    trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds)
     stream = (out/'train_log.jsonl').open('x', encoding='utf-8')
     started, iterator, kept = time.monotonic(), cycle(loader), (math.inf, None)
@@ -255,22 +294,35 @@ def main(argv=None):
         model.save_pretrained(out/'adapter')
         if args.layer_map:
             torch.save(layer_map_state(model), out/'layer_map.pt')
+        if separator is not None:
+            torch.save({'model': separator.state_dict()}, out/'separator.pt')
     for step in range(args.steps):
         for group in optimizer.param_groups:
             group['lr'] = group['base']*schedule(step)
-        total, tokens = 0., 0
+        learning = separator_optimizer is not None and step >= args.separator_from       # the separator learns from this step on
+        total, tokens, away = 0., 0, 0.
         for _ in range(args.accumulate):
-            batch = {k: v.to('cuda') for k, v in next(iterator).items()}
+            batch = on_device(next(iterator), 'cuda')
+            if separator is not None:
+                with torch.set_grad_enabled(learning):
+                    distance = lay(batch)
             batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
             loss = model(**batch).loss
-            (loss/args.accumulate).backward()
+            ((loss+args.anchor*distance if learning else loss)/args.accumulate).backward()
             total += float(loss)
+            away += float(distance) if separator is not None else 0.
         torch.nn.utils.clip_grad_norm_(params, 1.)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
+        if learning:
+            torch.nn.utils.clip_grad_norm_(separator.parameters(), .01)                   # the clip of its own training (baselines.restoration_torch)
+            separator_optimizer.step()
+            separator_optimizer.zero_grad(set_to_none=True)
         row = {'step': step+1, 'loss': total/args.accumulate, 'lr': optimizer.param_groups[0]['lr'], 'seconds': round(time.monotonic()-started, 1)}
+        if separator is not None:
+            row.update(separator_learning=learning, anchor_distance=away/args.accumulate)
         if val_loader is not None and ((step+1) % args.eval_every == 0 or step+1 == args.steps):
-            row['val_loss'] = evaluate(model, val_loader, 'cuda')
+            row['val_loss'] = evaluate(model, val_loader, 'cuda', lay if separator is not None else None)
             if args.keep_best and row['val_loss'] < kept[0]:
                 kept = (row['val_loss'], step+1)
                 save()
@@ -280,6 +332,13 @@ def main(argv=None):
     if kept[1] is None:
         save()
     stream.close()
+    if separator is not None:                                                             # the kept separator's hint of every row of the pack
+        separator.load_state_dict(torch.load(out/'separator.pt', map_location='cuda')['model']); (out/'hints').mkdir()
+        with torch.no_grad():
+            for place, r in enumerate(pack_rows):
+                with Image.open(args.pack/r['images']['raw']) as raw, Image.open(args.pack/r['images']['erased']) as erased:
+                    made = hint(separator, torch.from_numpy(np.asarray(raw.convert('L'))).to('cuda', torch.float32)/255)
+                    (erased.convert('L') if made is None else Image.fromarray((made*255).round().byte().cpu().numpy())).save(out/'hints'/f'{place:05d}.png')
     write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'final_loss': row['loss'], 'final_val_loss': row.get('val_loss'),
                                      'kept_step': kept[1] or args.steps, 'kept_val_loss': kept[0] if kept[1] else row.get('val_loss')})
     return 0

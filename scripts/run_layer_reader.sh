@@ -38,6 +38,15 @@
 #  4. --agreement: do the readings with and without the line differing mark the errors (the fourth block of the design)?
 #  The rule, written before any reading: the separator is worth more work when the pair's reader on the students' crops beats the pair's
 #  reader on the plain separators' by more than 3 points of AR with its writer interval above 0, exact and NED no worse.
+# PART=joint (after the distilled part; the second block of the design: the separator taught by the reading):
+#  1. models.hint_separator: its cut of an image into patches is the reader's image processor's; a two-step smoke in which it learns.
+#  2. per fold, two pair readers whose erased crop the fold's student makes while they train: learned (from step 40 the student learns
+#     from the loss on the reading, anchored to the crops a person erased) and frozen (it never does); each reads its fold with the
+#     hints its separator ends with.
+#  3. transfer: a fresh pair reader taught on the learned separator's hints -- do they help a reader that did not shape them?
+#  4. eval.transcription, the reference the frozen arm.
+#  The rule, written before any reading: the reading may teach the separator when the learned arm beats the frozen one by more than 3
+#  points of AR with its writer interval above 0, exact and NED no worse, and the fresh reader keeps at least half of that gain.
 # Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
 # are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
@@ -50,7 +59,7 @@ PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
 SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; *) echo DISTILLED_FAILED ;; esac; }
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; *) echo JOINT_FAILED ;; esac; }
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
 exec 8>"$R/$([ "$PART" = human ] && echo lock || echo "$PART.lock")"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
@@ -182,7 +191,7 @@ done_ views_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" --ar
     --reference taught_pair --output "$R/scores_views.json" > "$R/views_score.log" 2>&1; mark views_score; }
 touch "$R/VIEWS_COMPLETE"; stamp 'views part complete'; exit 0; fi
 
-test "$PART" = distilled
+if [ "$PART" = distilled ]; then
 source "$ROOT/scripts/_restorers.sh"
 if ! done_ distilled_sets; then
     [ -e "$SETS2/fold_4/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack fold-sets --dataset "$DATA/regions.json" --pages "$DATA/pages" \
@@ -246,4 +255,44 @@ done_ distilled_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" 
     --arm "distilled_erase_then_read=$R/read_distilled_untaught" --arm "erase_then_read=$R/read_sep_untaught" --arm "taught_scan=$(folds_of raw)" \
     --arm "human_pair=$(folds_of pair)" --arm "context=$(folds_of views_context)" --reference taught_pair --agreement context=taught_pair --agreement taught_pair=taught_scan \
     --output "$R/scores_distilled.json" > "$R/distilled_score.log" 2>&1; mark distilled_score; }
-touch "$R/DISTILLED_COMPLETE"; stamp 'distilled part complete'
+touch "$R/DISTILLED_COMPLETE"; stamp 'distilled part complete'; exit 0; fi
+
+test "$PART" = joint
+until [ -e "$R/DISTILLED_COMPLETE" ]; do [ ! -e "$R/DISTILLED_FAILED" ] || { echo 'the distilled part failed'; exit 1; }; sleep 60; done      # one card, and its students
+cards "${CARDS:-1}"; HUMAN=$PACK; PACK=$DISTILLED
+joint_job() {   # KIND FOLD [more of train_reader]: a pair reader whose separator learns from the reading (learned) or never does (frozen), then its fold read with that separator's hints
+    local kind="$1" k="$2"; shift 2; local reader="${N}_revision_reader_joint_${kind}_f$k" reading="$R/read_joint_${kind}_f$k" lr=()
+    [ "$kind" != frozen ] || lr=(--separator-lr 0)
+    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" pair "$k" --separator "${N}_revision_distilled_f$k" --upstream "$UP" \
+        --anchor-pack "$HUMAN" ${lr[@]+"${lr[@]}"} "$@")
+    [ -e "$reading/complete.json" ] || job "$CARD_" "$NUMA_" "$reading" -- $(read_with "$reading" pair "$reader" --fold "$k" --erased "$reader/hints")
+}
+on_card() { CARD_="$1"; NUMA_="$2"; "${@:3}"; }   # CARD NUMA FUNCTION ARGS...: the function with the card it was given in CARD_ and NUMA_
+transfer_job() {   # FOLD: a fresh pair reader taught on the learned separator's hints
+    local reader="${N}_revision_reader_joint_transfer_f$1" reading="$R/read_joint_transfer_f$1" hints="${N}_revision_reader_joint_learned_f$1/hints"
+    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" pair "$1" --erased "$hints")
+    [ -e "$reading/complete.json" ] || job "$CARD_" "$NUMA_" "$reading" -- $(read_with "$reading" pair "$reader" --fold "$1" --erased "$hints")
+}
+if ! done_ joint_smoke; then
+    "$PY" -m revrender.models.hint_separator --model "$MODEL" --pack "$PACK" > "$R/joint_check.log" 2>&1
+    joint_smoke_job() {   # two steps, the separator learning from the first
+        local reader="$R/joint_smoke_reader"
+        job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" pair 0 --separator "${N}_revision_distilled_f0" --upstream "$UP" --anchor-pack "$HUMAN" --steps 2 --eval-every 1 --warmup 1 --separator-from 0)
+        "$PY" -c "import json, sys, torch; a = torch.load(sys.argv[1], map_location='cpu')['model']; b = torch.load(sys.argv[2], map_location='cpu', weights_only=False)['model']; moved = max(float((a[k].float()-b[k].float()).abs().max()) for k in a); assert moved > 0, 'the separator did not learn'; print('separator moved', moved)" \
+            "$reader/separator.pt" "${N}_revision_distilled_f0/$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint"])' "${N}_revision_distilled_f0/selection.json")/weights.pt"
+        job "$CARD_" "$NUMA_" "$R/joint_smoke_read" -- $(read_with "$R/joint_smoke_read" pair "$reader" --fold 0 --limit 8 --erased "$reader/hints")
+        "$PY" -c "import json, sys; texts = {json.loads(l)['text'] for l in open(sys.argv[1])}; assert len(texts) > 2, f'eight regions read as {texts}'" "$R/joint_smoke_read/predictions.jsonl"
+    }
+    alone on_card joint_smoke_job; wait; test -e "$R/joint_smoke_read/complete.json"; mark joint_smoke; fi
+if ! done_ joint_arms; then
+    for k in 0 1 2 3 4; do for kind in learned frozen; do [ -e "$R/read_joint_${kind}_f$k/complete.json" ] || alone on_card joint_job "$kind" "$k"; done; done
+    wait; for k in 0 1 2 3 4; do for kind in learned frozen; do test -e "$R/read_joint_${kind}_f$k/complete.json"; done; done
+    mark joint_arms; fi
+if ! done_ joint_transfer; then
+    for k in 0 1 2 3 4; do [ -e "$R/read_joint_transfer_f$k/complete.json" ] || alone on_card transfer_job "$k"; done
+    wait; for k in 0 1 2 3 4; do test -e "$R/read_joint_transfer_f$k/complete.json"; done
+    mark joint_transfer; fi
+done_ joint_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" --arm "frozen=$(folds_of joint_frozen)" --arm "learned=$(folds_of joint_learned)" \
+    --arm "transfer=$(folds_of joint_transfer)" --arm "distilled_pair=$(folds_of distilled_pair)" --arm "taught_pair=$(folds_of sep_pair)" --arm "human_pair=$(folds_of pair)" \
+    --reference frozen --output "$R/scores_joint.json" > "$R/joint_score.log" 2>&1; mark joint_score; }
+touch "$R/JOINT_COMPLETE"; stamp 'joint part complete'
