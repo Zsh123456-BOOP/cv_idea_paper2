@@ -57,7 +57,7 @@ def train(e):
         path.mkdir();g.save_weights(str(path/'generator.h5'));d.save_weights(str(path/'discriminator.h5'))
         tf.train.Checkpoint(generator=g,discriminator=d,g_optimizer=go,d_optimizer=do).write(str(path/'state'))
         # Verify that the standalone inference weights really reload.
-        probe=np.asarray(e.x[e.val[:1]],np.float32)/255;before=predict(probe)
+        probe=np.asarray(e.x[(e.val if len(e.val) else e.train)[:1]],np.float32)/255;before=predict(probe)   # data without a synthetic validation: a training tile
         g.load_weights(str(path/'generator.h5'));require(np.array_equal(before,predict(probe)),'DE-GAN reload mismatch')
 
     for step in range(1,e.args.steps+1):
