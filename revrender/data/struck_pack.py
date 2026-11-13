@@ -3,6 +3,8 @@
     python -m revrender.data.struck_pack train --export E [--export E ...] --pages DIR [...] --same-student P --exclude-pack EVAL_PACK --output-dir OUT
     python -m revrender.data.struck_pack eval --evaluation EVAL --restorer NAME --output-dir OUT
     python -m revrender.data.struck_pack folds --dataset regions.json --pages DIR [...] --hold-out NAME [...] --output-dir OUT
+    python -m revrender.data.struck_pack fold-sets --dataset regions.json --pages DIR [...] --hold-out NAME [...] --output-dir OUT
+    python -m revrender.data.struck_pack separated --pack FOLDS_PACK --sets SETS --separator RUN x5 --upstream UP --output-dir OUT
 
 ``train``: every region of the exports whose struck text is confirmed and readable (``eval.revision_boxes.prepare`` leaves something
 besides ``?``), cut as the unified evaluation cuts its OCR crops (the region's polygon box and six pixels, on the page the export names
@@ -18,8 +20,14 @@ writers stay out.  The writers go to ``FOLDS`` folds of about equal regions (``f
 reader is taught to give (the text in the spelling of ``eval.coverage.prepare``, or ``recognize_lines.UNREADABLE``), and three images of
 its OCR window from the annotator's own pixels: the scan (``raw``), the scan with the strike pixels white (``erased``) and the layer map
 (``map``: white the strike pixels, black the rest).  A region is cut from the page its export showed the annotator (the dataset's
-``image_source`` when that folder is here, else the first of ``--pages`` holding the page): the pixels were drawn on that image.  The
-text is student work: OUT stays out of Git.
+``image_source`` when that folder is here, else the first of ``--pages`` holding the page): the pixels were drawn on that image.
+
+``fold-sets``: the same regions and folds as the review sets a separator (a restorer of ``baselines.restoration``) trains on, one per
+fold in OUT/fold_K: ``training_native.*`` the other folds' regions (the ``val`` writers apart, as ``validation_native.*``, by which its
+versions are chosen) and ``heldout_native.*`` fold K's own, each row with its OCR window.  ``separated``: the folds pack again, but
+``erased`` and ``map`` now come from those separators, each restoring only the regions of the fold it never trained on: ``erased`` the
+restored crop, ``map`` the share of each ink pixel's darkness it took away (0 none, white all).  The text is student work: OUT stays
+out of Git.
 """
 import argparse
 import hashlib
@@ -38,6 +46,7 @@ from .prior_annotations import twins
 
 VALIDATION = .1
 FOLDS = 5
+INK = 200      # grey below which a pixel is ink, as the removal metrics read it
 
 
 def validation_writer(writer):
@@ -115,7 +124,9 @@ def layered(page, row):
     return Image.fromarray(scan), Image.fromarray(erased), Image.fromarray((255*strike[t:b, l:r]).astype(np.uint8))
 
 
-def folds_pack(args):
+def chosen_regions(args):
+    """(the regions to teach and read, each with its target, fold and val mark; {(source, page): file}; the held-out writers; the counts
+    of the regions left out and why)."""
     from ..eval.coverage import prepare
     from ..recognize_lines import UNREADABLE
     regions = json.loads(args.dataset.read_text())
@@ -130,15 +141,21 @@ def folds_pack(args):
     require(chosen, 'no region to teach or read')
     fold = fold_of({w: sum(r['writer'] == w for r in chosen) for w in {r['writer'] for r in chosen}})
     source = lambda r: r['image_source'] if r['image_source'] and Path(r['image_source']).is_dir() else ''
-    files = {folder: pages_module.page_files([folder] if folder else args.pages, sorted({r['page'] for r in chosen if source(r) == folder}))
-             for folder in {source(r) for r in chosen}}
+    listed = {folder: pages_module.page_files([folder] if folder else args.pages, sorted({r['page'] for r in chosen if source(r) == folder}))
+              for folder in {source(r) for r in chosen}}
+    chosen = sorted(({**r, 'fold': fold[r['writer']], 'val': validation_writer(r['writer']), 'source': source(r)} for r in chosen), key=lambda r: (r['source'], r['page'], r['id']))
+    return chosen, {(folder, page): path for folder, files in listed.items() for page, path in files.items()}, held, skipped
+
+
+def folds_pack(args):
+    chosen, files, held, skipped = chosen_regions(args)
     out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []
-    for folder, page_id in sorted({(source(r), r['page']) for r in chosen}):
-        with Image.open(files[folder][page_id]) as page:
-            for r in sorted((r for r in chosen if (source(r), r['page']) == (folder, page_id)), key=lambda r: r['id']):
+    for key in sorted({(r['source'], r['page']) for r in chosen}):
+        with Image.open(files[key]) as page:
+            for r in (r for r in chosen if (r['source'], r['page']) == key):
                 images = {name: f'crops/{len(rows):05d}_{name}.png' for name in ('raw', 'erased', 'map')}
                 for name, image in zip(images, layered(page, r)): image.save(out/images[name])
-                rows.append({'id': r['id'], 'line_id': r['id'], 'kind': 'line', 'writer': r['writer'], 'fold': fold[r['writer']], 'val': validation_writer(r['writer']),
+                rows.append({'id': r['id'], 'line_id': r['id'], 'kind': 'line', 'writer': r['writer'], 'fold': r['fold'], 'val': r['val'],
                              'readable': bool(r['readable']), 'text': r['text'] if r['readable'] else '', 'target': r['target'], 'images': images,
                              'size': list(image.size), 'boxes': [], 'strike_pixels': r['strike_pixels'], 'mode': r['mode']})
     write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
@@ -150,6 +167,72 @@ def folds_pack(args):
     print(json.dumps(summary), flush=True)
 
 
+def fold_sets(args):
+    chosen, files, _, _ = chosen_regions(args); cut = {}
+    for key in sorted({(r['source'], r['page']) for r in chosen}):
+        with Image.open(files[key]) as page:
+            for r in (r for r in chosen if (r['source'], r['page']) == key):
+                bl, bt, br, bb = r['box']
+                cut[r['id']] = (*reviewed_crop(page, {'box': r['box'], 'runs': r['runs'], 'region': r['region']}),
+                                list(window(r['region'] or [[bl, bt], [br, bt], [br, bb], [bl, bb]], page.size)))
+    out = make_output_dir(args.output_dir); summary = []
+    for k in range(FOLDS):
+        sides = {'training_native': [r for r in chosen if r['fold'] != k and not r['val']], 'validation_native': [r for r in chosen if r['fold'] != k and r['val']],
+                 'heldout_native': [r for r in chosen if r['fold'] == k]}
+        require(all(sides.values()), f'fold {k}: a side is empty'); folder = out/f'fold_{k}'; folder.mkdir()
+        for name, rows in sides.items():
+            np.savez_compressed(folder/f'{name}.npz', **{f'{part}_{i}': cut[r['id']][j] for i, r in enumerate(rows) for j, part in enumerate(('image', 'mask'))})
+            write_json(folder/f'{name}.json', [{'id': r['id'], 'group_uuid': r['writer'], 'page': r['page'], 'box': r['box'], 'region': r['region'], 'window': cut[r['id']][2]} for r in rows])
+        write_json(folder/'records.json', [{'id': r['id'], 'group_uuid': r['writer'], 'split': 'train', 'source': 'human_confirmed'} for r in sides['training_native']])
+        summary.append({name: len(rows) for name, rows in sides.items()})
+        write_manifest(folder, config={'dataset': str(args.dataset), 'fold': k, 'hold_out': args.hold_out}, inputs={str(args.dataset): digest(args.dataset)}, **summary[-1])
+    print(json.dumps(summary), flush=True)
+
+
+def taken_away(image, restored):
+    """The share of each ink pixel's darkness a restorer took away (0 where there is no ink), of float images in [0, 1]."""
+    return np.where(image < INK/255, np.clip((restored-image)/np.maximum(1-image, 1/255), 0, 1), 0)
+
+
+def pasted(canvas, part, box, origin):
+    """The canvas (a window whose corner on the page is ``origin``) with the part of the page box ``box`` laid on it where they meet."""
+    (bl, bt, br, bb), (l, t) = box, origin; h, w = canvas.shape
+    x0, y0, x1, y1 = max(bl, l), max(bt, t), min(br, l+w), min(bb, t+h)
+    if x0 < x1 and y0 < y1:
+        canvas[y0-t:y1-t, x0-l:x1-l] = part[y0-bt:y1-bt, x0-bl:x1-bl]
+    return canvas
+
+
+def separated_pack(args):
+    from ..baselines.restoration import restore_native
+    from ..baselines.restoration_export import selected_predictor
+    from .pixel_masks import region_pixels
+    require(len(args.separator) == FOLDS, f'{FOLDS} separators, in the order of the folds')
+    source = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
+    out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []; inputs = {str(args.pack/'pack.json'): digest(args.pack/'pack.json')}; shares = []
+    for k, run in enumerate(args.separator):
+        folder = args.sets/f'fold_{k}'; native = json.loads((folder/'heldout_native.json').read_text()); arrays = np.load(folder/'heldout_native.npz')
+        predict, checkpoint, _ = selected_predictor(run, args.upstream, None); inputs[str(checkpoint)] = digest(checkpoint)
+        for i, n in enumerate(native):
+            row = source[n['id']]; require(row['fold'] == k, f"{n['id']}: not of fold {k} in the pack")
+            image = arrays[f'image_{i}'].astype(np.float32)/255; restored = np.clip(restore_native(predict, image, None), 0, 1)
+            inside = region_pixels(n['region'], n['box']); share = taken_away(image, restored)*inside
+            with Image.open(args.pack/row['images']['raw']) as opened: scan = np.asarray(opened.convert('L')).copy()
+            origin = n['window'][:2]
+            erased = np.where(pasted(np.zeros(scan.shape, bool), inside, n['box'], origin),                     # outside the polygon the scan stays
+                              pasted(scan.copy(), np.round(255*restored).astype(np.uint8), n['box'], origin), scan)
+            layer = pasted(np.zeros(scan.shape, np.uint8), np.round(255*share).astype(np.uint8), n['box'], origin)
+            images = {name: f'crops/{len(rows):05d}_{name}.png' for name in ('raw', 'erased', 'map')}
+            for name, array in zip(images, (scan, erased, layer)): Image.fromarray(array).save(out/images[name])
+            rows.append({**row, 'images': images}); shares.append(float(share[arrays[f'mask_{i}'] > 0].mean()) if arrays[f'mask_{i}'].any() else None)
+    require(len(rows) == len(source), 'the sets and the pack hold different regions')
+    write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
+    known = [s for s in shares if s is not None]
+    write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'separators': [str(r) for r in args.separator]}, inputs=inputs, regions=len(rows),
+                   strike_taken_away_mean=float(np.mean(known)))
+    print(json.dumps({'regions': len(rows), 'strike_taken_away_mean': float(np.mean(known))}), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     t = sub.add_parser('train')
@@ -158,11 +241,16 @@ def main(argv=None):
     e = sub.add_parser('eval')
     for key in ('evaluation', 'output-dir'): e.add_argument('--'+key, type=Path, required=True)
     e.add_argument('--restorer', required=True, help='the version of the evaluation whose erased crops sit beside the scan')
-    f = sub.add_parser('folds')
-    f.add_argument('--dataset', type=Path, required=True, help='regions.json of data.struck_dataset'); f.add_argument('--pages', type=Path, action='append', required=True)
-    f.add_argument('--hold-out', action='append', default=[], help='part of the name of an export whose regions, and their writers, stay out (the test page)')
-    f.add_argument('--output-dir', type=Path, required=True)
-    args = p.parse_args(argv); {'train': train_pack, 'eval': eval_pack, 'folds': folds_pack}[args.command](args)
+    for name in ('folds', 'fold-sets'):
+        f = sub.add_parser(name)
+        f.add_argument('--dataset', type=Path, required=True, help='regions.json of data.struck_dataset'); f.add_argument('--pages', type=Path, action='append', required=True)
+        f.add_argument('--hold-out', action='append', default=[], help='part of the name of an export whose regions, and their writers, stay out (the test page)')
+        f.add_argument('--output-dir', type=Path, required=True)
+    d = sub.add_parser('separated')
+    for key in ('pack', 'sets', 'upstream', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)
+    d.add_argument('--separator', type=Path, action='append', required=True, help="a fold's separator run (baselines.restoration), given once per fold in order")
+    args = p.parse_args(argv)
+    {'train': train_pack, 'eval': eval_pack, 'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -67,3 +67,12 @@ def test_revision_conditions():
     assert image_keys('pair_revision') == ('raw', 'erased') and image_keys('raw_revision') == ('raw',)
     assert MAPPED == {'mapped_revision'} and CONDITIONS['mapped_revision'][0] == 'raw'
     assert UNREADABLE in prompt('raw_revision', {'boxes': []}) and UNREADABLE in prompt('erased_revision', {'boxes': []})
+
+
+def test_separator_views_of_a_region():
+    image = np.array([[1., .2, .2], [.9, .2, 1.]], np.float32); restored = np.array([[1., 1., .6], [.9, .2, 1.]], np.float32)
+    share = struck_pack.taken_away(image, restored)
+    assert np.allclose(share, [[0, 1, .5], [0, 0, 0]])                            # all of one ink pixel, half of the next, paper never
+    canvas = struck_pack.pasted(np.zeros((4, 5), np.uint8), np.full((3, 4), 7, np.uint8), (8, 18, 12, 21), (10, 20))
+    assert canvas.sum() == 7*2*1 and (canvas[0, :2] == 7).all()                   # the box overhangs the window's left and top
+    assert struck_pack.pasted(np.zeros((2, 2), np.uint8), np.ones((2, 2), np.uint8), (50, 50, 52, 52), (0, 0)).sum() == 0
