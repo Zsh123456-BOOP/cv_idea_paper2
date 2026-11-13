@@ -73,10 +73,41 @@ def patch_embed_as_linear(embed):
     embed.forward = forward
 
 
+def patch_embed_with_layer_map(embed):
+    """A Qwen3-VL patch embedding that also takes a layer map of the image -- a second picture of the same size saying, pixel by pixel,
+    which ink is the strike -- beside the scan: ``[patches, 2 x width]``, the scan's patches then the map's, cut alike.  The map has a
+    projection of its own, added to the scan's embedding before the tower mixes anything; it starts at zero, so the model reads as it
+    did until the projection is taught (the zero-initialised extra input of Alpha-CLIP, CVPR 2024).  A patch holds strike and writing
+    together, so the map has to arrive here, finer than a token.  Without the map's half the scan is embedded as ever
+    (``patch_embed_as_linear``).  Returns the projection (float32; ``embed.layer_map``)."""
+    import torch
+    weight, bias = embed.proj.weight, embed.proj.bias
+    width = weight[0].numel()
+    embed.layer_map = torch.nn.Linear(width, weight.shape[0], bias=False).to(weight.device)
+    torch.nn.init.zeros_(embed.layer_map.weight)
+
+    def forward(hidden_states):
+        scan = lambda patches: torch.nn.functional.linear(patches.reshape(-1, width).to(weight.dtype), weight.reshape(weight.shape[0], -1), bias)
+        if hidden_states.dim() == 2 and hidden_states.shape[1] == 2*width:
+            return scan(hidden_states[:, :width]) + embed.layer_map(hidden_states[:, width:].float()).to(weight.dtype)
+        return scan(hidden_states)
+    embed.forward = forward
+    return embed.layer_map
+
+
+def with_layer_maps(pixel_values, maps, image_processor):
+    """The scans' patches with their layer maps' beside them: the maps go through the same image processor, so they are cut alike."""
+    import torch
+    layers = image_processor(images=maps, return_tensors='pt')['pixel_values']
+    if layers.shape != pixel_values.shape:
+        raise ValueError(f'layer maps cut to {tuple(layers.shape)}, scans to {tuple(pixel_values.shape)}: a map must have the size of its scan')
+    return torch.cat([pixel_values, layers.to(pixel_values.dtype)], dim=1)
+
+
 class Reader:
     """A Qwen3-VL model (with a LoRA adapter, if given) and its processor on one device, reading batches of lines with hidden visual tokens."""
 
-    def __init__(self, model_dir, device='cuda', adapter=None):
+    def __init__(self, model_dir, device='cuda', adapter=None, layer_map=None):
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor
         self.torch, self.device = torch, device
@@ -87,7 +118,10 @@ class Reader:
             from peft import PeftModel
             self.model = PeftModel.from_pretrained(self.model, str(adapter)).merge_and_unload()
         self.model = self.model.to(device).eval()
-        patch_embed_as_linear(self.model.model.visual.patch_embed)
+        if layer_map:                                                    # the layer-map projection of ``train_reader --layer-map``
+            patch_embed_with_layer_map(self.model.model.visual.patch_embed).load_state_dict(torch.load(str(layer_map), map_location=device))
+        else:
+            patch_embed_as_linear(self.model.model.visual.patch_embed)
         self.merge = self.model.config.vision_config.spatial_merge_size
         self.image_token = self.model.config.image_token_id
         eos = self.model.generation_config.eos_token_id
@@ -98,13 +132,14 @@ class Reader:
         thw = self.processor.image_processor(images=[image], return_tensors='pt')['image_grid_thw'][0]
         return int(thw[1])//self.merge, int(thw[2])//self.merge
 
-    def read(self, jobs, system, max_new_tokens=256):
-        """Greedy readings of (image, words, hidden, soft) jobs: ``hidden`` the bool flags of the image's tokens (or None), ``soft`` 0 to
-        remove the hidden tokens from every attention or a positive bias subtracted from their attention logits.  A list of dicts
-        (text, tokens, finish)."""
+    def read(self, jobs, system, max_new_tokens=256, maps=None):
+        """Greedy readings of (image, words, hidden, soft) jobs: ``image`` one image or several, ``hidden`` the bool flags of the image's
+        tokens (or None), ``soft`` 0 to remove the hidden tokens from every attention or a positive bias subtracted from their attention
+        logits; ``maps`` the layer map of each job's one image (a reader made with ``layer_map``).  A list of dicts (text, tokens, finish)."""
         torch = self.torch
+        shown = lambda image: [{'type': 'image', 'image': one} for one in (image if isinstance(image, (list, tuple)) else [image])]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': system}]},
-                          {'role': 'user', 'content': [{'type': 'image', 'image': image}, {'type': 'text', 'text': words}]}] for image, words, _, _ in jobs]
+                          {'role': 'user', 'content': [*shown(image), {'type': 'text', 'text': words}]}] for image, words, _, _ in jobs]
         batch = self.processor.apply_chat_template(conversations, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
         ids, valid = batch['input_ids'], batch['attention_mask'].bool()
         blocked = blocked_keys(ids.numpy(), valid.numpy(), self.image_token, [job[2] for job in jobs])
@@ -113,7 +148,8 @@ class Reader:
         mask = torch.from_numpy(prefill_mask(bias)).to(self.device, dtype)
         ids, valid = ids.to(self.device), valid.to(self.device)
         positions, _ = self.model.model.get_rope_index(ids, batch['image_grid_thw'].to(self.device), None, attention_mask=valid.long())
-        pixel_values, grid = batch['pixel_values'].to(self.device, dtype), batch['image_grid_thw'].to(self.device)
+        pixels = batch['pixel_values'] if maps is None else with_layer_maps(batch['pixel_values'], maps, self.processor.image_processor)
+        pixel_values, grid = pixels.to(self.device, dtype), batch['image_grid_thw'].to(self.device)
         length = ids.shape[1]
         from transformers import DynamicCache
         cache = DynamicCache()

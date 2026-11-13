@@ -1,0 +1,142 @@
+"""Scores of readings of struck text in the definitions of the literature, the ways of reading paired by writer.
+
+    python -m revrender.eval.transcription --pack PACK --arm NAME=DIR[,DIR...][@CONDITION] [--arm ...] --reference NAME --output OUT.json
+
+An arm is the readings (``recognize_lines``) of one way of reading, over one or several folders (the folds of a cross-validation, each
+holding the readings of the writers its reader never trained on), of one condition when a folder holds several.  A label and a reading
+are compared in the spelling of ``eval.coverage.prepare`` (the label's ``?`` dropped) by a minimal edit alignment: of the label's N
+characters S are substituted and D deleted, and the reading adds I.
+
+  CER    (S+D+I)/N          character error rate of handwriting recognition (Pathirage et al., IJDAR 2026, on crossed-out words)
+  CR     (N-D-S)/N          correct rate of handwritten Chinese text recognition (SCUT-EPT, 2019): the project's earlier "read-back"
+  AR     (N-D-S-I)/N        accuracy rate, its companion: what the reading adds is charged
+  exact  reading = label    the expression rate of handwritten mathematical expression recognition (Uni-MuMER, NeurIPS 2025)
+  NED    (S+D+I)/max(N, M)  normalised edit distance, M the reading's length (KIE-HVQA, NeurIPS 2025)
+
+CER, CR and AR are over all the characters of the readable regions; exact and NED are means over the regions.  A region the annotator
+could not read (``readable`` false in the pack) should be answered with ``recognize_lines.UNREADABLE``: refusal precision, recall and F1
+(the degraded-region rule of KIE-HVQA: read what can be read, refuse what cannot); a refusal on a readable region reads nothing.  Each
+arm is paired with ``--reference`` on the regions both read: the differences of AR, exact and NED with 95% intervals by resampling
+writers (1,000 draws, seed 42).
+"""
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+
+from ..recognize_lines import UNREADABLE
+from ..util import SEED, digest, require, write_json
+from .coverage import prepare
+
+
+def edits(label, reading):
+    """(substituted, deleted, inserted) of a minimal edit alignment of the label to the reading; ties go to the diagonal, as in
+    ``coverage.alignment``, so N - substituted - deleted is the count of characters ``revision_boxes.held`` keeps."""
+    n, m = len(label), len(reading)
+    cost = [[0]*(m+1) for _ in range(n+1)]
+    for i in range(n+1):
+        cost[i][0] = i
+    for j in range(m+1):
+        cost[0][j] = j
+    for i in range(1, n+1):
+        for j in range(1, m+1):
+            cost[i][j] = min(cost[i-1][j]+1, cost[i][j-1]+1, cost[i-1][j-1]+(label[i-1] != reading[j-1]))
+    i, j, substituted, deleted, inserted = n, m, 0, 0, 0
+    while i or j:
+        if i and j and label[i-1] == reading[j-1] and cost[i][j] == cost[i-1][j-1]:
+            i, j = i-1, j-1
+        elif i and j and cost[i][j] == cost[i-1][j-1]+1:
+            substituted, i, j = substituted+1, i-1, j-1
+        elif i and cost[i][j] == cost[i-1][j]+1:
+            deleted, i = deleted+1, i-1
+        else:
+            inserted, j = inserted+1, j-1
+    return substituted, deleted, inserted
+
+
+def refused(reading):
+    return UNREADABLE.strip('[]') in (reading or '')
+
+
+def counts(label, reading):
+    """The edit counts of one readable region; a refusal reads nothing."""
+    x, y = prepare(label).replace('?', ''), '' if refused(reading) else prepare(reading)
+    s, d, i = edits(x, y)
+    return {'n': len(x), 's': s, 'd': d, 'i': i, 'm': len(y), 'exact': float(x == y)}
+
+
+def rates(rows):
+    """The scores of the readable regions whose counts are given."""
+    n, s, d, i = (sum(r[k] for r in rows) for k in 'nsdi')
+    return {'cer': (s+d+i)/n, 'cr': (n-d-s)/n, 'ar': (n-d-s-i)/n, 'exact': float(np.mean([r['exact'] for r in rows])),
+            'ned': float(np.mean([(r['s']+r['d']+r['i'])/max(r['n'], r['m'], 1) for r in rows]))}
+
+
+def refusal(readings, readable):
+    """Precision, recall and F1 of the refusals among the regions read, and the share of the readable regions refused."""
+    said = {k for k, text in readings.items() if refused(text)}
+    cannot, can = {k for k in readings if not readable[k]}, {k for k in readings if readable[k]}
+    hit = len(said & cannot); precision, recall = hit/len(said) if said else None, hit/len(cannot) if cannot else None
+    f1 = 2*precision*recall/(precision+recall) if precision and recall else (0. if cannot and said else None)
+    return {'unreadable': len(cannot), 'refusals': len(said), 'precision': precision, 'recall': recall, 'f1': f1,
+            'readable_refused': len(said & can)/len(can) if can else None}
+
+
+def paired(reference, version, writers, rng, draws=1000):
+    """The version's scores minus the reference's on the regions both have counts for, with writer-resampled 95% intervals."""
+    ids = sorted(set(reference) & set(version)); names = sorted({writers[k] for k in ids}); by = {w: [k for k in ids if writers[k] == w] for w in names}
+    def difference(keys):
+        a, b = rates([reference[k] for k in keys]), rates([version[k] for k in keys])
+        return {m: b[m]-a[m] for m in ('ar', 'exact', 'ned')}
+    full = difference(ids); sample = [difference([k for w in rng.choice(names, len(names)) for k in by[w]]) for _ in range(draws)]
+    return {'regions': len(ids), 'writers': len(names), **{m: {'difference': full[m], 'interval': [float(np.percentile([s[m] for s in sample], q)) for q in (2.5, 97.5)]}
+                                                       for m in full}}
+
+
+def read_arm(spec):
+    """(name, {region id: reading}, the files read) of ``NAME=DIR[,DIR...][@CONDITION]``."""
+    name, _, rest = spec.partition('='); folders, _, condition = rest.partition('@'); readings, files = {}, []
+    require(name and folders, f'not NAME=DIR[,DIR...][@CONDITION]: {spec}')
+    for folder in folders.split(','):
+        files.append(Path(folder)/'predictions.jsonl')
+        for line in files[-1].read_text(encoding='utf-8').splitlines():
+            g = json.loads(line)
+            if condition and g['condition'] != condition:
+                continue
+            require(g['id'] not in readings, f'{name}: region {g["id"]} read twice (name the condition, or a fold is given twice)')
+            readings[g['id']] = g['text']
+    require(readings, f'{name}: no reading')
+    return name, readings, files
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument('--pack', type=Path, required=True); p.add_argument('--arm', action='append', required=True, help='NAME=DIR[,DIR...][@CONDITION]')
+    p.add_argument('--reference', required=True, help='the arm every other is paired with'); p.add_argument('--output', type=Path, required=True)
+    args = p.parse_args(argv)
+    require(not args.output.exists(), 'output exists')
+    rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
+    readable = {k: r.get('readable', True) for k, r in rows.items()}; writers = {k: r.get('writer') or r['line_id'].split('_')[0] for k, r in rows.items()}
+    arms, inputs = {}, {}
+    for spec in args.arm:
+        name, readings, files = read_arm(spec); require(name not in arms, f'arm {name} twice')
+        arms[name] = {k: v for k, v in readings.items() if k in rows}; inputs.update({str(f): digest(f) for f in files})
+    require(args.reference in arms, f'no arm {args.reference}')
+    scored = {name: {k: counts(rows[k]['text'], text) for k, text in readings.items() if readable[k]} for name, readings in arms.items()}
+    rng = np.random.default_rng(SEED); result = {}
+    for name in arms:
+        result[name] = {'regions': len(arms[name]), 'readable': len(scored[name]), **rates(list(scored[name].values())), 'refusal': refusal(arms[name], readable)}
+        if name != args.reference:
+            result[name]['against_reference'] = paired(scored[args.reference], scored[name], writers, rng)
+    write_json(args.output, {'reference': args.reference, 'arms': result, 'inputs': inputs})
+    for name, r in result.items():
+        a, f = r.get('against_reference'), r['refusal']
+        print(f"{name:28s} AR {100*r['ar']:6.1f} CR {100*r['cr']:5.1f} exact {100*r['exact']:5.1f} NED {100*r['ned']:5.1f} n={r['readable']}"
+              + (f" refuse P/R {100*(f['precision'] or 0):.0f}/{100*(f['recall'] or 0):.0f}" if f['unreadable'] else '')
+              + (f"  vs ref AR {100*a['ar']['difference']:+5.1f} ({100*a['ar']['interval'][0]:+.1f}, {100*a['ar']['interval'][1]:+.1f})"
+                 f" exact {100*a['exact']['difference']:+5.1f} ({100*a['exact']['interval'][0]:+.1f}, {100*a['exact']['interval'][1]:+.1f})" if a else '  (reference)'))
+
+
+if __name__ == '__main__':
+    main()

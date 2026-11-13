@@ -19,6 +19,15 @@ formulas, □ for what cannot be read, no solving or correcting -- and what a co
   boxed_marked     the same, the strike drawn red and said to be the strike
   from_pack        the words (and the system prompt) each row of the pack carries: ``prompt``, ``system`` (eval.revision_judgment)
 
+Conditions of one revision (a pack of ``data.struck_pack folds``: a row is a struck region; ``--backend hf``): the struck text is asked
+for, or ``[读不出]`` when it cannot be read.
+
+  raw_revision     the scan
+  erased_revision  the crop with the strike erased (said to be erased, perhaps not cleanly)
+  pair_revision    the scan and, as a second image, the erased crop, said to be a reference that may be wrong
+  mapped_revision  the scan; the row's layer map (``images.map``: which ink is the strike) goes into the patch embedding beside it
+                   (``models.vlm_tokens.patch_embed_with_layer_map``, the weights of ``--layer-map``)
+
 Token conditions (``--backend hf``, Qwen3-VL; ``models.vlm_tokens``) leave the image alone and hide visual tokens from the text, each
 token keeping its position:
 
@@ -54,6 +63,10 @@ OVERLAY = '图中的红色是已检测出的涂改位置，是辅助标记，不
 BOX = ('只转写蓝色框里学生原来写的内容，框外的内容不要输出。框里的字上可能有划线，也可能划线已经被去掉：有划线时，读出划线下面原来写的字，'
        '不要输出划线本身。')
 MARKED = '图中红色的笔画是划线（作废记号），不是学生写的字；黑色的笔画是学生写的字。'
+UNREADABLE = '[读不出]'
+ILLEGIBLE = f'被划掉的内容完全认不出时，只输出 {UNREADABLE}。'
+CLEANED = '图中原来被划线划掉的内容，划线已经被去掉（可能没有去干净，也可能擦掉了一部分字迹）。转写这部分原来写的内容。'
+PAIR = '第一张是原图；第二张是去掉划线后的参考图，参考图可能有错，以原图为准。'
 CONDITIONS = {
     'raw_neutral': ('raw', (), None),
     'raw_final': ('raw', (FINAL,), None),
@@ -67,12 +80,24 @@ CONDITIONS = {
     'boxed_read': ('raw', (BOX,), None),
     'boxed_marked': ('raw', (MARKED, BOX), None),
     'from_pack': ('raw', None, None),
+    'raw_revision': ('raw', (STRUCK, ILLEGIBLE), None),
+    'erased_revision': ('erased', (CLEANED, ILLEGIBLE), None),
+    'pair_revision': (('raw', 'erased'), (PAIR, STRUCK, ILLEGIBLE), None),
+    'mapped_revision': ('raw', (STRUCK, ILLEGIBLE), 'map'),
     'hide_band_neutral': ('raw', (), 'band'),
     'hide_ink_neutral': ('raw', (), 'ink'),
     'soft_band_neutral': ('raw', (), 'soft_band'),
     'blanked_hide_band_neutral': ('blanked', (), 'band'),
 }
-TOKEN_RULES = {c for c, (_, _, rule) in CONDITIONS.items() if rule}
+TOKEN_RULES = {c for c, (_, _, rule) in CONDITIONS.items() if rule and rule != 'map'}
+REVISION = {c for c in CONDITIONS if c.endswith('_revision')}
+MAPPED = {c for c, (_, _, rule) in CONDITIONS.items() if rule == 'map'}
+
+
+def image_keys(condition):
+    """The images of a condition, as the keys of a row's ``images``."""
+    keys = CONDITIONS[condition][0]
+    return (keys,) if isinstance(keys, str) else keys
 
 
 def hint_text(boxes):
@@ -125,9 +150,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     p.add_argument('--pack', type=Path, required=True)
     p.add_argument('--model', type=Path, required=True)
-    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | {'raw_struck', 'boxed_read', 'boxed_marked', 'from_pack'}])
+    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | REVISION | {'raw_struck', 'boxed_read', 'boxed_marked', 'from_pack'}])
     p.add_argument('--backend', choices=('vllm', 'hf'), default='vllm')
     p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
+    p.add_argument('--layer-map', type=Path, help='hf: the layer-map weights of train_reader --layer-map (mapped conditions)')
+    p.add_argument('--fold', type=int, help='only the rows of this fold of the pack (the writers a reader of train_reader --fold never trained on)')
     p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')
     p.add_argument('--gpu-memory', type=float, default=.90, help='vllm: share of each card the engine may take (lower it when others hold memory there)')
     p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
@@ -141,17 +168,19 @@ def main(argv=None):
     p.add_argument('--output-dir', type=Path, required=True)
     args = p.parse_args(argv)
     require(len(set(args.conditions)) == len(args.conditions), 'duplicate condition')
-    require(args.backend == 'hf' or not TOKEN_RULES & set(args.conditions), 'token conditions need --backend hf')
+    require(args.backend == 'hf' or not (TOKEN_RULES | REVISION) & set(args.conditions), 'token and revision conditions need --backend hf')
+    require(bool(args.layer_map) == bool(MAPPED & set(args.conditions)) and (not args.layer_map or set(args.conditions) <= MAPPED), 'mapped conditions, and only they, read with --layer-map')
     require(args.backend == 'hf' or not args.adapter, '--adapter needs --backend hf')
     require(args.backend == 'vllm' or 'from_pack' not in args.conditions, 'from_pack needs --backend vllm')
     pack = json.loads((args.pack/'pack.json').read_text())
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
-    rows = pack['rows'][:args.limit or None]
+    rows = [r for r in pack['rows'] if args.fold is None or r['fold'] == args.fold][:args.limit or None]
+    require(rows, 'no row to read')
     jobs = [(c, row) for c in args.conditions for row in rows]
     out = make_output_dir(args.output_dir)
     if args.backend == 'hf':
         from .models.vlm_tokens import Reader
-        reader = Reader(args.model, adapter=args.adapter)
+        reader = Reader(args.model, adapter=args.adapter, layer_map=args.layer_map)
     else:
         from vllm import LLM, SamplingParams
         model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=args.max_model_len, max_num_seqs=16, gpu_memory_utilization=args.gpu_memory,
@@ -159,26 +188,26 @@ def main(argv=None):
         sampling = SamplingParams(temperature=0, max_tokens=args.max_new_tokens, seed=SEED)
     write_manifest(out, config=to_jsonable(args), inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'),
                                                            **{str(w): digest(w) for w in sorted(args.model.glob('*.safetensors'))},
-                                                           **({str(w): digest(w) for w in sorted(args.adapter.glob('*.safetensors'))} if args.adapter else {})},
+                                                           **({str(w): digest(w) for w in sorted(args.adapter.glob('*.safetensors'))} if args.adapter else {}),
+                                                           **({str(args.layer_map): digest(args.layer_map)} if args.layer_map else {})},
                    backend=args.backend, rows=len(jobs), lines=len(rows),
-                   conditions={c: {'image': CONDITIONS[c][0], 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0])} for c in args.conditions},
+                   conditions={c: {'image': image_keys(c), 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0])} for c in args.conditions},
                    system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'dtype': 'bfloat16'})
     name = args.model.name+(f'+{args.adapter.parent.name}' if args.adapter else '')      # the reading of a model with an adapter is another model's
     started, done = time.monotonic(), 0
     with (out/'predictions.jsonl').open('x', encoding='utf-8') as stream:
         for start in range(0, len(jobs), args.batch_size):
             batch = jobs[start:start+args.batch_size]
-            images = []
-            for condition, row in batch:
-                with Image.open(args.pack/row['images'][CONDITIONS[condition][0]]) as opened:
-                    images.append(opened.convert('RGB'))
+            opened = lambda row, key: Image.open(args.pack/row['images'][key]).convert('RGB')
+            images = [[opened(row, key) for key in image_keys(condition)] for condition, row in batch]
             if args.backend == 'hf':
-                requests = [(image, prompt(c, row), hidden_flags(reader, CONDITIONS[c][2], row, image, args.pack, args) if CONDITIONS[c][2] else None,
-                             args.soft if CONDITIONS[c][2] == 'soft_band' else 0.) for (c, row), image in zip(batch, images)]
-                results = reader.read(requests, SYSTEM, args.max_new_tokens)
+                requests = [(shown if len(shown) > 1 else shown[0], prompt(c, row),
+                             hidden_flags(reader, CONDITIONS[c][2], row, shown[0], args.pack, args) if c in TOKEN_RULES else None,
+                             args.soft if CONDITIONS[c][2] == 'soft_band' else 0.) for (c, row), shown in zip(batch, images)]
+                results = reader.read(requests, SYSTEM, args.max_new_tokens, maps=[opened(row, 'map') for _, row in batch] if args.layer_map else None)
             else:
-                generated = model.chat([messages(image, prompt(c, row), row.get('system', SYSTEM) if c == 'from_pack' else SYSTEM)
-                                        for (c, row), image in zip(batch, images)], sampling, use_tqdm=False)
+                generated = model.chat([messages(shown[0], prompt(c, row), row.get('system', SYSTEM) if c == 'from_pack' else SYSTEM)
+                                        for (c, row), shown in zip(batch, images)], sampling, use_tqdm=False)
                 results = [{'text': g.outputs[0].text, 'tokens': len(g.outputs[0].token_ids), 'finish': g.outputs[0].finish_reason} for g in generated]
             require(len(results) == len(batch), 'missing generation results')
             for (condition, row), result in zip(batch, results):

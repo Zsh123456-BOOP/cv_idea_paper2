@@ -14,7 +14,11 @@ Seed 42; OUT/adapter is the adapter (``recognize_lines --backend hf --adapter OU
 
 ``--pack`` (in place of ``--corpus``) teaches on a line pack of real crops instead (``data.struck_pack train``: each row's ``images.raw``
 and its ``text``, rows of split ``val`` the validation), asked in the words of ``--condition`` (e.g. ``raw_struck``: read only what is
-struck out).
+struck out).  A pack of ``data.struck_pack folds`` is taught with ``--fold K``: the writers of fold K are left out altogether (they are
+read afterwards, ``recognize_lines --fold K``), the rows marked ``val`` among the rest are the validation, and the answer is the row's
+``target``.  The ``*_revision`` conditions show the images they name (``pair_revision`` two); ``mapped_revision`` needs
+``--layer-map``: the row's layer map goes in beside the scan through a projection of its own (``models.vlm_tokens``), taught at
+``--map-lr`` and saved as OUT/layer_map.pt.  ``--keep-best`` keeps the adapter of the lowest validation loss instead of the last.
 """
 import argparse
 import json
@@ -30,7 +34,7 @@ from . import pages as pages_module
 from .data import lines as lines_module
 from .data.line_pack import band_mask
 from .data.paste_strikes import compose
-from .recognize_lines import SYSTEM, prompt
+from .recognize_lines import MAPPED, SYSTEM, image_keys, prompt
 from .util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 EMPTY = '[空]'
@@ -85,17 +89,18 @@ class Samples:
 
 
 class PackSamples:
-    """The rows of a line pack: (its scan crop, its text)."""
+    """The rows of a line pack: (the images a condition shows, the text to give, the layer map of a mapped condition or None)."""
 
-    def __init__(self, root, rows):
-        self.root, self.rows = root, rows
+    def __init__(self, root, rows, keys=('raw',), mapped=False):
+        self.root, self.rows, self.keys, self.mapped = root, rows, keys, mapped
 
     def __len__(self):
         return len(self.rows)
 
     def __getitem__(self, i):
-        with Image.open(self.root/self.rows[i]['images']['raw']) as image:
-            return image.convert('RGB'), self.rows[i]['text']
+        row = self.rows[i]
+        opened = lambda key: Image.open(self.root/row['images'][key]).convert('RGB')
+        return [opened(key) for key in self.keys], row.get('target', row['text']), opened('map') if self.mapped else None
 
 
 class Collate:
@@ -106,11 +111,15 @@ class Collate:
         self.start = processor.tokenizer.convert_tokens_to_ids('<|im_start|>')
 
     def __call__(self, batch):
+        batch = [item if len(item) == 3 else ([item[0]], item[1], None) for item in batch]      # (images, text, layer map)
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': SYSTEM}]},
-                          {'role': 'user', 'content': [{'type': 'image', 'image': image}, {'type': 'text', 'text': self.words}]},
-                          {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for image, text in batch]
+                          {'role': 'user', 'content': [*({'type': 'image', 'image': image} for image in images), {'type': 'text', 'text': self.words}]},
+                          {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _ in batch]
         out = self.processor.apply_chat_template(conversations, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
         out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw')}
+        if batch[0][2] is not None:
+            from .models.vlm_tokens import with_layer_maps
+            out['pixel_values'] = with_layer_maps(out['pixel_values'], [layer for _, _, layer in batch], self.processor.image_processor)
         labels = out['input_ids'].clone()
         for b in range(labels.shape[0]):
             marks = (out['input_ids'][b] == self.start).nonzero().flatten()
@@ -120,16 +129,26 @@ class Collate:
         return out
 
 
-def lora_model(model_dir, rank, alpha, dropout):
+def lora_model(model_dir, rank, alpha, dropout, layer_map=False):
+    """The model with a low-rank adapter on the language model's linear layers; with ``layer_map`` also the (trainable, zero) projection
+    of a layer map into the patch embedding, added after the adapter froze everything else."""
     import torch
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForImageTextToText
-    from .models.vlm_tokens import patch_embed_as_linear
+    from .models.vlm_tokens import patch_embed_as_linear, patch_embed_with_layer_map
     model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa')
     patch_embed_as_linear(model.model.visual.patch_embed)
     config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias='none',
                         target_modules=r'.*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)')
-    return get_peft_model(model, config)
+    adapted = get_peft_model(model, config)
+    if layer_map:
+        patch_embed_with_layer_map(model.model.visual.patch_embed)
+    return adapted
+
+
+def layer_map_state(model):
+    """The layer-map projection's weights, as ``models.vlm_tokens.Reader`` loads them."""
+    return {name.rsplit('layer_map.', 1)[1]: q.detach().cpu() for name, q in model.named_parameters() if 'layer_map.' in name}
 
 
 def cycle(loader):
@@ -158,6 +177,10 @@ def main(argv=None):
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument('--corpus', type=Path); source.add_argument('--pack', type=Path, help='a line pack of real crops and their text (data.struck_pack)')
     p.add_argument('--condition', help='with --pack: the recognize_lines condition whose words ask (e.g. raw_struck)')
+    p.add_argument('--fold', type=int, help='with --pack: leave this fold of the pack out; the rows marked val among the rest validate')
+    p.add_argument('--layer-map', action='store_true', help='with a mapped condition: teach the projection of the layer map')
+    p.add_argument('--map-lr', type=float, default=1e-3, help='the learning rate of the layer-map projection (it starts at zero)')
+    p.add_argument('--keep-best', action='store_true', help='keep the adapter of the lowest validation loss, not the last')
     p.add_argument('--pages', type=Path, action='append', help='with --corpus: a folder of scans <image_id>.jpg (repeatable)')
     p.add_argument('--model', type=Path, required=True)
     p.add_argument('--kinds', nargs='+', choices=('clean', 'whole', 'paste', 'stack'), default=['clean', 'whole', 'paste', 'stack'])
@@ -181,8 +204,13 @@ def main(argv=None):
     from transformers import AutoProcessor
     if args.pack:
         require(args.condition is not None, '--pack needs --condition')
+        require(args.layer_map == (args.condition in MAPPED), 'a mapped condition, and only it, is taught with --layer-map')
         pack_rows = json.loads((args.pack/'pack.json').read_text())['rows']
-        train_rows, val_rows = [r for r in pack_rows if r['split'] == 'train'], [r for r in pack_rows if r['split'] == 'val'][:args.val_limit]
+        if args.fold is not None:
+            rest = [r for r in pack_rows if r['fold'] != args.fold]
+            train_rows, val_rows = [r for r in rest if not r['val']], [r for r in rest if r['val']][:args.val_limit]
+        else:
+            train_rows, val_rows = [r for r in pack_rows if r['split'] == 'train'], [r for r in pack_rows if r['split'] == 'val'][:args.val_limit]
     else:
         require(args.pages, '--corpus needs --pages')
         train_rows, val_rows = read_rows(args.corpus, args.kinds, 'train'), read_rows(args.corpus, args.kinds, 'val')[:args.val_limit]
@@ -196,7 +224,8 @@ def main(argv=None):
     processor.tokenizer.padding_side = 'right'
     if args.pack:
         collate = Collate(processor, prompt(args.condition, {'boxes': []}))
-        train_set, val_set = PackSamples(args.pack, train_rows), PackSamples(args.pack, val_rows)
+        shown = image_keys(args.condition), args.condition in MAPPED
+        train_set, val_set = PackSamples(args.pack, train_rows, *shown), PackSamples(args.pack, val_rows, *shown)
     else:
         crops = Crops(args.pages, read_rows(args.corpus))
         collate = Collate(processor, prompt('raw_final' if args.words == 'final' else 'raw_neutral', {'boxes': []}))
@@ -205,22 +234,29 @@ def main(argv=None):
     loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=args.workers,
                                          generator=generator, drop_last=True, persistent_workers=args.workers > 0)
     val_loader = torch.utils.data.DataLoader(val_set, batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
-    model = lora_model(args.model, args.rank, args.alpha, args.dropout).to('cuda')
+    model = lora_model(args.model, args.rank, args.alpha, args.dropout, args.layer_map).to('cuda')
     if args.checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
         model.enable_input_require_grads()
     model.train()
     params = [q for q in model.parameters() if q.requires_grad]
-    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0., betas=(.9, .999))
+    layer = [q for name, q in model.named_parameters() if q.requires_grad and 'layer_map.' in name]
+    groups = [{'params': [q for q in params if all(q is not m for m in layer)], 'base': args.lr}, *([{'params': layer, 'base': args.map_lr}] if layer else [])]
+    optimizer = torch.optim.AdamW(groups, lr=args.lr, weight_decay=0., betas=(.9, .999))
     schedule = lambda step: min(1., (step+1)/args.warmup)*(.1+.9*.5*(1+math.cos(math.pi*step/args.steps)))
     source = args.pack/'pack.json' if args.pack else args.corpus
     write_manifest(out, config=to_jsonable(args), inputs={str(source): digest(source)}, train_recipes=len(train_rows), val_recipes=len(val_rows),
                    trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds)
     stream = (out/'train_log.jsonl').open('x', encoding='utf-8')
-    started, iterator = time.monotonic(), cycle(loader)
+    started, iterator, kept = time.monotonic(), cycle(loader), (math.inf, None)
+
+    def save():
+        model.save_pretrained(out/'adapter')
+        if args.layer_map:
+            torch.save(layer_map_state(model), out/'layer_map.pt')
     for step in range(args.steps):
         for group in optimizer.param_groups:
-            group['lr'] = args.lr*schedule(step)
+            group['lr'] = group['base']*schedule(step)
         total, tokens = 0., 0
         for _ in range(args.accumulate):
             batch = {k: v.to('cuda') for k, v in next(iterator).items()}
@@ -234,12 +270,17 @@ def main(argv=None):
         row = {'step': step+1, 'loss': total/args.accumulate, 'lr': optimizer.param_groups[0]['lr'], 'seconds': round(time.monotonic()-started, 1)}
         if val_loader is not None and ((step+1) % args.eval_every == 0 or step+1 == args.steps):
             row['val_loss'] = evaluate(model, val_loader, 'cuda')
+            if args.keep_best and row['val_loss'] < kept[0]:
+                kept = (row['val_loss'], step+1)
+                save()
         stream.write(json.dumps(row)+'\n')
         stream.flush()
         print(json.dumps(row), flush=True)
-    model.save_pretrained(out/'adapter')
+    if kept[1] is None:
+        save()
     stream.close()
-    write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'final_loss': row['loss'], 'final_val_loss': row.get('val_loss')})
+    write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'final_loss': row['loss'], 'final_val_loss': row.get('val_loss'),
+                                     'kept_step': kept[1] or args.steps, 'kept_val_loss': kept[0] if kept[1] else row.get('val_loss')})
     return 0
 
 
