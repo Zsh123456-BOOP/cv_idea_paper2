@@ -96,11 +96,15 @@ def patch_embed_with_layer_map(embed):
 
 
 def with_layer_maps(pixel_values, maps, image_processor):
-    """The scans' patches with their layer maps' beside them: the maps go through the same image processor, so they are cut alike."""
+    """The scans' patches with their layer maps' beside them: the maps go through the same image processor, so they are cut alike, and
+    its normalisation is taken off again -- a map is 0 where it says nothing and 1 on the strike, so a patch without strike adds
+    nothing to its embedding whatever the projection has become."""
     import torch
     layers = image_processor(images=maps, return_tensors='pt')['pixel_values']
     if layers.shape != pixel_values.shape:
         raise ValueError(f'layer maps cut to {tuple(layers.shape)}, scans to {tuple(pixel_values.shape)}: a map must have the size of its scan')
+    spread = lambda values: torch.tensor(values, dtype=layers.dtype).repeat_interleave(layers.shape[1]//len(values))     # a patch is laid out channel first
+    layers = layers*spread(image_processor.image_std)+spread(image_processor.image_mean)
     return torch.cat([pixel_values, layers.to(pixel_values.dtype)], dim=1)
 
 

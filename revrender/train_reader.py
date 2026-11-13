@@ -179,7 +179,8 @@ def main(argv=None):
     p.add_argument('--condition', help='with --pack: the recognize_lines condition whose words ask (e.g. raw_struck)')
     p.add_argument('--fold', type=int, help='with --pack: leave this fold of the pack out; the rows marked val among the rest validate')
     p.add_argument('--layer-map', action='store_true', help='with a mapped condition: teach the projection of the layer map')
-    p.add_argument('--map-lr', type=float, default=1e-3, help='the learning rate of the layer-map projection (it starts at zero)')
+    p.add_argument('--map-lr', type=float, default=2e-5, help='the learning rate of the layer-map projection: Adam moves each of a patch\'s '
+                   '1,536 weights by about this a step, so a patch with strike in it shifts by this times its strike pixels (1e-3 wrecked the image in two steps)')
     p.add_argument('--keep-best', action='store_true', help='keep the adapter of the lowest validation loss, not the last')
     p.add_argument('--pages', type=Path, action='append', help='with --corpus: a folder of scans <image_id>.jpg (repeatable)')
     p.add_argument('--model', type=Path, required=True)

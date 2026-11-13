@@ -5,7 +5,7 @@
 #  1. data.struck_pack folds: the confirmed regions outside the test page, five folds of writers; each region's scan, erased crop and
 #     layer map come from the annotator's own pixels -- the best a separator could give, so this trial asks whether the condition can
 #     help at all before a separator is trained fold by fold.
-#  2. smoke: two steps of the mapped reader on fold 0, its projection no longer zero, four regions read with it.
+#  2. smoke: two steps of the mapped reader on fold 0, its projection no longer zero, eight regions read with it and not all alike.
 #  3. per fold and arm -- raw (the scan), erased (the erased crop), pair (both, two images), mapped (the scan and the layer map into the
 #     patch embedding) -- train_reader --fold K --keep-best, then recognize_lines --fold K on the writers it never saw.
 #  4. the untaught 8B reads every region from the scan and from the erased crop.
@@ -59,7 +59,8 @@ if ! done_ smoke; then
     smoke_job() {   # CARD NUMA
         job "$1" "$2" "$R/smoke_reader" -- $(teach "$R/smoke_reader" mapped 0 --steps 2 --eval-every 1 --warmup 1)
         "$PY" -c "import sys, torch; w = torch.load(sys.argv[1])['weight']; assert float(w.abs().max()) > 0, 'the layer map was not taught'; print('layer map', tuple(w.shape), float(w.abs().max()))" "$R/smoke_reader/layer_map.pt"
-        job "$1" "$2" "$R/smoke_read" -- $(read_with "$R/smoke_read" mapped "$R/smoke_reader" --fold 0 --limit 4)
+        job "$1" "$2" "$R/smoke_read" -- $(read_with "$R/smoke_read" mapped "$R/smoke_reader" --fold 0 --limit 8)
+        "$PY" -c "import json, sys; texts = {json.loads(l)['text'] for l in open(sys.argv[1])}; assert len(texts) > 2, f'eight regions read as {texts}: the reader no longer sees the image'" "$R/smoke_read/predictions.jsonl"
     }
     alone smoke_job; wait; test -e "$R/smoke_read/complete.json"; mark smoke; fi
 arm_job() {   # CARD NUMA ARM FOLD: teach, then read the fold left out

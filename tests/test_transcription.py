@@ -59,8 +59,8 @@ def test_layered_images_of_a_region():
     scan, erased, layer = struck_pack.layered(Image.fromarray(grey), row)
     assert scan.size == erased.size == layer.size == (71, 32)                     # the box and six pixels, inside the page
     s, e, m = np.asarray(scan), np.asarray(erased), np.asarray(layer)
-    assert (e[m[..., 0] > 0] == 255).all() and (e[m[..., 0] == 0] == s[m[..., 0] == 0]).all() and m[..., 0].sum() == 255*2*55
-    assert m[..., 1].sum() == 255*20*60 and not m[..., 2].any()
+    assert layer.mode == 'L' and set(np.unique(m)) == {0, 255} and (m > 0).sum() == 2*55
+    assert (e[m > 0] == 255).all() and (e[m == 0] == s[m == 0]).all()
 
 
 def test_revision_conditions():
