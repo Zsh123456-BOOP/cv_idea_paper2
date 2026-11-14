@@ -1,5 +1,7 @@
 # revrender
 
+> 第一次来先读 [`OVERVIEW.md`](OVERVIEW.md)：课题、数据、评测、试过什么、现在卡在哪。
+
 ## 恢复模型统一评测（2026-10-22 起为验证集版）
 
 入口 `GPU_A=… GPU_B=… scripts/eval_unified_restoration.sh NEW_OUT`（默认 1、2 号卡），候选列表在 `configs/unified_restoration.json`：我们的纯合成版（框内 step10500）、201 处真实微调版（step600）和七个恢复基线，都是去掉同门数据后重跑的 `paper2_clean_*`，权重开始时冻结哈希，不重训、不选版。
