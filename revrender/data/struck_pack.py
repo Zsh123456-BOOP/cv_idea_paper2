@@ -29,7 +29,7 @@ region.
 ``counterfactual``: a separated pack again with each region's evidence taken apart by the annotator's own strike pixels (the folds
 pack's ``map``), for a reader taught what a change of the evidence should change (``train_reader --counterfactual``) and tested on it
 (``recognize_lines --intervention``): ``raw_strike_off``, the scan without the strike (the struck writing still there);
-``raw_writing_off``, the scan without any ink but the strike (nothing left to read), and ``erased_writing_off``, what the separator's
+``raw_writing_off``, the strike pixels alone on white (nothing left to read), and ``erased_writing_off``, what the separator's
 map leaves of that.  The text is student work: OUT stays out of Git.
 """
 import argparse
@@ -196,10 +196,10 @@ def separated_pack(args):
 
 def intervened(scan, strike, share):
     """(strike off, writing off, what the separator leaves of that) of a scan (grey uint8), by the annotator's strike pixels (bool)
-    and the separator's map (uint8): the scan with the strike white; with every ink pixel but the strike white; and that one lightened
-    by the map."""
-    strike_off, writing_off = scan.copy(), scan.copy()
-    strike_off[strike] = 255; writing_off[(scan < INK) & ~strike] = 255
+    and the separator's map (uint8): the scan with the strike white; with everything but the strike white (not the ink alone: the pale
+    rim of the writing would still show what was written); and that one lightened by the map."""
+    strike_off = scan.copy(); strike_off[strike] = 255
+    writing_off = np.where(strike, scan, 255).astype(np.uint8)
     return strike_off, writing_off, lightened(writing_off, share, 1)
 
 
