@@ -156,7 +156,7 @@ class Reader:
         tokens (or None), ``soft`` 0 to remove the hidden tokens from every attention or a positive bias subtracted from their attention
         logits; ``maps`` the layer map of each job's first image (a reader made with ``layer_map``).  ``loop_limit``: a reading that
         ends in one block written that many times (``looped``) stops there and keeps the block once (finish ``loop``; 0: never).  A list
-        of dicts (text, tokens, finish)."""
+        of dicts (text, tokens, confidence -- the geometric mean of the written tokens' probabilities --, finish)."""
         torch = self.torch
         shown = lambda image: [{'type': 'image', 'image': one} for one in (image if isinstance(image, (list, tuple)) else [image])]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': system}]},
@@ -181,16 +181,16 @@ class Reader:
                              use_cache=True, cache_position=torch.arange(length, device=self.device), logits_to_keep=1)
             keys = torch.from_numpy(bias).to(self.device, dtype)
             last = positions.amax(dim=(0, 2))                                  # the last position each row used
-            written, done, loops = [[] for _ in jobs], [False]*len(jobs), set()
+            written, done, loops, logged = [[] for _ in jobs], [False]*len(jobs), set(), [[] for _ in jobs]
             for step in range(max_new_tokens):
-                token = out.logits[:, -1].float().argmax(-1)
+                chances = out.logits[:, -1].float().log_softmax(-1); token = chances.argmax(-1); chance = chances.gather(1, token[:, None])[:, 0].tolist()
                 for b, t in enumerate(token.tolist()):
                     if not done[b]:
-                        written[b].append(t)
+                        written[b].append(t); logged[b].append(chance[b])
                         done[b] = t in self.stop
                         cut = looped(written[b], loop_limit) if loop_limit and not done[b] else 0
                         if cut:
-                            del written[b][-cut:]
+                            del written[b][-cut:], logged[b][-cut:]
                             done[b] = True
                             loops.add(b)
                 if all(done) or step == max_new_tokens-1:
@@ -200,4 +200,5 @@ class Reader:
                 out = self.model(input_ids=token.view(-1, 1), attention_mask=keys.view(len(jobs), 1, 1, -1), position_ids=position, past_key_values=cache,
                                  use_cache=True, cache_position=torch.tensor([length+step], device=self.device))
         return [{'text': self.processor.tokenizer.decode([t for t in w if t not in self.stop], skip_special_tokens=True), 'tokens': len(w),
+                 'confidence': float(np.exp(np.mean(logged[b]))) if logged[b] else 0.,
                  'finish': 'loop' if b in loops else 'stop' if w and w[-1] in self.stop else 'length'} for b, w in enumerate(written)]

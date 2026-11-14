@@ -28,8 +28,11 @@ for, or ``[读不出]`` when it cannot be read.
   mapped_revision  the scan; the row's layer map (``images.map``: which ink is the strike) goes into the patch embedding beside it
                    (``models.vlm_tokens.patch_embed_with_layer_map``, the weights of ``--layer-map``)
   pair_mapped_revision  the pair, and the layer map into the scan's patch embedding as well
-  bracket_revision      the scan and two erased crops, one that takes little away and one that takes much (``images.mild``, ``.strong``)
   context_revision      the pair and, as a third image, the line the region stands in, the region boxed in blue (``images.context``)
+
+``--intervention strike_off | writing_off`` (a pack of ``data.struck_pack counterfactual``) reads the rows with their strike, or their
+struck writing, taken off the images (``INTERVENED``): what a reader that reads from the evidence should keep reading, and should no
+longer read.  With ``--backend hf`` every reading carries its ``confidence``, the geometric mean of the probabilities of its tokens.
 
 Token conditions (``--backend hf``, Qwen3-VL; ``models.vlm_tokens``) leave the image alone and hide visual tokens from the text, each
 token keeping its position:
@@ -70,7 +73,6 @@ UNREADABLE = '[读不出]'
 ILLEGIBLE = f'被划掉的内容完全认不出时，只输出 {UNREADABLE}。'
 CLEANED = '图中原来被划线划掉的内容，划线已经被去掉（可能没有去干净，也可能擦掉了一部分字迹）。转写这部分原来写的内容。'
 PAIR = '第一张是原图；第二张是去掉划线后的参考图，参考图可能有错，以原图为准。'
-BRACKET = '第一张是原图；后两张是去掉划线后的参考图：第二张擦得少，可能还留着划线；第三张擦得多，可能擦掉了字。参考图都可能有错，以原图为准。'
 CONTEXT = '第三张是这一处所在的那一行，蓝色框标出的就是这一处（框里是去掉划线后的样子）。只转写蓝色框里原来被划掉的内容，框外的内容不要输出，也不要照抄框外写的字。'
 CONDITIONS = {
     'raw_neutral': ('raw', (), None),
@@ -90,7 +92,6 @@ CONDITIONS = {
     'pair_revision': (('raw', 'erased'), (PAIR, STRUCK, ILLEGIBLE), None),
     'mapped_revision': ('raw', (STRUCK, ILLEGIBLE), 'map'),
     'pair_mapped_revision': (('raw', 'erased'), (PAIR, STRUCK, ILLEGIBLE), 'map'),
-    'bracket_revision': (('raw', 'mild', 'strong'), (BRACKET, STRUCK, ILLEGIBLE), None),
     'context_revision': (('raw', 'erased', 'context'), (PAIR, CONTEXT, STRUCK, ILLEGIBLE), None),
     'hide_band_neutral': ('raw', (), 'band'),
     'hide_ink_neutral': ('raw', (), 'ink'),
@@ -100,6 +101,8 @@ CONDITIONS = {
 TOKEN_RULES = {c for c, (_, _, rule) in CONDITIONS.items() if rule and rule != 'map'}
 REVISION = {c for c in CONDITIONS if c.endswith('_revision')}
 MAPPED = {c for c, (_, _, rule) in CONDITIONS.items() if rule == 'map'}
+# an intervention on the evidence: the image that stands in for each image of a row
+INTERVENED = {'strike_off': {'raw': 'raw_strike_off'}, 'writing_off': {'raw': 'raw_writing_off', 'erased': 'erased_writing_off'}}
 
 
 def image_keys(condition):
@@ -163,7 +166,7 @@ def main(argv=None):
     p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
     p.add_argument('--layer-map', type=Path, help='hf: the layer-map weights of train_reader --layer-map (mapped conditions)')
     p.add_argument('--fold', type=int, help='only the rows of this fold of the pack (the writers a reader of train_reader --fold never trained on)')
-    p.add_argument('--erased', type=Path, help="a folder of erased crops (<the row's place in the pack>.png; train_reader --separator's OUT/hints) in place of the pack's")
+    p.add_argument('--intervention', choices=tuple(INTERVENED), help='read the rows with their strike, or their struck writing, taken off (a counterfactual pack)')
     p.add_argument('--tp', type=int, default=1, help='vllm: tensor parallel size (the 32B model needs two cards)')
     p.add_argument('--gpu-memory', type=float, default=.90, help='vllm: share of each card the engine may take (lower it when others hold memory there)')
     p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
@@ -184,7 +187,6 @@ def main(argv=None):
     require(args.backend == 'vllm' or 'from_pack' not in args.conditions, 'from_pack needs --backend vllm')
     pack = json.loads((args.pack/'pack.json').read_text())
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
-    places = {r['id']: i for i, r in enumerate(pack['rows'])}
     rows = [r for r in pack['rows'] if args.fold is None or r['fold'] == args.fold][:args.limit or None]
     require(rows, 'no row to read')
     jobs = [(c, row) for c in args.conditions for row in rows]
@@ -209,7 +211,8 @@ def main(argv=None):
     with (out/'predictions.jsonl').open('x', encoding='utf-8') as stream:
         for start in range(0, len(jobs), args.batch_size):
             batch = jobs[start:start+args.batch_size]
-            opened = lambda row, key: Image.open(args.erased/f"{places[row['id']]:05d}.png" if key == 'erased' and args.erased else args.pack/row['images'][key]).convert('RGB')
+            swap = INTERVENED.get(args.intervention, {})
+            opened = lambda row, key: Image.open(args.pack/row['images'][swap.get(key, key)]).convert('RGB')
             images = [[opened(row, key) for key in image_keys(condition)] for condition, row in batch]
             if args.backend == 'hf':
                 requests = [(shown if len(shown) > 1 else shown[0], prompt(c, row),
@@ -223,7 +226,7 @@ def main(argv=None):
                 results = [{'text': g.outputs[0].text, 'tokens': len(g.outputs[0].token_ids), 'finish': g.outputs[0].finish_reason} for g in generated]
             require(len(results) == len(batch), 'missing generation results')
             for (condition, row), result in zip(batch, results):
-                stream.write(json.dumps({'condition': condition, 'id': row['id'], 'line_id': row['line_id'], 'model': name, 'text': reading_of(result['text']),
+                stream.write(json.dumps({'condition': condition, 'id': row['id'], 'line_id': row['line_id'], 'model': name, 'text': reading_of(result['text']), **({'confidence': result['confidence']} if 'confidence' in result else {}),
                                          'raw': result['text'], 'generated_tokens': result['tokens'], 'finish_reason': result['finish']}, ensure_ascii=False)+'\n')
             stream.flush()
             done += len(batch)

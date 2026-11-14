@@ -22,12 +22,12 @@
 #  The rule, written before any reading: the layer reader stands when the mapped reader beats each of those three by more than 3 points
 #  of AR with its writer interval above 0, exact not lower.
 # PART=views (after the separator part; the user's two questions and the first block of the design of 2026-11-13, each against the pair):
-#  1. data.struck_pack views: the separated pack with a mild and a strong erasing of each region and the line it stands in.
+#  1. data.struck_pack views: the separated pack with the line each region stands in.
 #  2. smoke: two steps and eight regions of each new reader.
-#  3. three readers, five folds each: context (the pair and the line, the region boxed), pair_mapped (the pair and the layer map into
-#     the scan's patch embedding), bracket (the scan with the mild and the strong erasing).
+#  3. two readers, five folds each: context (the pair and the line, the region boxed), pair_mapped (the pair and the layer map into
+#     the scan's patch embedding).
 #  4. eval.transcription, the reference the pair's reader of the separator part.
-#  The rule, written before any reading, for each of the three: it adds to the method when it beats the pair by more than 3 points of AR
+#  The rule, written before any reading, for each of the two: it adds to the method when it beats the pair by more than 3 points of AR
 #  with its writer interval above 0, exact and NED no worse.
 # PART=distilled (after the views part; does a better separator read better?  the second step of the design):
 #  1. fold sets again, each with what its fold keeps apart; three teachers a fold (NAFNet, DE-GAN, COR-Generator from their chosen
@@ -38,17 +38,17 @@
 #  4. --agreement: do the readings with and without the line differing mark the errors (the fourth block of the design)?
 #  The rule, written before any reading: the separator is worth more work when the pair's reader on the students' crops beats the pair's
 #  reader on the plain separators' by more than 3 points of AR with its writer interval above 0, exact and NED no worse.
-# PART=joint (after the distilled part; the second block of the design: the separator taught by the reading):
-#  1. models.hint_separator: its cut of an image into patches is the reader's image processor's; a two-step smoke in which it learns.
-#  2. per fold, two pair readers whose erased crop the fold's student makes while they train: learned (from step 40 the student learns
-#     from the loss on the reading, anchored to the crops a person erased) and frozen (it never does); each reads its fold with the
-#     hints its separator ends with.
-#  3. transfer: a fresh pair reader taught on the learned separator's hints -- do they help a reader that did not shape them?
-#  4. eval.transcription, the reference the frozen arm.
-#  The rule, written before any reading: the reading may teach the separator when the learned arm beats the frozen one by more than 3
-#  points of AR with its writer interval above 0, exact and NED no worse, and the fresh reader keeps at least half of that gain.
-# PART=reread (after all of the above): every reader's folds read again with --loop-limit 4 -- a reading caught in a loop stops and keeps
-#  the block once -- and scored again: one or two such readings moved AR by 7 to 18 points in the parts above.
+# PART=evidence (after the distilled part; the plan of 2026-11-14, two lines on the students' crops, loops stopped in every reading):
+#  1. data.struck_pack counterfactual: each region's evidence taken apart by the annotator's strike pixels (strike off; writing off).
+#  2. per fold two readers: the counterfactual pair reader (train_reader --counterfactual: a strike taken off changes nothing, the
+#     struck writing taken off leaves nothing to read) and a reader of the erased crop alone; then the fold read by the scan's reader,
+#     the erased crop's, the pair's and the counterfactual one, and by the last two with the strike and with the writing taken off.
+#  3. eval.transcription; router (critics of each source's reading, the most trusted one given) over scan / erased / pair, and with
+#     the counterfactual reader as a fourth source.
+#  The rules, written before any reading.  The counterfactual reader stands when it beats the pair by more than 3 points of AR with its
+#  writer interval above 0, exact and NED no worse, and, the struck writing gone, refuses at least twice as often as the pair's reader.
+#  The router stands when its readings beat the pair's by more than 3 points of AR with the writer interval above 0, exact no worse, and
+#  its area under the risk-coverage curve is below the pair's by its own confidence.
 # Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
 # are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
@@ -61,7 +61,8 @@ PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
 SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; joint) echo JOINT_FAILED ;; *) echo REREAD_FAILED ;; esac; }
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
+CF=${N}_revision_folds_counterfactual
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
 exec 8>"$R/$([ "$PART" = human ] && echo lock || echo "$PART.lock")"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
@@ -174,7 +175,7 @@ if ! done_ views_pack; then
     [ -e "$VIEWS/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack views --pack "$SEP" --sets "$SETS" --dataset "$DATA/regions.json" --pages "$DATA/pages" \
         --pages "$O/paper2_full_review20261010/images" --hold-out test-page --output-dir "$VIEWS" > "$R/views_pack.log" 2>&1
     mark views_pack; fi
-PACK=$VIEWS; TAG=views_; NEW=(context pair_mapped bracket)
+PACK=$VIEWS; TAG=views_; NEW=(context pair_mapped)
 if ! done_ views_smoke; then
     views_smoke_job() {   # CARD NUMA: two steps and eight regions of each new reader
         local arm
@@ -190,7 +191,7 @@ if ! done_ views_arms; then
     wait; for arm in "${NEW[@]}"; do for k in 0 1 2 3 4; do test -e "$R/read_views_${arm}_f$k/complete.json"; done; done
     mark views_arms; fi
 done_ views_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" --arm "taught_pair=$(folds_of sep_pair)" --arm "taught_scan=$(folds_of raw)" \
-    --arm "context=$(folds_of views_context)" --arm "pair_mapped=$(folds_of views_pair_mapped)" --arm "bracket=$(folds_of views_bracket)" \
+    --arm "context=$(folds_of views_context)" --arm "pair_mapped=$(folds_of views_pair_mapped)" \
     --reference taught_pair --output "$R/scores_views.json" > "$R/views_score.log" 2>&1; mark views_score; }
 touch "$R/VIEWS_COMPLETE"; stamp 'views part complete'; exit 0; fi
 
@@ -260,81 +261,44 @@ done_ distilled_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" 
     --output "$R/scores_distilled.json" > "$R/distilled_score.log" 2>&1; mark distilled_score; }
 touch "$R/DISTILLED_COMPLETE"; stamp 'distilled part complete'; exit 0; fi
 
-if [ "$PART" = reread ]; then test -e "$R/JOINT_COMPLETE"
+test "$PART" = evidence; test -e "$R/DISTILLED_COMPLETE"
 HUMAN=$PACK; cards "${CARDS:-1}"
-reread_arm() {   # NAME ARM PACK [hints of the fold's reader named so]: the five folds read again by the readers NAME, in the words of ARM
-    local name="$1" arm="$2" k more; PACK="$3"
-    for k in 0 1 2 3 4; do
-        more=(); [ -z "${4:-}" ] || more=(--erased "${N}_revision_reader_$4_f$k/hints")
-        [ -e "$R/reread_${name}_f$k/complete.json" ] || job "$CARD_" "$NUMA_" "$R/reread_${name}_f$k" -- $(read_with "$R/reread_${name}_f$k" "$arm" "${N}_revision_reader_${name}_f$k" \
-            --fold "$k" --loop-limit 4 ${more[@]+"${more[@]}"})
+if ! done_ evidence_pack; then
+    [ -e "$CF/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack counterfactual --pack "$DISTILLED" --human "$HUMAN" --output-dir "$CF" > "$R/evidence_pack.log" 2>&1
+    mark evidence_pack; fi
+PACK=$CF
+taught() {   # NAME ARM FOLD [more of train_reader]: the fold's reader NAME, taught in the words of ARM
+    local name="$1" arm="$2" k="$3"; shift 3; local reader="${N}_revision_reader_${name}_f$k"
+    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" "$arm" "$k" "$@")
+}
+read_by() {   # OUT NAME ARM FOLD [more of recognize_lines]: the fold read by the reader NAME, loops stopped
+    local out="$R/evidence_$1_f$4" name="$2" arm="$3" k="$4"; shift 4
+    [ -e "$out/complete.json" ] || job "$CARD_" "$NUMA_" "$out" -- $(read_with "$out" "$arm" "${N}_revision_reader_${name}_f$k" --fold "$k" --loop-limit 4 "$@")
+}
+evidence_fold() {   # FOLD: its two readers, then every reading of the fold
+    local k="$1" how
+    taught counterfactual_pair pair "$k" --counterfactual .2 .15; taught distilled_erased erased "$k"
+    read_by scan raw raw "$k"; read_by erased distilled_erased erased "$k"; read_by pair distilled_pair pair "$k"; read_by counterfactual counterfactual_pair pair "$k"
+    for how in strike_off writing_off; do
+        read_by "pair_$how" distilled_pair pair "$k" --intervention "$how"; read_by "counterfactual_$how" counterfactual_pair pair "$k" --intervention "$how"
     done
 }
-untaught_again() {   # NAME PACK CONDITION...
-    local out="$R/reread_$1"; [ -e "$out/complete.json" ] || job "$CARD_" "$NUMA_" "$out" -- "$PY" -m revrender.recognize_lines --pack "$2" --model "$MODEL" --backend hf \
-        --batch-size 8 --loop-limit 4 --conditions "${@:3}" --output-dir "$out"
-}
-if ! done_ reread; then
-    alone on_card reread_arm raw raw "$HUMAN"; alone on_card reread_arm sep_pair pair "$SEP"; alone on_card reread_arm distilled_pair pair "$DISTILLED"
-    alone on_card reread_arm pair pair "$HUMAN"; alone on_card reread_arm erased erased "$HUMAN"; alone on_card reread_arm mapped mapped "$HUMAN"
-    alone on_card reread_arm sep_erased erased "$SEP"; alone on_card reread_arm sep_mapped mapped "$SEP"
-    alone on_card reread_arm views_context context "$VIEWS"; alone on_card reread_arm views_pair_mapped pair_mapped "$VIEWS"; alone on_card reread_arm views_bracket bracket "$VIEWS"
-    alone on_card reread_arm joint_frozen pair "$DISTILLED" joint_frozen; alone on_card reread_arm joint_learned pair "$DISTILLED" joint_learned
-    alone on_card reread_arm joint_transfer pair "$DISTILLED" joint_learned
-    alone on_card untaught_again untaught "$HUMAN" raw_revision erased_revision; alone on_card untaught_again sep_untaught "$SEP" erased_revision
-    alone on_card untaught_again distilled_untaught "$DISTILLED" erased_revision
-    wait; for name in raw sep_pair distilled_pair pair erased mapped sep_erased sep_mapped views_context views_pair_mapped views_bracket joint_frozen joint_learned joint_transfer; do
-        for k in 0 1 2 3 4; do test -e "$R/reread_${name}_f$k/complete.json"; done; done
-    for name in untaught sep_untaught distilled_untaught; do test -e "$R/reread_$name/complete.json"; done
-    mark reread; fi
-again() { local a="$1" k s=; for k in 0 1 2 3 4; do s+="${s:+,}$R/reread_${a}_f$k"; done; echo "$s"; }
-if ! done_ reread_score; then
-    for reference in taught_scan taught_pair joint_frozen; do
-        [ -e "$R/scores_reread_vs_$reference.json" ] || "$PY" -m revrender.eval.transcription --pack "$DISTILLED" --arm "untaught_scan=$R/reread_untaught@raw_revision" \
-            --arm "erase_then_read=$R/reread_sep_untaught" --arm "distilled_erase_then_read=$R/reread_distilled_untaught" --arm "taught_scan=$(again raw)" \
-            --arm "taught_erased=$(again sep_erased)" --arm "taught_mapped=$(again sep_mapped)" --arm "taught_pair=$(again sep_pair)" --arm "context=$(again views_context)" \
-            --arm "pair_mapped=$(again views_pair_mapped)" --arm "bracket=$(again views_bracket)" --arm "distilled_pair=$(again distilled_pair)" \
-            --arm "joint_frozen=$(again joint_frozen)" --arm "joint_learned=$(again joint_learned)" --arm "joint_transfer=$(again joint_transfer)" \
-            --arm "human_erased=$(again erased)" --arm "human_mapped=$(again mapped)" --arm "human_pair=$(again pair)" --arm "human_erase_then_read=$R/reread_untaught@erased_revision" \
-            --reference "$reference" --agreement context=taught_pair --output "$R/scores_reread_vs_$reference.json" > "$R/reread_score_$reference.log" 2>&1
-    done; mark reread_score; fi
-touch "$R/REREAD_COMPLETE"; stamp 'reread part complete'; exit 0; fi
-
-test "$PART" = joint
-until [ -e "$R/DISTILLED_COMPLETE" ]; do [ ! -e "$R/DISTILLED_FAILED" ] || { echo 'the distilled part failed'; exit 1; }; sleep 60; done      # one card, and its students
-cards "${CARDS:-1}"; HUMAN=$PACK; PACK=$DISTILLED
-joint_job() {   # KIND FOLD [more of train_reader]: a pair reader whose separator learns from the reading (learned) or never does (frozen), then its fold read with that separator's hints
-    local kind="$1" k="$2"; shift 2; local reader="${N}_revision_reader_joint_${kind}_f$k" reading="$R/read_joint_${kind}_f$k" lr=()
-    [ "$kind" != frozen ] || lr=(--separator-lr 0)
-    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" pair "$k" --separator "${N}_revision_distilled_f$k" --upstream "$UP" \
-        --anchor-pack "$HUMAN" ${lr[@]+"${lr[@]}"} "$@")
-    [ -e "$reading/complete.json" ] || job "$CARD_" "$NUMA_" "$reading" -- $(read_with "$reading" pair "$reader" --fold "$k" --erased "$reader/hints")
-}
-transfer_job() {   # FOLD: a fresh pair reader taught on the learned separator's hints
-    local reader="${N}_revision_reader_joint_transfer_f$1" reading="$R/read_joint_transfer_f$1" hints="${N}_revision_reader_joint_learned_f$1/hints"
-    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" pair "$1" --erased "$hints")
-    [ -e "$reading/complete.json" ] || job "$CARD_" "$NUMA_" "$reading" -- $(read_with "$reading" pair "$reader" --fold "$1" --erased "$hints")
-}
-if ! done_ joint_smoke; then
-    "$PY" -m revrender.models.hint_separator --model "$MODEL" --pack "$PACK" > "$R/joint_check.log" 2>&1
-    joint_smoke_job() {   # two steps, the separator learning from the first
-        local reader="$R/joint_smoke_reader"
-        job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" pair 0 --separator "${N}_revision_distilled_f0" --upstream "$UP" --anchor-pack "$HUMAN" --steps 2 --eval-every 1 --warmup 1 --separator-from 0)
-        "$PY" -c "import json, sys, torch; a = torch.load(sys.argv[1], map_location='cpu')['model']; b = torch.load(sys.argv[2], map_location='cpu', weights_only=False)['model']; moved = max(float((a[k].float()-b[k].float()).abs().max()) for k in a); assert moved > 0, 'the separator did not learn'; print('separator moved', moved)" \
-            "$reader/separator.pt" "${N}_revision_distilled_f0/$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint"])' "${N}_revision_distilled_f0/selection.json")/weights.pt"
-        job "$CARD_" "$NUMA_" "$R/joint_smoke_read" -- $(read_with "$R/joint_smoke_read" pair "$reader" --fold 0 --limit 8 --erased "$reader/hints")
-        "$PY" -c "import json, sys; texts = {json.loads(l)['text'] for l in open(sys.argv[1])}; assert len(texts) > 2, f'eight regions read as {texts}'" "$R/joint_smoke_read/predictions.jsonl"
-    }
-    alone on_card joint_smoke_job; wait; test -e "$R/joint_smoke_read/complete.json"; mark joint_smoke; fi
-if ! done_ joint_arms; then
-    for k in 0 1 2 3 4; do for kind in learned frozen; do [ -e "$R/read_joint_${kind}_f$k/complete.json" ] || alone on_card joint_job "$kind" "$k"; done; done
-    wait; for k in 0 1 2 3 4; do for kind in learned frozen; do test -e "$R/read_joint_${kind}_f$k/complete.json"; done; done
-    mark joint_arms; fi
-if ! done_ joint_transfer; then
-    for k in 0 1 2 3 4; do [ -e "$R/read_joint_transfer_f$k/complete.json" ] || alone on_card transfer_job "$k"; done
-    wait; for k in 0 1 2 3 4; do test -e "$R/read_joint_transfer_f$k/complete.json"; done
-    mark joint_transfer; fi
-done_ joint_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" --arm "frozen=$(folds_of joint_frozen)" --arm "learned=$(folds_of joint_learned)" \
-    --arm "transfer=$(folds_of joint_transfer)" --arm "distilled_pair=$(folds_of distilled_pair)" --arm "taught_pair=$(folds_of sep_pair)" --arm "human_pair=$(folds_of pair)" \
-    --reference frozen --output "$R/scores_joint.json" > "$R/joint_score.log" 2>&1; mark joint_score; }
-touch "$R/JOINT_COMPLETE"; stamp 'joint part complete'
+READ=(scan erased pair counterfactual pair_strike_off pair_writing_off counterfactual_strike_off counterfactual_writing_off)
+if ! done_ evidence_folds; then
+    for k in 0 1 2 3 4; do alone on_card evidence_fold "$k"; done
+    wait; for k in 0 1 2 3 4; do for name in "${READ[@]}"; do test -e "$R/evidence_${name}_f$k/complete.json"; done; done
+    mark evidence_folds; fi
+of() { local a="$1" k s=; for k in 0 1 2 3 4; do s+="${s:+,}$R/evidence_${a}_f$k"; done; echo "$s"; }
+if ! done_ evidence_score; then
+    [ -e "$R/scores_evidence.json" ] || "$PY" -m revrender.eval.transcription --pack "$CF" $(for name in "${READ[@]}"; do echo --arm "$name=$(of "$name")"; done) \
+        --reference pair --gone pair_writing_off --gone counterfactual_writing_off --agreement pair_strike_off=pair --agreement counterfactual_strike_off=counterfactual \
+        --output "$R/scores_evidence.json" > "$R/evidence_score.log" 2>&1
+    [ -e "$R/router_three/router.json" ] || "$PY" -m revrender.router --pack "$CF" --source "scan=$(of scan)" --source "erased=$(of erased)" --source "pair=$(of pair)" \
+        --output-dir "$R/router_three" > "$R/router_three.log" 2>&1
+    [ -e "$R/router_four/router.json" ] || "$PY" -m revrender.router --pack "$CF" --source "scan=$(of scan)" --source "erased=$(of erased)" --source "pair=$(of pair)" \
+        --source "counterfactual=$(of counterfactual)" --output-dir "$R/router_four" > "$R/router_four.log" 2>&1
+    [ -e "$R/scores_router.json" ] || "$PY" -m revrender.eval.transcription --pack "$CF" --arm "pair=$(of pair)" --arm "scan=$(of scan)" --arm "erased=$(of erased)" \
+        --arm "counterfactual=$(of counterfactual)" --arm "routed=$R/router_three" --arm "routed_with_counterfactual=$R/router_four" --reference pair \
+        --output "$R/scores_router.json" > "$R/router_score.log" 2>&1
+    mark evidence_score; fi
+touch "$R/EVIDENCE_COMPLETE"; stamp 'evidence part complete'

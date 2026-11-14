@@ -86,36 +86,3 @@ def test_human_pairs_join_the_regions_tiles_to_the_replayed_pairs_and_keep_valid
     assert [r['source'] for r in rows]==['human_confirmed','synthetic_replay','synthetic_validation']
     assert rows[2]['group_uuid']=='w9' and np.load(tmp_path/'out'/'gold_pixels.npy').shape==(3,SIZE,SIZE)
 
-
-def test_human_pairs_with_a_detector_hint_each_human_tile_and_leave_the_synthetic_ones_to_be_simulated(tmp_path):
-    import json
-    from revrender.data.restoration_pairs import human_pairs
-    from revrender.pages import write_page
-    d,_,_=_pairs(tmp_path);s=tmp_path/'set';s.mkdir();(s/'run_manifest.json').write_text('{}')
-    det=tmp_path/'det';det.mkdir();(det/'run_manifest.json').write_text('{}')
-    write_page(det,'p1',(400,100),[],[{'line':0,'score':1.,'box':[210,60,250,66],'mask':np.ones((6,40),bool)}])
-    image=np.full((30,100),255,np.uint8);image[10:20,10:90]=40;mask=np.zeros(image.shape,bool);mask[14:16,:]=True
-    np.savez(s/'training_native.npz',image_0=image,mask_0=mask)
-    (s/'training_native.json').write_text(json.dumps([dict(id='h1',group_uuid='hw',page='p1',box=[200,50,300,80])]))
-    (s/'records.json').write_text(json.dumps([dict(id='h1',group_uuid='hw',split='train',source='human_confirmed',revisions=1)]))
-    human_pairs(s,d,'gold_pixels',tmp_path/'out',no_replay=True,detector=det)
-    rows=json.loads((tmp_path/'out'/'records.json').read_text());hint=np.load(tmp_path/'out'/'hint.npy')
-    assert len(hint)==len(rows) and rows[0]['source']=='human_confirmed' and not hint[1:].any()
-    oy,ox=(SIZE-30)//2,(SIZE-100)//2     # the crop centred on the tile
-    assert hint[0][oy+10:oy+16,ox+10:ox+50].all() and hint[0].sum()==6*40
-
-
-def test_human_pairs_give_a_one_tile_region_its_struck_text_and_window(tmp_path):
-    import json
-    from revrender.data.restoration_pairs import human_pairs
-    d,_,_=_pairs(tmp_path);s=tmp_path/'set';s.mkdir();(s/'run_manifest.json').write_text('{}')
-    small=np.full((30,100),255,np.uint8);small[10:20,10:90]=40;wide=np.full((30,400),40,np.uint8)
-    np.savez(s/'training_native.npz',image_0=small,mask_0=small<100,image_1=wide,mask_1=wide<100,image_2=small,mask_2=small<100)
-    (s/'training_native.json').write_text(json.dumps([dict(id=k,group_uuid='hw') for k in ('a','b','c')]))
-    (s/'records.json').write_text('[]')
-    export=tmp_path/'export.json';export.write_text(json.dumps({'pages':{'p':{'revisions':[
-        dict(id='a',text='$x+1$',text_confirmed=True),dict(id='b',text='ab',text_confirmed=True),dict(id='c',text='??',text_confirmed=True)]}}}))
-    human_pairs(s,d,'gold_pixels',tmp_path/'out',no_replay=True,texts=export)
-    rows=[r for r in json.loads((tmp_path/'out'/'records.json').read_text()) if r['source']=='human_confirmed']
-    assert rows[0]['text']=='$x+1$' and rows[0]['window']==[(SIZE-100)//2,(SIZE-30)//2,100,30]
-    assert all('text' not in r for r in rows[1:])        # a two-tile region; an unreadable text

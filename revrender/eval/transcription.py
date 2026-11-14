@@ -19,7 +19,8 @@ could not read (``readable`` false in the pack) should be answered with ``recogn
 arm is paired with ``--reference`` on the regions both read: the differences of AR, exact and NED with 95% intervals by resampling
 writers (1,000 draws, seed 42).  ``--agreement A=B``: whether two arms giving different readings of a region tells that A's is wrong
 (a reading refused is a reading of its own) -- how often they differ, A's exact share where they agree and where they differ, and, of
-the regions the annotator could not read, the share on which they differ.
+the regions the annotator could not read, the share on which they differ.  ``--gone NAME``: an arm read with the struck writing taken
+off the images (``recognize_lines --intervention writing_off``): the share of its readings that refuse, as they all should.
 """
 import argparse
 import json
@@ -129,6 +130,7 @@ def main(argv=None):
     p.add_argument('--pack', type=Path, required=True); p.add_argument('--arm', action='append', required=True, help='NAME=DIR[,DIR...][@CONDITION]')
     p.add_argument('--reference', required=True, help='the arm every other is paired with'); p.add_argument('--output', type=Path, required=True)
     p.add_argument('--agreement', action='append', default=[], help='A=B: do the two arms differing mark the errors of A')
+    p.add_argument('--gone', action='append', default=[], help='an arm read with the struck writing taken off: the share of its readings that refuse')
     args = p.parse_args(argv)
     require(not args.output.exists(), 'output exists')
     rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
@@ -144,6 +146,10 @@ def main(argv=None):
         result[name] = {'regions': len(arms[name]), 'readable': len(scored[name]), **rates(list(scored[name].values())), 'refusal': refusal(arms[name], readable)}
         if name != args.reference:
             result[name]['against_reference'] = paired(scored[args.reference], scored[name], writers, rng)
+    for name in args.gone:
+        require(name in arms, f'--gone {name}: not an arm')
+        result[name]['refused_with_the_writing_gone'] = float(np.mean([refused(t) for t in arms[name].values()]))
+        print(f"{name}: refuses {100*result[name]['refused_with_the_writing_gone']:.1f}% of the regions whose struck writing is gone")
     agreed = {}
     for pair in args.agreement:
         a, _, b = pair.partition('='); require(a in arms and b in arms, f'--agreement {pair}: not two arms')

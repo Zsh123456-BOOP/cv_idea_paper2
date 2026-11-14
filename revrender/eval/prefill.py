@@ -1,10 +1,10 @@
 """How much the annotator must fix on a prefill (plan 预填模型 of 2026-10-25, section 1), and whether a new prefill should replace it.
 
-    python -m revrender.eval.prefill score --model NAME=RUN[:STEP] [...] --set NAME=NATIVE.json[:HINTS.npz] [...] --upstream UP --output-dir OUT
+    python -m revrender.eval.prefill score --model NAME=RUN[:STEP] [...] --set NAME=NATIVE.json [...] --upstream UP --output-dir OUT
     python -m revrender.eval.prefill switch --scores OUT/scores.json --set NAME --current A --candidate B --output OUT.json
 
 ``score`` restores every region of each native set (``data.prefill_set``'s ``*_native``) with each model (a restorer run, at its
-selected version or a given step directory; a hinted one with the set's hints) and counts on each region, as the editor shows it:
+selected version or a given step directory) and counts on each region, as the editor shows it:
 the strike pixels left (missed), the writing pixels erased (ink, grey < 200, the model brightened by more than 0.2 and the annotator
 kept), the pixels to fix -- missed plus writing erased, over the strike's pixels --, the blocks to fix (8-connected components of at
 least ``BLOCK`` pixels of either kind: about one stroke of the eraser or of the brush each), whether the region needs no edit (pixels
@@ -62,24 +62,23 @@ def spearman(a, b):
 
 
 def score(args):
-    from ..baselines.restoration import HINTED, restore_native
+    from ..baselines.restoration import restore_native
     from ..baselines.restoration_export import selected_predictor
     out = make_output_dir(args.output_dir); result = {}; inputs = {}
     sets = {}
     for spec in args.set:
-        name, rest = spec.split('=', 1); path, _, hints = rest.partition(':'); path = Path(path)
-        sets[name] = (json.loads(path.read_text()), np.load(path.with_suffix('.npz')), np.load(hints) if hints else None)
+        name, path = spec.split('=', 1); path = Path(path)
+        sets[name] = (json.loads(path.read_text()), np.load(path.with_suffix('.npz')))
         inputs[str(path.with_suffix('.npz'))] = digest(path.with_suffix('.npz'))
     for spec in args.model:
         name, rest = spec.split('=', 1); run, _, step = rest.partition(':')
         predict, checkpoint, manifest = selected_predictor(Path(run), args.upstream, step or None); inputs[str(checkpoint)] = digest(checkpoint)
-        hinted = manifest['config']['model'] in HINTED; result[name] = {'run': run, 'checkpoint': str(checkpoint), 'sets': {}}
-        for set_name, (rows, arrays, hints) in sets.items():
-            require(hints is not None or not hinted, f'{set_name}: a hinted model needs the hints')
+        result[name] = {'run': run, 'checkpoint': str(checkpoint), 'sets': {}}
+        for set_name, (rows, arrays) in sets.items():
             regions = []
             for k, r in enumerate(rows):
                 image = arrays[f'image_{k}'].astype(np.float32)/255
-                restored = restore_native(predict, image, hints[f'hint_{k}'].astype(np.float32) if hinted else None)
+                restored = restore_native(predict, image)
                 regions.append({'id': r['id'], 'writer': r['group_uuid'], **edits(image, arrays[f'mask_{k}'], restored),
                                 **{k_: r[k_] for k_ in ('ops', 'seconds', 'model') if k_ in r}})
             s = summary_of(regions)
@@ -114,7 +113,7 @@ def switch(args):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     s = sub.add_parser('score')
-    s.add_argument('--model', action='append', required=True, help='NAME=RUN[:STEP]'); s.add_argument('--set', action='append', required=True, help='NAME=NATIVE.json[:HINTS.npz]')
+    s.add_argument('--model', action='append', required=True, help='NAME=RUN[:STEP]'); s.add_argument('--set', action='append', required=True, help='NAME=NATIVE.json')
     s.add_argument('--upstream', type=Path, required=True); s.add_argument('--output-dir', type=Path, required=True)
     w = sub.add_parser('switch')
     for key in ('scores', 'output'): w.add_argument('--'+key, type=Path, required=True)

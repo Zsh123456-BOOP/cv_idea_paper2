@@ -3,8 +3,7 @@
 # Cards: the restorations go to every card with room at once (_common.sh open_card); GPU_A and GPU_B run the OCR (TP2), default cards 1
 # and 2.  MODELS=<list> evaluates another list
 # (candidate versions for eval.unified_restoration choose) in place of configs/unified_restoration.json.  DEV_EXPORT=<export of the
-# test page> DEV_PAGES=<its page images> adds the development half of the test questions (configs/test_halves.json).  DETECTOR=<a
-# detection run> gives every crop the detector's masks (hints.npz), which a hinted model (RevSep) reads.
+# test page> DEV_PAGES=<its page images> adds the development half of the test questions (configs/test_halves.json).
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 OUT="$1"
@@ -22,7 +21,6 @@ LAB=$O/paper2_annotation_labels
   --human-validation "$O/paper2_fixed_validation20261007/validation_native.json" \
   --pages "$O/paper2_pages_clean_unlabeled3976" \
   ${DEV_EXPORT:+--dev-export "$DEV_EXPORT" --dev-pages "$DEV_PAGES" --dev-questions "$ROOT/configs/test_halves.json"} \
-  ${DETECTOR:+--detector "$DETECTOR"} \
   --output-dir "$OUT/inputs"
 mkdir "$OUT/runs"
 export GPU_A=${GPU_A:-GPU-d0bcc564-5bd9-b943-f995-8536415088e3} GPU_B=${GPU_B:-GPU-56971197-483f-7ec4-a71a-4e092c2fa6b0}
@@ -31,7 +29,7 @@ MODELS=${MODELS:-$ROOT/configs/unified_restoration.json}
 # each model with the architecture its runtime follows (a candidate version's name carries its step)
 "$PY" -c 'import json,sys
 for m in json.load(open(sys.argv[1])):
-    print(m["name"], m["type"] if m["type"] in ("own","detector") else json.load(open(m["run"]+"/run_manifest.json"))["config"]["model"])' "$MODELS" > "$OUT/kinds.txt"
+    print(m["name"], m["type"] if m["type"] == "own" else json.load(open(m["run"]+"/run_manifest.json"))["config"]["model"])' "$MODELS" > "$OUT/kinds.txt"
 restore_version() {   # CARD NUMA NAME KIND: one version's restorations of the inputs
   local card="$1" numa="$2" name="$3" kind="$4"
   RUNTIME="$PY"

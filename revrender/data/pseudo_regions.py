@@ -76,21 +76,11 @@ def predict(args):
     out = make_output_dir(args.output_dir); excluded, labelled, labelled_pages = apart(args)
     rows = eligible(args.library, excluded, labelled, labelled_pages)
     rows = rows[:args.limit] if args.limit else rows; require(rows, 'no eligible region')
-    from ..baselines.restoration import HINTED
     from ..baselines.restoration_export import selected_predictor
     predictor, checkpoint, manifest = selected_predictor(args.run, args.upstream, args.checkpoint)
-    hinted = manifest['config']['model'] in HINTED; require(args.detector or not hinted, 'a hinted teacher needs --detector')
-    if hinted:
-        from .. import pages
-        from .separation import detector_hint
-        detected = {}
     restored = {}
     for k, (r, grey) in enumerate(crops(rows)):
-        hint = None
-        if hinted:
-            if r['page'] not in detected: detected = {r['page']: pages.read_output(args.detector, r['page'])[1]}
-            hint = detector_hint(detected[r['page']], r['box'], grey).astype(np.float32)
-        value = restore_native(predictor, grey.astype(np.float32)/255, hint); restored[f'restored_{k}'] = np.rint(value*255).astype(np.uint8)
+        value = restore_native(predictor, grey.astype(np.float32)/255); restored[f'restored_{k}'] = np.rint(value*255).astype(np.uint8)
     np.savez_compressed(out/'restored.npz', **restored); write_json(out/'regions.json', rows)
     summary = {'model': manifest['config']['model'], 'checkpoint': str(checkpoint), 'regions': len(rows), 'writers': len({r['group_uuid'] for r in rows}),
                'excluded_writers': len(excluded), 'excluded_pages': len(labelled_pages)}
@@ -152,7 +142,6 @@ def main(argv=None):
     for name in ('evaluation', 'review-set', 'prefill-set'): a.add_argument('--'+name, type=Path, help='the regions apart: an evaluation and a review set, or a prefill set')
     a.add_argument('--checkpoint', required=True, help="the teacher's step directory within --run")
     a.add_argument('--limit', type=int, default=0, help='only the first regions (a smoke test)')
-    a.add_argument('--detector', type=Path, help="a detection run: a hinted teacher's (RevSep) hints on each region")
     c = sub.add_parser('combine', help=combine.__doc__)
     c.add_argument('--predictions', type=Path, nargs='+', required=True); c.add_argument('--review-set', type=Path, required=True)
     c.add_argument('--source', type=Path, help="the synthetic pairs whose validation writers' regions are left out")

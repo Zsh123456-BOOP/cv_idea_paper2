@@ -17,13 +17,12 @@ from PIL import Image
 
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
-MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer', 'StainRestorer', 'RevSep']
-HINTED = ('RevSep',)    # told where the revision is (data.separation): ours (models.separation), not a baseline
+MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer', 'StainRestorer']
 
 
 def upstream_of(upstream, model):
-    """The official source a model is built from: RevSep's body is NAFNet's."""
-    return upstream/('NAFNet' if model == 'RevSep' else model)
+    """The official source a model is built from."""
+    return upstream/model
 
 
 def verified_source(path):
@@ -55,23 +54,21 @@ def removal_metrics(count):
                 new_dark_pixels=added,threshold=.2)
 
 
-def restore_native(predict, grey, hint=None):
-    """Native resolution tiling; centre short regions on the same white 256 canvas (a hinted model's hint on zeros)."""
+def restore_native(predict, grey):
+    """Native resolution tiling; centre short regions on the same white 256 canvas."""
     h,w=grey.shape;ph=max(256,h);pw=max(256,w);oy=(ph-h)//2;ox=(pw-w)//2
     padded=np.ones((ph,pw),np.float32);padded[oy:oy+h,ox:ox+w]=grey
-    if hint is not None:marks=np.zeros((ph,pw),np.float32);marks[oy:oy+h,ox:ox+w]=hint
     positions=lambda n: sorted(set(list(range(0,n-255,192))+[n-256]))
     total=np.zeros_like(padded);weight=np.zeros_like(padded)
     for y in positions(ph):
         for x in positions(pw):
             tile=padded[None,y:y+256,x:x+256]
-            value=(predict(tile) if hint is None else predict(tile,marks[None,y:y+256,x:x+256]))[0]
+            value=predict(tile)[0]
             total[y:y+256,x:x+256]+=value;weight[y:y+256,x:x+256]+=1
     return (total/weight)[oy:oy+h,ox:ox+w]
 
 
 class Experiment:
-    hinted=False    # a model told where the revision is (HINTED)
     w=None          # per-pixel loss weights of the data (weights.npy)
 
     def __init__(self,args):
@@ -97,27 +94,8 @@ class Experiment:
         inputs=[
             args.data/'run_manifest.json',args.data/(args.arm+'.npy'),args.data/'targets.npy',args.data/'records.json',
             args.human_validation,args.human_validation.with_suffix('.npz'),upstream_of(args.upstream,args.model)/'source_manifest.json']
-        self.hinted=args.model in HINTED
-        if self.hinted:
-            from ..data.separation import DETECTED, HUMAN
-            self.human=np.array([r.get('source')==HUMAN for r in self.rows])
-            self.detected=np.array([r.get('source') in DETECTED for r in self.rows])
-            self.stored_hints=np.load(args.data/'hint.npy',mmap_mode='r') if (args.data/'hint.npy').exists() else None
-            require(self.stored_hints is not None or not self.detected.any(),'real tiles without their detector hints (restoration_pairs human --detector)')
-            require(args.human_validation_hints is not None or not args.hint,'the hints of the human validation are needed (data.separation hints)')
-            self.native_hints=np.load(args.human_validation_hints) if args.hint else None
-            self.hint_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(2)[1])
-            self.strokes=None
-            if args.stroke and args.strokes:
-                self.strokes=[np.load(args.strokes/f'{k}.npy',mmap_mode='r') for k in ('stroke','centre','width')]
-                require(len(self.strokes[0])==len(self.rows) and json.loads((args.strokes/'run_manifest.json').read_text())['inputs'][str(args.data/'records.json')]
-                        ==digest(args.data/'records.json'),'stroke geometry of other pairs')
-                inputs.append(args.strokes/'run_manifest.json')
-            require(not args.stroke or self.strokes is not None or self.human[self.train].all(),'synthetic pairs without their stroke geometry (data.separation strokes)')
-            inputs+=[p for p in (args.data/'hint.npy',args.human_validation_hints) if p is not None and p.exists()]
         if args.protocol:inputs.append(args.protocol)
         if args.init:inputs+=[p for p in sorted(args.init.iterdir()) if p.is_file()]
-        if getattr(args,'reader',None):inputs.append(args.reader)
         require(set(r['split'] for r in self.rows)<= {'train','val'},'test row in training bundle')
         require(not {r['group_uuid'] for r in self.rows if r['split']=='train'} &
                 {r['group_uuid'] for r in self.rows if r['split']=='val'},'synthetic validation writer leaked')
@@ -136,36 +114,6 @@ class Experiment:
         if not weights:return x,y
         return x,y,(self.w[ids].astype(np.float32) if self.w is not None else np.ones_like(x)),self.s[ids]
 
-    def hints_of(self,ids,x,y,rng):
-        """The hints of pairs ``ids`` (their uint8 x, y): a human tile's detector hint jittered, a synthetic one's simulated
-        (``data.separation``); zeros with --no-hint."""
-        from ..data.separation import jittered_hint, simulated_hint
-        if not self.args.hint:return np.zeros(x.shape,np.float32)
-        return np.stack([jittered_hint(self.stored_hints[i],a,rng) if self.detected[i] else
-                         simulated_hint(a,b,rng,self.args.hint_reach,self.args.hint_drop) for i,a,b in zip(ids,x,y)]).astype(np.float32)
-
-    def labelled_batch(self):
-        """A batch for RevSep: grey, target and hint on [0, 1], the erase and cross labels (``data.separation.pair_labels``), its rows,
-        with --stroke the (mask, centreline, half-width) labels (``data.separation.stroke_labels``), with --writing-gate the writing
-        labels and the struck writing (``data.separation.writing_labels``)."""
-        from ..data.separation import pair_labels
-        from ..data.separation import stroke_labels
-        ids=self.sample();x=self.x[ids];y=self.y[ids];labels=[pair_labels(a,b,self.human[i]) for i,a,b in zip(ids,x,y)]
-        strokes=None;gate=None
-        if getattr(self.args,'writing_gate',False):
-            from ..data.separation import writing_labels
-            made=[writing_labels(a,b,self.human[i]) for i,a,b in zip(ids,x,y)]
-            gate=(np.stack([m[0] for m in made]),np.stack([m[1] for m in made]))
-        if self.args.stroke:
-            made=[stroke_labels(a,b,self.human[i],None if self.human[i] else [s[i] for s in self.strokes]) for i,a,b in zip(ids,x,y)]
-            strokes=tuple(np.stack([m[k] for m in made]) for k in range(3))
-        return (x.astype(np.float32)/255,y.astype(np.float32)/255,self.hints_of(ids,x,y,self.hint_rng),
-                np.stack([e for e,_ in labels]),np.stack([c for _,c in labels]),ids,strokes,gate)
-
-    def native_hint(self,i):
-        if not self.hinted:return None
-        return self.native_hints[f'hint_{i}'] if self.args.hint else np.zeros(self.native[f'image_{i}'].shape,np.uint8)
-
     def log(self,record):
         record={**record,'elapsed_seconds':round(time.monotonic()-self.start,2)}
         with (self.out/'events.jsonl').open('a') as f:f.write(json.dumps(record,allow_nan=False)+'\n')
@@ -177,7 +125,7 @@ class Experiment:
         counts=np.zeros(5,np.int64);native_out={};tiles=[];edits=[];blocks=[]
         for i,_ in enumerate(self.native_rows):
             im=self.native[f'image_{i}'].astype(np.float32)/255;gold=self.native[f'mask_{i}']
-            pred=restore_native(predict,im,self.native_hint(i));require(np.isfinite(pred).all(),'nonfinite restoration')
+            pred=restore_native(predict,im);require(np.isfinite(pred).all(),'nonfinite restoration')
             count=removal_counts(im,pred,gold);counts+=count;native_out[f'image_{i}']=np.rint(pred*255).astype(np.uint8)
             edits.append((count[1]+count[2])/max(1,count[0]+count[2]))   # pixels to fix (missed + writing erased) over the strike's
             blocks.append(edit_counts(im,gold,pred)['blocks'])            # blocks to fix: about one stroke of the eraser or brush each
@@ -185,11 +133,11 @@ class Experiment:
             for j,a in enumerate((im,pred,np.where(gold,1,im))):
                 tile=Image.fromarray(np.rint(a*255).astype(np.uint8));tile.thumbnail((252,252));canvas.paste(tile,(j*256+(256-tile.width)//2,(256-tile.height)//2))
             tiles.append(np.asarray(canvas))
-        sse=0.;base=0.;n=0;changed=[];preserve=[];hint_rng=np.random.default_rng(SEED)    # the same hints at every evaluation
+        sse=0.;base=0.;n=0;changed=[];preserve=[]
         for start in range(0,len(self.val),self.args.batch_size):
             ids=self.val[start:start+self.args.batch_size];xu=self.x[ids];yu=self.y[ids]
             x=xu.astype(np.float32)/255;y=yu.astype(np.float32)/255
-            p=predict(x,self.hints_of(ids,xu,yu,hint_rng)) if self.hinted else predict(x);require(np.isfinite(p).all(),'nonfinite synthetic restoration')
+            p=predict(x);require(np.isfinite(p).all(),'nonfinite synthetic restoration')
             sse+=float(((p-y)**2).sum());base+=float(((x-y)**2).sum());n+=y.size
             changed.extend(np.abs(p-y)[np.abs(x-y)>.05].tolist())
             preserve.extend(np.abs(p-y)[(y<200/255)&(np.abs(x-y)<=.05)].tolist())
@@ -242,20 +190,6 @@ def main(argv=None):
     p.add_argument('--select',choices=['f1','edits','blocks'],default='f1',
                    help="keep a version when the human validation's removal F1 rises, or its pixels (edits) or blocks to fix fall")
     p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
-    p.add_argument('--human-validation-hints',type=Path,help='RevSep: the detector hints of the human validation crops (data.separation hints)')
-    p.add_argument('--hint',action=argparse.BooleanOptionalAction,default=True,help='RevSep: the hint channel (off: zeros)')
-    p.add_argument('--reader',type=Path,help='RevSep: a frozen reader (reader_ctc) whose CTC loss on the output of the one-tile human regions joins the loss')
-    p.add_argument('--reading-weight',type=float,default=0.,help='RevSep: the weight of that reading term')
-    p.add_argument('--stroke',action=argparse.BooleanOptionalAction,default=False,help='RevSep: the stroke head A and its drawn mask (models.separation)')
-    p.add_argument('--hint-from',choices=['detector','stroke','both'],default='detector',
-                   help="RevSep --stroke: the second pass's range: none (detector: one pass), the drawn mask, or both side by side")
-    p.add_argument('--strokes',type=Path,help='RevSep --stroke: the stroke geometry of the synthetic pairs (data.separation strokes)')
-    p.add_argument('--writing-gate',action=argparse.BooleanOptionalAction,default=False,
-                   help='RevSep: the writing gate (models.separation, plan 保字门): erase only where the writing head says no')
-    p.add_argument('--near-weight',type=float,help="RevSep --writing-gate: the struck writing's weight in the writing loss (default the protocol's)")
-    p.add_argument('--gate-hard',action=argparse.BooleanOptionalAction,default=False,help='RevSep --writing-gate: the hard gate while training too')
-    p.add_argument('--heads',action=argparse.BooleanOptionalAction,default=True,
-                   help='RevSep: the erase and cross heads and the composition (off: H1 alone, NAFNet with the hint channel)')
     p.add_argument('--budget',help="a budget section of the protocol (passes over the data, evaluations, learning-rate scale): "
                    "default [finetune] with --init, the model's own [training] budget without")
     pre,_=p.parse_known_args(argv)

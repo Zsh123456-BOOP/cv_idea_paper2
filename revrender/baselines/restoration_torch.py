@@ -20,7 +20,7 @@ def package(name,path):
     return m
 
 
-def build(model,root,architecture=None,stroke=False,gate=False):
+def build(model,root,architecture=None):
     if model=='NAFNet':
         # Avoid BasicSR's unrelated dataset/extension auto-imports. Architecture files
         # are unchanged, including their own LayerNorm and local pooling code.
@@ -32,9 +32,6 @@ def build(model,root,architecture=None,stroke=False,gate=False):
         if not options:options=dict(img_channel=3,width=32,middle_blk_num=1,enc_blk_nums=[1,1,1,28],dec_blk_nums=[1,1,1,1])
         network=cls(**options).cuda()
         return network,None,None
-    if model=='RevSep':
-        from ..models.separation import RevSep
-        return RevSep(build('NAFNet',root,architecture)[0],stroke=stroke,gate=gate).cuda(),None,None
     if model=='Restormer':
         m=module_file('official_restormer',root/'basicsr/models/archs/restormer_arch.py')
         return m.Restormer(**(architecture or {})).cuda(),None,None
@@ -63,6 +60,14 @@ def docdiff_loss(network,diffusion,lap,x,y):
     ddpm=2*F.mse_loss(lap(residual),lap(truth))+F.mse_loss(residual,truth)
     pixel=F.mse_loss(initial,y)+2*F.mse_loss(initial-lap(initial),y-lap(y))
     return ddpm+.5*pixel
+
+
+def psnr_loss(value,target,weight=None,sample_weight=None):
+    """NAFNet's PSNR loss; with a per-pixel ``weight``, its weighted mean error; with a ``sample_weight`` (N), the samples' losses
+    averaged by it (data.pseudo_regions)."""
+    error=((value-target)**2).mean((1,2,3)) if weight is None else ((value-target)**2*weight).mean((1,2,3))/weight.mean((1,2,3)).clamp(min=1e-8)
+    loss=10/np.log(10)*torch.log(error+1e-8)
+    return loss.mean() if sample_weight is None else (loss*sample_weight).sum()/sample_weight.sum()
 
 
 def image_tensor(x,model):
@@ -105,11 +110,11 @@ def train(e):
     a=e.args;require(torch.cuda.is_available(),'CUDA required')
     torch.set_num_threads(4);torch.manual_seed(SEED);torch.cuda.manual_seed_all(SEED)
     torch.backends.cudnn.benchmark=False
-    network,diffusion,lap=build(a.model,upstream_of(a.upstream,a.model),stroke=getattr(a,'stroke',False),gate=getattr(a,'writing_gate',False))
+    network,diffusion,lap=build(a.model,upstream_of(a.upstream,a.model))
     if a.init:network.load_state_dict(torch.load(a.init/'weights.pt',map_location='cuda',weights_only=False)['model'])
     scale=a.learning_rate_scale
     is_doc=a.model=='DocDiff';is_cor=a.model=='COR-Generator';is_rest=a.model=='Restormer'
-    is_stain=a.model=='StainRestorer';is_sep=a.model=='RevSep'
+    is_stain=a.model=='StainRestorer'
     if is_cor:opt=torch.optim.Adam(network.parameters(),lr=1e-3*scale,betas=(.9,.999))
     elif is_stain:opt=torch.optim.AdamW(network.parameters(),lr=2e-4*scale,betas=(.9,.999),weight_decay=.01,eps=1e-8)
     else:
@@ -117,7 +122,7 @@ def train(e):
             weight_decay=1e-4 if is_doc or is_rest else 1e-3,
             betas=(.9,.999) if is_doc or is_rest else (.9,.9))
     scheduler=None
-    if a.model in ('NAFNet','RevSep'):scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-7*scale)
+    if a.model=='NAFNet':scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-7*scale)
     if is_stain:scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-6*scale)
     if is_rest:
         # Preserve the official flat/cosine fractions, scale duration to declared task budget.
@@ -142,15 +147,8 @@ def train(e):
         'initialization':str(a.init) if a.init else 'official random initialization','learning_rate_scale':scale}
     weighted=e.w is not None or (e.s!=1).any()
     if weighted:
-        require(a.model in ('NAFNet','RevSep'),'per-pixel and per-sample weights are honoured by NAFNet and RevSep only')
+        require(a.model=='NAFNet','per-pixel and per-sample weights are honoured by NAFNet only')
         config['loss']+=", weighted per pixel by the data's weights (0 where the pseudo-label teachers disagree) and per sample by its records' weight"
-    if is_sep:
-        config.update(architecture='RevSep (models.separation): the unchanged official NAFNet body on grey, hint and zeros; a 1x1 erase/cross head on its last decoder features',
-            loss=('PSNR loss of the composed output and of H1, erase BCE+Dice, cross BCE' if a.heads else 'PSNR loss of H1'),
-            heads=a.heads,hint=a.hint,erase_weight=a.erase_weight,cross_weight=a.cross_weight,hint_reach=a.hint_reach,hint_drop=a.hint_drop,
-            reader=str(a.reader) if a.reader else None,reading_weight=a.reading_weight,stroke=a.stroke,hint_from=a.hint_from,
-            stroke_weights=[a.centre_weight,a.width_weight,a.stroke_weight] if a.stroke else None,writing_gate=a.writing_gate,
-            gate_weights=[a.writing_weight,a.near_weight] if a.writing_gate else None,gate_hard=a.gate_hard)
     if is_stain:
         import torchmetrics
         config.update(initialization=str(a.init) if a.init else 'random; no author checkpoint',torchmetrics=torchmetrics.__version__,
@@ -158,8 +156,7 @@ def train(e):
     write_json(e.out/'model_config.json',config);e.log(config)
     active=network
 
-    def predict(x,hint=None):
-        if is_sep:return separate(active,x,np.zeros_like(x) if hint is None else hint,a.heads,hint_from=a.hint_from)
+    def predict(x):
         return predict_image(active,ema_diffusion if active is ema else diffusion,x,a.model)
 
     def save(path):
@@ -171,51 +168,24 @@ def train(e):
         restored=torch.load(path/'weights.pt',map_location='cpu',weights_only=False)['model']
         require(all(torch.equal(v.detach().cpu(),restored[k]) for k,v in active.state_dict().items()),'checkpoint round-trip mismatch')
 
-    if is_sep:
-        from ..models.separation import separate, separation_loss
-        reading=None
-        if a.reader and a.reading_weight:
-            from ..reader_ctc import ctc, load
-            reader,alphabet=load(a.reader)
-            def reading_of(ids):     # the one-tile human regions of the batch, each read on its window of the output
-                chosen=[(k,e.rows[i]) for k,i in enumerate(ids) if 'text' in e.rows[i]]
-                if not chosen:return lambda out:None
-                def term(out):
-                    crops=[out[k,0,y:y+h,x:x+w] for k,r in chosen for x,y,w,h in [r['window']]]
-                    return a.reading_weight*ctc(reader,crops,[r['text'] for _,r in chosen],alphabet)
-                return term
-            reading=reading_of
-    terms={}
     for step in range(1,a.steps+1):
         if step==1:before=next(network.parameters()).detach().clone()
-        if is_sep:
-            x,y,hint,erase,cross,ids,strokes,gate=e.labelled_batch();network.train();opt.zero_grad(set_to_none=True)
-            t=lambda v:torch.from_numpy(np.ascontiguousarray(v[:,None])).cuda()
-            loss,terms=separation_loss(network,t(x),t(y),t(hint),t(erase),t(cross),a.heads,a.erase_weight,a.cross_weight,
-                                       reading(ids) if reading else None,tuple(map(t,strokes)) if strokes else None,a.hint_from,
-                                       (a.centre_weight,a.width_weight,a.stroke_weight) if a.stroke else (1.,1.,1.),
-                                       (t(gate[0]),torch.from_numpy(np.ascontiguousarray(gate[1][:,None])).cuda()) if gate else None,
-                                       (a.writing_weight,a.near_weight) if gate else (1.,1.),a.gate_hard,
-                                       (t(e.w[ids].astype(np.float32)) if e.w is not None else None,torch.from_numpy(e.s[ids]).cuda()) if weighted else None)
-            require(torch.isfinite(loss).item(),'nonfinite training loss');value=float(loss.detach());loss.backward()
-        else:
-            x,y,w,sw=e.batch(weights=True);network.train();opt.zero_grad(set_to_none=True)
-            # These architectures have no batch norm. Accumulate an effective batch4.
-            size=1 if is_rest or is_stain else len(x);value=0.
-            for start in range(0,len(x),size):
-                xx=image_tensor(x[start:start+size],a.model);yy=image_tensor(y[start:start+size],a.model)
-                if is_doc:loss=docdiff_loss(network,diffusion,lap,xx,yy)
-                elif is_cor:loss=F.binary_cross_entropy(network(xx),yy)
-                elif is_rest:loss=F.l1_loss(network(xx),yy)
-                elif is_stain:loss=stain_loss(network(xx),yy)
-                elif e.w is not None or (e.s!=1).any():   # NAFNet on weighted data (data.pseudo_regions)
-                    from ..models.separation import psnr_loss
-                    loss=psnr_loss(network(xx),yy,torch.from_numpy(np.ascontiguousarray(w[start:start+size,None])).cuda().expand_as(yy),
-                                   torch.from_numpy(np.ascontiguousarray(sw[start:start+size])).cuda())
-                else:loss=10/np.log(10)*torch.log(((network(xx)-yy)**2).mean((1,2,3))+1e-8).mean()
-                require(torch.isfinite(loss).item(),'nonfinite training loss')
-                loss=loss*(len(xx)/len(x));value+=float(loss.detach());loss.backward()
-        if a.model in ('NAFNet','RevSep'):torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
+        x,y,w,sw=e.batch(weights=True);network.train();opt.zero_grad(set_to_none=True)
+        # These architectures have no batch norm. Accumulate an effective batch4.
+        size=1 if is_rest or is_stain else len(x);value=0.
+        for start in range(0,len(x),size):
+            xx=image_tensor(x[start:start+size],a.model);yy=image_tensor(y[start:start+size],a.model)
+            if is_doc:loss=docdiff_loss(network,diffusion,lap,xx,yy)
+            elif is_cor:loss=F.binary_cross_entropy(network(xx),yy)
+            elif is_rest:loss=F.l1_loss(network(xx),yy)
+            elif is_stain:loss=stain_loss(network(xx),yy)
+            elif e.w is not None or (e.s!=1).any():   # NAFNet on weighted data (data.pseudo_regions)
+                loss=psnr_loss(network(xx),yy,torch.from_numpy(np.ascontiguousarray(w[start:start+size,None])).cuda().expand_as(yy),
+                               torch.from_numpy(np.ascontiguousarray(sw[start:start+size])).cuda())
+            else:loss=10/np.log(10)*torch.log(((network(xx)-yy)**2).mean((1,2,3))+1e-8).mean()
+            require(torch.isfinite(loss).item(),'nonfinite training loss')
+            loss=loss*(len(xx)/len(x));value+=float(loss.detach());loss.backward()
+        if a.model=='NAFNet':torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
         if is_rest:torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
         opt.step()
         if step==1:require(not torch.equal(before,next(network.parameters()).detach()),'model did not update')
@@ -224,7 +194,7 @@ def train(e):
                 for target,current in zip(ema.parameters(),network.parameters()):target.mul_(.9999).add_(current,alpha=.0001)
         if scheduler:scheduler.step()
         if step==1 or step%100==0:e.log({'step':step,'loss':value,'lr':opt.param_groups[0]['lr'],
-            'peak_gpu_mib':torch.cuda.max_memory_allocated()/1024**2,**({'terms':terms} if is_sep else {})})
+            'peak_gpu_mib':torch.cuda.max_memory_allocated()/1024**2})
         if step%a.eval_every==0 or step==a.steps:
             active=network
             if ema is not None:

@@ -92,7 +92,7 @@ def test_views_of_a_separated_region():
 
 
 def test_conditions_of_several_images():
-    assert image_keys('context_revision') == ('raw', 'erased', 'context') and image_keys('bracket_revision') == ('raw', 'mild', 'strong')
+    assert image_keys('context_revision') == ('raw', 'erased', 'context')
     assert MAPPED == {'mapped_revision', 'pair_mapped_revision'}
     from revrender.models.vlm_tokens import layer_maps
     a, b, layer = Image.new('RGB', (30, 20)), Image.new('RGB', (50, 10)), Image.new('RGB', (30, 20), (255, 255, 255))
