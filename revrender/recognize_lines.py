@@ -168,6 +168,7 @@ def main(argv=None):
     p.add_argument('--gpu-memory', type=float, default=.90, help='vllm: share of each card the engine may take (lower it when others hold memory there)')
     p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
     p.add_argument('--max-new-tokens', type=int, default=256)
+    p.add_argument('--loop-limit', type=int, default=0, help='hf: stop a reading that ends in one block written this many times, keeping the block once (0: never)')
     p.add_argument('--max-model-len', type=int, default=4096, help='vllm: context length (whole-question images need more)')
     p.add_argument('--cell-threshold', type=float, default=.25, help='token rules: share of a token cell under the band that hides it')
     p.add_argument('--ink-threshold', type=float, default=.05, help='token rules: share of a token cell on masked ink that hides it')
@@ -202,7 +203,7 @@ def main(argv=None):
                                                            **({str(args.layer_map): digest(args.layer_map)} if args.layer_map else {})},
                    backend=args.backend, rows=len(jobs), lines=len(rows),
                    conditions={c: {'image': image_keys(c), 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0])} for c in args.conditions},
-                   system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'dtype': 'bfloat16'})
+                   system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'loop_limit': args.loop_limit, 'dtype': 'bfloat16'})
     name = args.model.name+(f'+{args.adapter.parent.name}' if args.adapter else '')      # the reading of a model with an adapter is another model's
     started, done = time.monotonic(), 0
     with (out/'predictions.jsonl').open('x', encoding='utf-8') as stream:
@@ -214,7 +215,8 @@ def main(argv=None):
                 requests = [(shown if len(shown) > 1 else shown[0], prompt(c, row),
                              hidden_flags(reader, CONDITIONS[c][2], row, shown[0], args.pack, args) if c in TOKEN_RULES else None,
                              args.soft if CONDITIONS[c][2] == 'soft_band' else 0.) for (c, row), shown in zip(batch, images)]
-                results = reader.read(requests, SYSTEM, args.max_new_tokens, maps=[opened(row, 'map') for _, row in batch] if args.layer_map else None)      # of each job's first image
+                results = reader.read(requests, SYSTEM, args.max_new_tokens, maps=[opened(row, 'map') for _, row in batch] if args.layer_map else None,      # of each job's first image
+                                      loop_limit=args.loop_limit)
             else:
                 generated = model.chat([messages(shown[0], prompt(c, row), row.get('system', SYSTEM) if c == 'from_pack' else SYSTEM)
                                         for (c, row), shown in zip(batch, images)], sampling, use_tqdm=False)

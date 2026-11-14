@@ -95,6 +95,16 @@ def patch_embed_with_layer_map(embed):
     return embed.layer_map
 
 
+def looped(tokens, repeats, shortest=12):
+    """How many tokens to drop from the end of a decode caught in a loop: when the tokens end in one block written ``repeats`` times
+    over at least ``shortest`` tokens, all but the block's first writing; 0 when they do not."""
+    n = len(tokens)
+    for period in range(1, n//repeats+1):
+        if period*repeats >= shortest and tokens[n-period*repeats:] == tokens[n-period:]*repeats:
+            return period*(repeats-1)
+    return 0
+
+
 def layer_maps(images, layer):
     """A layer map for each image of a request: the given one for the first (the scan), nothing for the others."""
     return [layer, *(Image.new('RGB', image.size) for image in images[1:])]
@@ -141,10 +151,12 @@ class Reader:
         thw = self.processor.image_processor(images=[image], return_tensors='pt')['image_grid_thw'][0]
         return int(thw[1])//self.merge, int(thw[2])//self.merge
 
-    def read(self, jobs, system, max_new_tokens=256, maps=None):
+    def read(self, jobs, system, max_new_tokens=256, maps=None, loop_limit=0):
         """Greedy readings of (image, words, hidden, soft) jobs: ``image`` one image or several, ``hidden`` the bool flags of the image's
         tokens (or None), ``soft`` 0 to remove the hidden tokens from every attention or a positive bias subtracted from their attention
-        logits; ``maps`` the layer map of each job's first image (a reader made with ``layer_map``).  A list of dicts (text, tokens, finish)."""
+        logits; ``maps`` the layer map of each job's first image (a reader made with ``layer_map``).  ``loop_limit``: a reading that
+        ends in one block written that many times (``looped``) stops there and keeps the block once (finish ``loop``; 0: never).  A list
+        of dicts (text, tokens, finish)."""
         torch = self.torch
         shown = lambda image: [{'type': 'image', 'image': one} for one in (image if isinstance(image, (list, tuple)) else [image])]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': system}]},
@@ -169,13 +181,18 @@ class Reader:
                              use_cache=True, cache_position=torch.arange(length, device=self.device), logits_to_keep=1)
             keys = torch.from_numpy(bias).to(self.device, dtype)
             last = positions.amax(dim=(0, 2))                                  # the last position each row used
-            written, done = [[] for _ in jobs], [False]*len(jobs)
+            written, done, loops = [[] for _ in jobs], [False]*len(jobs), set()
             for step in range(max_new_tokens):
                 token = out.logits[:, -1].float().argmax(-1)
                 for b, t in enumerate(token.tolist()):
                     if not done[b]:
                         written[b].append(t)
                         done[b] = t in self.stop
+                        cut = looped(written[b], loop_limit) if loop_limit and not done[b] else 0
+                        if cut:
+                            del written[b][-cut:]
+                            done[b] = True
+                            loops.add(b)
                 if all(done) or step == max_new_tokens-1:
                     break
                 keys = torch.cat([keys, torch.zeros(len(jobs), 1, device=self.device, dtype=dtype)], dim=1)
@@ -183,4 +200,4 @@ class Reader:
                 out = self.model(input_ids=token.view(-1, 1), attention_mask=keys.view(len(jobs), 1, 1, -1), position_ids=position, past_key_values=cache,
                                  use_cache=True, cache_position=torch.tensor([length+step], device=self.device))
         return [{'text': self.processor.tokenizer.decode([t for t in w if t not in self.stop], skip_special_tokens=True), 'tokens': len(w),
-                 'finish': 'stop' if w and w[-1] in self.stop else 'length'} for w in written]
+                 'finish': 'loop' if b in loops else 'stop' if w and w[-1] in self.stop else 'length'} for b, w in enumerate(written)]

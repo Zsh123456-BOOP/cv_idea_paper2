@@ -47,6 +47,8 @@
 #  4. eval.transcription, the reference the frozen arm.
 #  The rule, written before any reading: the reading may teach the separator when the learned arm beats the frozen one by more than 3
 #  points of AR with its writer interval above 0, exact and NED no worse, and the fresh reader keeps at least half of that gain.
+# PART=reread (after all of the above): every reader's folds read again with --loop-limit 4 -- a reading caught in a loop stops and keeps
+#  the block once -- and scored again: one or two such readings moved AR by 7 to 18 points in the parts above.
 # Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
 # are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
@@ -59,7 +61,7 @@ PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
 SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; *) echo JOINT_FAILED ;; esac; }
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; joint) echo JOINT_FAILED ;; *) echo REREAD_FAILED ;; esac; }
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
 exec 8>"$R/$([ "$PART" = human ] && echo lock || echo "$PART.lock")"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
@@ -97,6 +99,7 @@ arm_job() {   # CARD NUMA ARM FOLD: teach, then read the fold left out
     [ -e "$reading/complete.json" ] || job "$1" "$2" "$reading" -- $(read_with "$reading" "$3" "$reader" --fold "$4")
 }
 folds_of() { local a="$1" k s=; for k in 0 1 2 3 4; do s+="${s:+,}$R/read_${a}_f$k"; done; echo "$s"; }
+on_card() { CARD_="$1"; NUMA_="$2"; "${@:3}"; }   # CARD NUMA FUNCTION ARGS...: the function with the card it was given in CARD_ and NUMA_
 if [ "$PART" = human ]; then
 done_ rescore || { "$PY" -m revrender.eval.transcription --pack "${N}_struck_reader_eval_pack" --arm "erase_then_read=$PILOT/read_untaught@erased_neutral" \
     --arm "untaught_scan=$PILOT/read_untaught@raw_neutral" --arm "untaught_struck=$PILOT/read_untaught@raw_struck" --arm "taught_struck=$PILOT/read_taught" \
@@ -257,6 +260,46 @@ done_ distilled_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" 
     --output "$R/scores_distilled.json" > "$R/distilled_score.log" 2>&1; mark distilled_score; }
 touch "$R/DISTILLED_COMPLETE"; stamp 'distilled part complete'; exit 0; fi
 
+if [ "$PART" = reread ]; then test -e "$R/JOINT_COMPLETE"
+HUMAN=$PACK; cards "${CARDS:-1}"
+reread_arm() {   # NAME ARM PACK [hints of the fold's reader named so]: the five folds read again by the readers NAME, in the words of ARM
+    local name="$1" arm="$2" k more; PACK="$3"
+    for k in 0 1 2 3 4; do
+        more=(); [ -z "${4:-}" ] || more=(--erased "${N}_revision_reader_$4_f$k/hints")
+        [ -e "$R/reread_${name}_f$k/complete.json" ] || job "$CARD_" "$NUMA_" "$R/reread_${name}_f$k" -- $(read_with "$R/reread_${name}_f$k" "$arm" "${N}_revision_reader_${name}_f$k" \
+            --fold "$k" --loop-limit 4 ${more[@]+"${more[@]}"})
+    done
+}
+untaught_again() {   # NAME PACK CONDITION...
+    local out="$R/reread_$1"; [ -e "$out/complete.json" ] || job "$CARD_" "$NUMA_" "$out" -- "$PY" -m revrender.recognize_lines --pack "$2" --model "$MODEL" --backend hf \
+        --batch-size 8 --loop-limit 4 --conditions "${@:3}" --output-dir "$out"
+}
+if ! done_ reread; then
+    alone on_card reread_arm raw raw "$HUMAN"; alone on_card reread_arm sep_pair pair "$SEP"; alone on_card reread_arm distilled_pair pair "$DISTILLED"
+    alone on_card reread_arm pair pair "$HUMAN"; alone on_card reread_arm erased erased "$HUMAN"; alone on_card reread_arm mapped mapped "$HUMAN"
+    alone on_card reread_arm sep_erased erased "$SEP"; alone on_card reread_arm sep_mapped mapped "$SEP"
+    alone on_card reread_arm views_context context "$VIEWS"; alone on_card reread_arm views_pair_mapped pair_mapped "$VIEWS"; alone on_card reread_arm views_bracket bracket "$VIEWS"
+    alone on_card reread_arm joint_frozen pair "$DISTILLED" joint_frozen; alone on_card reread_arm joint_learned pair "$DISTILLED" joint_learned
+    alone on_card reread_arm joint_transfer pair "$DISTILLED" joint_learned
+    alone on_card untaught_again untaught "$HUMAN" raw_revision erased_revision; alone on_card untaught_again sep_untaught "$SEP" erased_revision
+    alone on_card untaught_again distilled_untaught "$DISTILLED" erased_revision
+    wait; for name in raw sep_pair distilled_pair pair erased mapped sep_erased sep_mapped views_context views_pair_mapped views_bracket joint_frozen joint_learned joint_transfer; do
+        for k in 0 1 2 3 4; do test -e "$R/reread_${name}_f$k/complete.json"; done; done
+    for name in untaught sep_untaught distilled_untaught; do test -e "$R/reread_$name/complete.json"; done
+    mark reread; fi
+again() { local a="$1" k s=; for k in 0 1 2 3 4; do s+="${s:+,}$R/reread_${a}_f$k"; done; echo "$s"; }
+if ! done_ reread_score; then
+    for reference in taught_scan taught_pair joint_frozen; do
+        [ -e "$R/scores_reread_vs_$reference.json" ] || "$PY" -m revrender.eval.transcription --pack "$DISTILLED" --arm "untaught_scan=$R/reread_untaught@raw_revision" \
+            --arm "erase_then_read=$R/reread_sep_untaught" --arm "distilled_erase_then_read=$R/reread_distilled_untaught" --arm "taught_scan=$(again raw)" \
+            --arm "taught_erased=$(again sep_erased)" --arm "taught_mapped=$(again sep_mapped)" --arm "taught_pair=$(again sep_pair)" --arm "context=$(again views_context)" \
+            --arm "pair_mapped=$(again views_pair_mapped)" --arm "bracket=$(again views_bracket)" --arm "distilled_pair=$(again distilled_pair)" \
+            --arm "joint_frozen=$(again joint_frozen)" --arm "joint_learned=$(again joint_learned)" --arm "joint_transfer=$(again joint_transfer)" \
+            --arm "human_erased=$(again erased)" --arm "human_mapped=$(again mapped)" --arm "human_pair=$(again pair)" --arm "human_erase_then_read=$R/reread_untaught@erased_revision" \
+            --reference "$reference" --agreement context=taught_pair --output "$R/scores_reread_vs_$reference.json" > "$R/reread_score_$reference.log" 2>&1
+    done; mark reread_score; fi
+touch "$R/REREAD_COMPLETE"; stamp 'reread part complete'; exit 0; fi
+
 test "$PART" = joint
 until [ -e "$R/DISTILLED_COMPLETE" ]; do [ ! -e "$R/DISTILLED_FAILED" ] || { echo 'the distilled part failed'; exit 1; }; sleep 60; done      # one card, and its students
 cards "${CARDS:-1}"; HUMAN=$PACK; PACK=$DISTILLED
@@ -267,7 +310,6 @@ joint_job() {   # KIND FOLD [more of train_reader]: a pair reader whose separato
         --anchor-pack "$HUMAN" ${lr[@]+"${lr[@]}"} "$@")
     [ -e "$reading/complete.json" ] || job "$CARD_" "$NUMA_" "$reading" -- $(read_with "$reading" pair "$reader" --fold "$k" --erased "$reader/hints")
 }
-on_card() { CARD_="$1"; NUMA_="$2"; "${@:3}"; }   # CARD NUMA FUNCTION ARGS...: the function with the card it was given in CARD_ and NUMA_
 transfer_job() {   # FOLD: a fresh pair reader taught on the learned separator's hints
     local reader="${N}_revision_reader_joint_transfer_f$1" reading="$R/read_joint_transfer_f$1" hints="${N}_revision_reader_joint_learned_f$1/hints"
     [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" pair "$1" --erased "$hints")

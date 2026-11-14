@@ -105,3 +105,11 @@ def test_agreement_of_two_arms():
     first = {'a': 'x=5', 'b': 'v', 'c': '2', 'd': UNREADABLE}; second = {'a': 'x=5', 'b': 'y', 'c': '7', 'd': 'q'}
     got = transcription.agreement(first, second, rows)
     assert got == {'regions': 4, 'differ': .75, 'exact_where_same': 1., 'exact_where_differ': .5, 'wrong_caught': 1., 'unreadable_differ': 1.}
+
+
+def test_a_reading_caught_in_a_loop_is_cut_to_one_block():
+    from revrender.models.vlm_tokens import looped
+    assert looped([1, 2, 3, 4, 5, 6, 7, 8, 9], 4) == 0
+    assert looped([9, 8] + [1, 2, 3]*4, 4) == 9 and looped([9, 8] + [1, 2, 3]*3, 4) == 0          # four writings of a block of three: keep one
+    assert looped([7]*11, 4) == 0 and looped([7]*12, 4) == 9                                       # a short stutter is left alone
+    assert looped([1, 2, 3, 4, 5, 6]*2, 4) == 0
