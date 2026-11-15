@@ -21,8 +21,9 @@ _NAMES = {'because': '∵', 'therefore': '∴', 'angle': '∠', 'triangle': '△
           'parallel': '∥', 'cong': '≅', 'sim': '~', 'infty': '∞', 'square': '□', 'pi': 'π', 'alpha': 'α', 'beta': 'β',
           'gamma': 'γ', 'theta': 'θ', 'lambda': 'λ', 'mu': 'μ', 'Delta': 'Δ', 'approx': '≈', 'in': '∈', 'cap': '∩', 'cup': '∪',
           'rightarrow': '→', 'to': '→', 'Rightarrow': '⇒', 'ldots': '…', 'dots': '…', 'backsim': '~'}
-# one sign for each relation however it is spelt (user 2026-10-22): the textbook ≌ and ≅ are congruence, ∽, ∼ and ~ similarity
-_SAME = (('≌', '≅'), ('∽', '~'), ('∼', '~'))
+# one sign for each relation however it is spelt (user 2026-10-22): the textbook ≌ and ≅ are congruence, ∽, ∼ and ~ similarity;
+# the division and the dot of multiplication as \div and \cdot are spelt (plan of 2026-11-15)
+_SAME = (('≌', '≅'), ('∽', '~'), ('∼', '~'), ('÷', '/'), ('·', '*'), ('⋅', '*'))
 _CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩'
 _SUPERSCRIPT = {str(i): c for i, c in enumerate('⁰¹²³⁴⁵⁶⁷⁸⁹')}
 _LAYOUT = ('left', 'right', 'quad', 'qquad', 'displaystyle', 'limits', 'big', 'Big', 'bigg', 'Bigg', 'mathrm', 'mathbf', 'mathit',

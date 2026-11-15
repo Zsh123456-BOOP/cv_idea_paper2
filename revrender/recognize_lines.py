@@ -30,6 +30,13 @@ for, or ``[读不出]`` when it cannot be read.
   pair_mapped_revision  the pair, and the layer map into the scan's patch embedding as well
   context_revision      the pair and, as a third image, the line the region stands in, the region boxed in blue (``images.context``)
 
+Conditions of a whole line (a pack of ``data.line_set pack``: a row is a line, its struck regions erased in ``before`` and taken out in
+``after``; a row without the condition's image is not read under it):
+
+  before_line      ``before``, nothing more than the skeleton
+  after_line       ``after``, nothing more than the skeleton
+  difference_line  ``before`` and, as a second image, ``after``: give only what the first has and the second has not
+
 ``--intervention strike_off | writing_off`` (a pack of ``data.struck_pack counterfactual``) reads the rows with their strike, or their
 struck writing, taken off the images (``INTERVENED``): what a reader that reads from the evidence should keep reading, and should no
 longer read.  With ``--backend hf`` every reading carries its ``confidence``, the geometric mean of the probabilities of its tokens.
@@ -74,6 +81,8 @@ ILLEGIBLE = f'被划掉的内容完全认不出时，只输出 {UNREADABLE}。'
 CLEANED = '图中原来被划线划掉的内容，划线已经被去掉（可能没有去干净，也可能擦掉了一部分字迹）。转写这部分原来写的内容。'
 PAIR = '第一张是原图；第二张是去掉划线后的参考图，参考图可能有错，以原图为准。'
 CONTEXT = '第三张是这一处所在的那一行，蓝色框标出的就是这一处（框里是去掉划线后的样子）。只转写蓝色框里原来被划掉的内容，框外的内容不要输出，也不要照抄框外写的字。'
+DIFFERENCE = ('两张图是同一行手写作答。第一张比第二张多出一段或几段内容，其余部分相同。只转写第一张里有、第二张里没有的内容，两张都有的不要输出。'
+              f'公式写在 $ $ 之间。多出的内容完全认不出时，只输出 {UNREADABLE}。')
 CONDITIONS = {
     'raw_neutral': ('raw', (), None),
     'raw_final': ('raw', (FINAL,), None),
@@ -93,6 +102,9 @@ CONDITIONS = {
     'mapped_revision': ('raw', (STRUCK, ILLEGIBLE), 'map'),
     'pair_mapped_revision': (('raw', 'erased'), (PAIR, STRUCK, ILLEGIBLE), 'map'),
     'context_revision': (('raw', 'erased', 'context'), (PAIR, CONTEXT, STRUCK, ILLEGIBLE), None),
+    'before_line': ('before', (), None),
+    'after_line': ('after', (), None),
+    'difference_line': (('before', 'after'), (DIFFERENCE,), None),
     'hide_band_neutral': ('raw', (), 'band'),
     'hide_ink_neutral': ('raw', (), 'ink'),
     'soft_band_neutral': ('raw', (), 'soft_band'),
@@ -101,6 +113,7 @@ CONDITIONS = {
 TOKEN_RULES = {c for c, (_, _, rule) in CONDITIONS.items() if rule and rule != 'map'}
 REVISION = {c for c in CONDITIONS if c.endswith('_revision')}
 MAPPED = {c for c, (_, _, rule) in CONDITIONS.items() if rule == 'map'}
+LINE = {c for c in CONDITIONS if c.endswith('_line')}
 # an intervention on the evidence: the image that stands in for each image of a row
 INTERVENED = {'strike_off': {'raw': 'raw_strike_off'}, 'writing_off': {'raw': 'raw_writing_off', 'erased': 'erased_writing_off'}}
 
@@ -161,7 +174,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     p.add_argument('--pack', type=Path, required=True)
     p.add_argument('--model', type=Path, required=True)
-    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | REVISION | {'raw_struck', 'boxed_read', 'boxed_marked', 'from_pack'}])
+    p.add_argument('--conditions', nargs='+', choices=tuple(CONDITIONS), default=[c for c in CONDITIONS if c not in TOKEN_RULES | REVISION | LINE | {'raw_struck', 'boxed_read', 'boxed_marked', 'from_pack'}])
     p.add_argument('--backend', choices=('vllm', 'hf'), default='vllm')
     p.add_argument('--adapter', type=Path, help='hf: a LoRA adapter of train_reader, merged into the model')
     p.add_argument('--layer-map', type=Path, help='hf: the layer-map weights of train_reader --layer-map (mapped conditions)')
@@ -189,7 +202,8 @@ def main(argv=None):
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
     rows = [r for r in pack['rows'] if args.fold is None or r['fold'] == args.fold][:args.limit or None]
     require(rows, 'no row to read')
-    jobs = [(c, row) for c in args.conditions for row in rows]
+    jobs = [(c, row) for c in args.conditions for row in rows if all(key in row['images'] for key in image_keys(c))]
+    require(jobs, 'no row has the images of the conditions')
     out = make_output_dir(args.output_dir)
     if args.backend == 'hf':
         from .models.vlm_tokens import Reader
@@ -204,7 +218,7 @@ def main(argv=None):
                                                            **({str(w): digest(w) for w in sorted(args.adapter.glob('*.safetensors'))} if args.adapter else {}),
                                                            **({str(args.layer_map): digest(args.layer_map)} if args.layer_map else {})},
                    backend=args.backend, rows=len(jobs), lines=len(rows),
-                   conditions={c: {'image': image_keys(c), 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0])} for c in args.conditions},
+                   conditions={c: {'image': image_keys(c), 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0]), 'rows': sum(j[0] == c for j in jobs)} for c in args.conditions},
                    system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'loop_limit': args.loop_limit, 'dtype': 'bfloat16'})
     name = args.model.name+(f'+{args.adapter.parent.name}' if args.adapter else '')      # the reading of a model with an adapter is another model's
     started, done = time.monotonic(), 0
