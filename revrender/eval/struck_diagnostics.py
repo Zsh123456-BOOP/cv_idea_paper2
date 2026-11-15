@@ -1,4 +1,4 @@
-"""Why do VLMs misread struck content?  The diagnostic study of docs/struck_diagnostics_plan.md: nothing is trained, no test writer is
+"""Why do VLMs misread struck content?  The diagnostic study (its plan is in the git history): nothing is trained, no test writer is
 read.
 
     python -m revrender.eval.struck_diagnostics build --config configs/struck_diagnostics.toml --output-dir BUILD
@@ -410,7 +410,7 @@ def score(args):
 
 def report(summary, regions, rows, raw):
     pct = lambda v: '—' if v is None else f'{100*v:.1f}'
-    lines = ['# 诊断实验结果', '', '按 docs/struck_diagnostics_plan.md 运行；读回率、严格全对等均为百分比。', '', '## 判定（§8）', '']
+    lines = ['# 诊断实验结果', '', '按诊断实验方案（见 git 历史）运行；读回率、严格全对等均为百分比。', '', '## 判定（§8）', '']
     for rule, held in summary['decisions']['rules'].items():
         lines.append(f'- {rule}：{"成立" if held else "不成立"}')
     for model in summary['models']:

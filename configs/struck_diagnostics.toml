@@ -1,4 +1,4 @@
-# Diagnostic study: why do VLMs misread struck content?  (docs/struck_diagnostics_plan.md)
+# Diagnostic study: why do VLMs misread struck content?  (the plan is in the git history)
 # Nothing is trained; no test writer is read.  The thresholds below were fixed before any reading was seen.
 name = "struck_diagnostics"
 seed = 42

@@ -1,4 +1,4 @@
-# Phase 2 of docs/struck_diagnostics_plan.md (§12.1): does knowing the struck content help judge a revision?
+# Phase 2 of the diagnostic study (its plan is in the git history): does knowing the struck content help judge a revision?
 # Nothing is trained; no test writer is read.  The decision below was fixed before any judgment was read.
 name = "revision_judgment"
 seed = 42

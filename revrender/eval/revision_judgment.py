@@ -1,4 +1,4 @@
-"""Phase 2 of the diagnostic study (docs/struck_diagnostics_plan.md §12.1): does knowing the struck content help a VLM judge a revision?
+"""Phase 2 of the diagnostic study (its plan, §12.1, is in the git history): does knowing the struck content help a VLM judge a revision?
 
     python -m revrender.eval.revision_judgment build --config configs/revision_judgment.toml --output-dir PACK
     python -m revrender.recognize_lines --pack PACK --conditions from_pack --model MODEL ... --output-dir READ

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The diagnostic study of docs/struck_diagnostics_plan.md, unattended and resumable, on cards 1, 2 and 3 (card 3 on the user's word,
+# The diagnostic study (its plan is in the git history), unattended and resumable, on cards 1, 2 and 3 (card 3 on the user's word,
 # 2026-10-11: ALLOW_GPU3=1):
 #   1. build the versions and scopes (eval.struck_diagnostics build; the synthetic box remover needs a card) unless OUT_build is there;
 #   2. per model a 20-request smoke (at least 95% of readings inside <transcription>, else the model is skipped and logged), then its
