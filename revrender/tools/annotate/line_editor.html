@@ -17,7 +17,10 @@ main{flex:1;display:grid;grid-template-columns:210px 1fr 440px;min-height:0}
 .chips{display:flex;flex-wrap:wrap;gap:4px;margin:2px 0 8px}.chip{min-width:28px;padding:1px 6px;border:1px solid var(--line);border-radius:12px;text-align:center;cursor:pointer;font-size:12px;background:white}
 .chip.seen{background:#e6f4ef;border-color:#9cd1bf}.chip.wrong{box-shadow:inset 0 -3px 0 var(--amber)}.chip.on{border-color:var(--blue);background:var(--blue);color:white}.chip.off{opacity:.35}
 h2{font-size:14px;margin:12px 0 6px;padding-top:8px;border-top:1px solid var(--line)}h2:first-child{border:0;padding:0;margin-top:0}
-.crops{display:grid;grid-template-columns:1fr 1fr;gap:8px}.crops figure{margin:0}.crops img{display:block;max-width:100%;max-height:150px;image-rendering:auto;border:1px solid var(--line);border-radius:4px;background:white}
+.crops{display:grid;grid-template-columns:1fr 1fr;gap:8px}.crops figure{margin:0}.crops canvas{display:block;max-width:100%;border:1px solid var(--line);border-radius:4px;background:white}
+.paintbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0}.paintbar .grow{flex:1}.paintbar button.on,.modes button.on{background:var(--blue);color:white;border-color:var(--blue)}
+.paintwrap{overflow:auto;max-height:260px;border:1px solid var(--line);border-radius:6px;background:#e6e9ee;padding:4px}#paint{display:block;image-rendering:pixelated;cursor:crosshair;touch-action:none}
+.chip.deleted{text-decoration:line-through;color:var(--muted);background:#f1f1f1}.deletedNote{color:var(--red);font-weight:600}
 .crops figcaption{font-size:11px;color:var(--muted)}
 .readings{margin:8px 0;padding:6px 8px;border:1px dashed var(--line);border-radius:6px;background:#fbfcfd;font-size:13px}.readings .note{font-size:11px;color:var(--amber)}
 .readings .r{display:grid;grid-template-columns:150px 1fr;gap:6px;align-items:baseline}.readings .r small{color:var(--muted)}.readings .bad{color:var(--amber);font-weight:600}
@@ -34,7 +37,7 @@ details{margin-top:4px}summary{cursor:pointer;font-size:12px;color:var(--muted)}
 .ac{position:absolute;left:0;right:0;top:100%;z-index:5;max-height:260px;overflow:auto;background:white;border:1px solid var(--blue);border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
 .ac-item{display:grid;grid-template-columns:130px 60px 1fr;gap:8px;align-items:center;padding:4px 9px;cursor:pointer;font-size:13px}.ac-item.on{background:var(--blue);color:white}.ac-item code{font:12px ui-monospace,Menlo,monospace}
 #linePanel ul{margin:4px 0;padding-left:18px}kbd{font:11px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-bottom-width:2px;border-radius:3px;padding:0 3px}
-#status{font-size:12px;color:var(--muted);min-height:1.4em}#status.error{color:var(--red);font-weight:600}
+#status{font-size:12px;color:var(--green);min-height:1.6em;padding:2px 8px;background:white;border-bottom:1px solid var(--line)}#status.error{color:var(--red);font-weight:600}
 </style></head><body>
 <!--PACK-->
 <header>
@@ -42,7 +45,7 @@ details{margin-top:4px}summary{cursor:pointer;font-size:12px;color:var(--muted)}
   <span id="progress"></span>
   <label class="muted">筛选 <select id="filter">
     <option value="all">全部</option><option value="unseen">未看过</option><option value="wrong">上限读错</option>
-    <option value="whole">整行被划</option><option value="changed">改过答案</option></select></label>
+    <option value="whole">整行被划</option><option value="changed">改过（答案、框或像素）</option><option value="nopixels">没涂像素</option><option value="deleted">已删除</option></select></label>
   <span class="grow"></span>
   <span id="saveState">正在载入…</span>
   <button id="bindBackup" title="选一个文件，之后每次修改都自动写进去">绑定备份文件</button>
@@ -54,10 +57,12 @@ details{margin-top:4px}summary{cursor:pointer;font-size:12px;color:var(--muted)}
   <nav id="pages" aria-label="题目"></nav>
   <section id="centre">
     <div id="tools">
+      <span class="modes"><button id="modeLines" class="on">编辑行框 <kbd>L</kbd></button><button id="modeRegions">编辑涂改框 <kbd>R</kbd></button></span>
       <button id="fitBtn">适应窗口</button><span id="zoomLabel" class="muted"></span>
       <button id="redrawBtn" disabled>重画选中行框</button><button id="deleteLineBtn" disabled>删除空行</button>
-      <span class="hint">点行框选中；拖白点改形状，拖边上小点加点，<kbd>Alt</kbd>+点白点删点；空白处拖出矩形 = 新建一行（中心落在里面的涂改归它）；<kbd>Shift</kbd>/右键拖动平移，滚轮缩放。红虚线是涂改框（只读）。</span>
+      <span class="hint" id="hint"></span>
     </div>
+    <div id="status"></div>
     <div id="stage"><canvas id="whole" tabindex="0" aria-label="整题图"></canvas></div>
   </section>
   <aside id="side">
@@ -66,10 +71,10 @@ details{margin-top:4px}summary{cursor:pointer;font-size:12px;color:var(--muted)}
     <div id="detail">
       <div class="row"><b id="regionName"></b><span class="muted" id="regionWhere"></span></div>
       <div class="crops">
-        <figure><img id="cropRaw" alt="原图小块"><figcaption>原图（折线框外涂白）</figcaption></figure>
-        <figure><img id="cropErased" alt="人工擦线小块"><figcaption>人工擦线</figcaption></figure>
+        <figure><canvas id="cropRaw"></canvas><figcaption>原图（折线框外涂白）</figcaption></figure>
+        <figure><canvas id="cropErased"></canvas><figcaption>人工擦线</figcaption></figure>
       </div>
-      <div class="readings"><div class="note">读数仅供找错，以图为准</div><div id="readings"></div></div>
+      <div class="readings"><div class="note">读数仅供找错，以图为准<span id="staleNote"></span></div><div id="readings"></div></div>
       <div class="muted">被划文字（看不清的字写 ?，公式写在 $ $ 里；打 \ 出符号表）</div>
       <div class="symbol-field"><textarea id="text" spellcheck="false"></textarea><div class="ac" id="symbolList" hidden></div></div>
       <details><summary>常用符号</summary><div class="symbol-bar" id="symbolBar"></div></details>
@@ -85,10 +90,18 @@ details{margin-top:4px}summary{cursor:pointer;font-size:12px;color:var(--muted)}
         <button id="prevBtn">上一处</button><button id="nextBtn" class="primary">看过，下一处 <kbd>Enter</kbd></button>
       </div>
     </div>
+    <h2>划线像素 <span class="muted">（框改大或补标后在这里补涂）</span></h2>
+      <div class="paintbar">
+        <button id="brushBtn" class="on">画笔 <kbd>B</kbd></button><button id="eraserBtn">橡皮 <kbd>E</kbd></button>
+        <label class="muted">粗细 <input type="range" id="brushSize" min="1" max="12" value="3"></label><span id="brushLabel" class="muted"></span>
+        
+      </div>
+      <div class="paintwrap"><canvas id="paint" aria-label="划线像素"></canvas></div>
+      <div class="muted">红色是划线像素（擦掉的）。画笔只涂框内的墨迹，橡皮擦掉标记；<kbd>[</kbd> <kbd>]</kbd> 调粗细。</div>
+      <div class="row"><button id="deleteRegionBtn">删除这处（不是涂改）</button></div>
     <h2>选中的行</h2>
     <div id="linePanel" class="muted">在图上点一个行框。</div>
-    <div id="status"></div>
   </aside>
 </main>
-<script src="page_rules.js"></script><script src="pixel_overview.js"></script><script src="library_store.js"></script><script src="symbol_picker.js"></script><script src="line_rules.js"></script><script src="line_editor.js"></script>
+<script src="page_rules.js"></script><script src="pixel_rules.js"></script><script src="pixel_overview.js"></script><script src="library_store.js"></script><script src="symbol_picker.js"></script><script src="line_rules.js"></script><script src="line_editor.js"></script>
 </body></html>

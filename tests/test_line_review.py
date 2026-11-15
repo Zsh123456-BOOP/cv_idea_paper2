@@ -47,8 +47,9 @@ def run_rules(script):
 PACK = """
   const box = (l, t, r, b) => [[l, t], [r, t], [r, b], [l, b]];
   const pack = {id: 'p1', pages: [{id: 'q', size: [400, 200],
-    regions: [{id: 'q#a', region: box(10, 10, 50, 30), text: 'x', readable: true}, {id: 'q#b', region: box(60, 10, 90, 30), text: '', readable: false},
-              {id: 'q#c', region: box(10, 60, 300, 80), text: '2', readable: true}],
+    regions: [{id: 'q#a', region: box(10, 10, 50, 30), box: [10, 10, 50, 30], runs: [[0, 4]], mode: 'erase', text: 'x', readable: true},
+              {id: 'q#b', region: box(60, 10, 90, 30), box: [60, 10, 90, 30], runs: [], mode: 'keep', text: '', readable: false},
+              {id: 'q#c', region: box(10, 60, 300, 80), box: [10, 60, 300, 80], runs: [], mode: 'erase', text: '2', readable: true}],
     lines: [{id: 'q#L1', regions: ['q#a', 'q#b'], polygon: box(0, 5, 300, 35), estimate: box(0, 5, 300, 35), whole: false},
             {id: 'q#L2', regions: ['q#c'], polygon: box(10, 60, 300, 80), estimate: box(0, 55, 320, 85), whole: true}]}]};
 """
@@ -87,6 +88,40 @@ def test_export_keeps_the_original_answer_and_imports_back():
     """)
     b = next(r for r in out['regions'] if r['id'] == 'q#b')
     assert b == {'id': 'q#b', 'page': 'q', 'text': 'y', 'readable': True, 'original_text': '', 'original_readable': False, 'corrected': True,
-                 'line': 'q#L1', 'whole_line': False, 'seen': False}
+                 'line': 'q#L1', 'whole_line': False, 'seen': False, 'deleted': False, 'added': False, 'region_changed': False,
+                 'pixels_changed': False, 'mode': 'keep', 'region': [[60, 10], [90, 10], [90, 30], [60, 30]],
+                 'original_region': [[60, 10], [90, 10], [90, 30], [60, 30]], 'box': [60, 10, 90, 30], 'runs': []}
     assert out['lines'] == [['q#L1', ['q#a', 'q#b'], False, False], ['q#L2', ['q#c'], True, False]]
     assert out['same'] and '不属于' in out['other']
+
+
+@pytest.mark.skipif(not NODE, reason='needs node')
+def test_regions_are_reshaped_painted_added_and_taken_out():
+    out = run_rules(PACK + """
+      const s = L.initial(pack), o = {};
+      L.reshapeRegion(pack, s, 'q#a', box(5, 10, 50, 30));        // grown to the left: the strike pixels kept where they were
+      o.grown = [L.strike(pack, s, 'q#a', [5, 10, 50, 30]), L.changes(pack, s, 'q#a')];
+      L.reshapeRegion(pack, s, 'q#a', box(20, 10, 50, 30)); L.reshapeRegion(pack, s, 'q#a', box(10, 10, 50, 30));
+      o.back = L.strike(pack, s, 'q#a', [10, 10, 50, 30]);         // shrunk past them and grown again: back
+      const w = L.window(pack, s, 'q#a'), px = L.maskIn(pack, s, 'q#a', w); px[(12 - w[1]) * (w[2] - w[0]) + 30 - w[0]] = 1;
+      L.setMask(pack, s, 'q#a', w, px); o.painted = [L.strike(pack, s, 'q#a', [10, 10, 50, 30]), L.changes(pack, s, 'q#a').pixels];
+      L.setWhole(pack, s, 'q#c', true); L.reshapeRegion(pack, s, 'q#c', box(10, 58, 310, 82)); o.wholeFollows = s.lines['q#L2'].polygon;
+      const added = L.addRegion(pack, s, 0, box(100, 12, 120, 28)), alone = L.addRegion(pack, s, 0, box(100, 150, 120, 170));
+      o.added = [added, s.regions[added].line, alone, s.regions[alone].line, L.ids(pack, s)];
+      L.removeRegion(s, 'q#b'); o.removed = L.members(s, 'q#L1');
+      L.removeRegion(s, alone); L.removeLine(s, s.regions[alone].line);
+      L.restoreRegion(pack, s, alone); o.restored = s.lines[s.regions[alone].line].polygon;
+      L.removeRegion(s, alone);
+      const e = L.exported(pack, s); L.check(pack, JSON.parse(JSON.stringify(s)));
+      o.exported = e.regions.map(r => [r.id, r.deleted, r.added, r.line]); o.addedRow = e.regions.find(r => r.id === added);
+      return o;
+    """)
+    assert out['grown'][0] == [[5, 4]] and out['grown'][1] == {'added': False, 'text': False, 'region': True, 'pixels': False}
+    assert out['back'] == [[0, 4]]
+    assert out['painted'] == [[[0, 4], [100, 1]], True]                 # row 2, column 20 of a box 40 wide
+    assert out['wholeFollows'] == [[10, 58], [310, 58], [310, 82], [10, 82]]
+    assert out['added'] == ['q#add1', 'q#L1', 'q#add2', 'q#N1', ['q#a', 'q#b', 'q#c', 'q#add1', 'q#add2']]
+    assert out['removed'] == ['q#a', 'q#add1']
+    assert out['restored'] == [[96, 146], [124, 146], [124, 174], [96, 174]]
+    assert out['exported'] == [['q#a', False, False, 'q#L1'], ['q#b', True, False, None], ['q#c', False, False, 'q#L2'], ['q#add1', False, True, 'q#L1']]
+    assert out['addedRow']['original_text'] is None and out['addedRow']['runs'] == [] and out['addedRow']['region_changed']

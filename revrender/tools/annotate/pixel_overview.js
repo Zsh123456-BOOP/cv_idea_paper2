@@ -70,7 +70,7 @@ class PixelOverview {
       const selected=r.id===this.selected,region=selected&&this.drag?.kind==='handle'?this.drag.region:r.region;
       const colour=this.cb.colour?this.cb.colour(r,selected):selected?'#235cca':r.not_revision?'#89939d':r.confirmed?'#137660':'#d34a3d';
       path(region);cx.lineWidth=(selected?2.5:1.5)/this.scale;cx.strokeStyle=colour;cx.stroke();
-      const [l,t]=bounds(region);cx.font=`${12/this.scale}px sans-serif`;cx.fillStyle=colour;cx.fillRect(l,t-18/this.scale,23/this.scale,18/this.scale);cx.fillStyle='white';cx.fillText(String(i+1),l+5/this.scale,t-4/this.scale);
+      const [l,t]=bounds(region);cx.font=`${12/this.scale}px sans-serif`;cx.fillStyle=colour;cx.fillRect(l,t-18/this.scale,23/this.scale,18/this.scale);cx.fillStyle='white';cx.fillText(this.cb.label?this.cb.label(r,i):String(i+1),l+5/this.scale,t-4/this.scale);
       if(selected&&this.editing)region.forEach((p,j)=>{
         const q=region[(j+1)%region.length],mid=[(p[0]+q[0])/2,(p[1]+q[1])/2];
         for(const [dot,radius] of [[p,5],[mid,3]]){cx.beginPath();cx.arc(...dot,radius/this.scale,0,Math.PI*2);cx.fillStyle='white';cx.fill();cx.strokeStyle=colour;cx.stroke();}

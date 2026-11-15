@@ -7,9 +7,11 @@ The unit a reader is scored on becomes a line (user 2026-11-15): each region bel
 regions, and a region that is the whole line marked so (its line is then its own polygon).  The page shows each question's clean image
 (the one its export showed the annotator: the dataset's ``image_source`` when that folder is here, else the first of ``--pages`` holding
 it) with the regions' polygons (read only) and a prefilled line polygon per line, which the annotator drags, extends, redraws or makes
-anew; and per region its crops in the readers' window (``data.struck_pack.layered``: the scan and the scan with the strike pixels white,
+anew; and per region its crops in the readers' window (as ``data.struck_pack.layered``: the scan and the scan with the strike pixels white,
 white outside the polygon), the readings named by ``--reading`` (only to find mistakes), its struck text and the readable mark to
-correct, the whole-line mark and a seen mark.
+correct, the whole-line mark and a seen mark.  The region polygons and strike pixels can be changed too: a polygon dragged, a region
+added or taken out, the strike pixels painted (B) or erased (E) in the window; the crops are cut in the page from the page image, as
+``layered`` cuts them, and follow every change.
 
 The prefill: a region goes to the line of the catalogue (``data.lines``) that covers most of its height; regions no catalogue line
 covers get a band of their own height stretched sideways along the ink (gaps up to ``GAP`` heights), merged into a line they overlap.
@@ -17,7 +19,8 @@ A line's polygon is the box of its catalogue line (or band) and its regions.  A 
 ``WHOLE`` of the line's ink is guessed to be the whole line.
 
 The page keeps every change in IndexedDB and localStorage (read back, the place shown) and, once bound, in a backup file; it exports
-and imports the progress as JSON (``schema`` ``paper2-line-review-v1``).  The output is student work: it stays out of Git.
+and imports the progress as JSON (``schema`` ``paper2-line-review-v1``).  A new build of the page (another pack id) takes over what the
+builds named by ``--carry-over`` saved in the same browser, while it has nothing of its own.  The output is student work: it stays out of Git.
 """
 import argparse
 import base64
@@ -31,13 +34,12 @@ from PIL import Image
 
 from ...data.lines import crop_box, default_catalogue, lines_by_image
 from ...data.pixel_masks import region_pixels
-from ...data.struck_pack import layered
 from ...eval.transcription import counts, refused
 from ...util import digest, make_output_dir, require, write_json, write_manifest
 from .pixel_offline import katex_inline, script_json
 
 HERE = Path(__file__).parent
-ASSETS = ('line_editor.html', 'page_rules.js', 'pixel_overview.js', 'library_store.js', 'symbol_picker.js', 'line_rules.js', 'line_editor.js')
+ASSETS = ('line_editor.html', 'page_rules.js', 'pixel_rules.js', 'pixel_overview.js', 'library_store.js', 'symbol_picker.js', 'line_rules.js', 'line_editor.js')
 INK = 200      # grey below which a pixel is ink
 GAP = 2.        # a band follows the ink sideways across gaps of up to this many region heights
 COVER = .5     # a catalogue line takes a region when it covers at least this share of the region's height
@@ -152,10 +154,8 @@ def build(args):
         lines = estimate_lines(grey, here, catalogue.get(page_id, []))
         rows = []
         for r in here:
-            scan, erased, _ = layered(image, r)
-            row = {'id': r['id'], 'region': r['region'], 'box': r['box'], 'mode': r['mode'], 'text': r['text'] or '',
-                   'readable': bool(r['readable']), 'raw': data_uri(scan), 'erased': data_uri(erased),
-                   'readings': {label: got[r['id']] for label, got in read.items()}}
+            row = {'id': r['id'], 'region': r['region'], 'box': r['box'], 'runs': r['runs'], 'mode': r['mode'] or 'erase', 'text': r['text'] or '',
+                   'readable': bool(r['readable']), 'readings': {label: got[r['id']] for label, got in read.items()}}
             if check: row['wrong'] = wrong({'readable': bool(r['readable']), 'text': r['text'] or ''}, read[check][r['id']])
             rows.append(row)
         out_lines = []
@@ -170,7 +170,7 @@ def build(args):
                       'from_ink': sum(l['source'] == 'ink' for l in out_lines)})
     revision = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:12]
     pack = {'schema': 'paper2-line-review-pack-v1', 'id': f'{args.name}-{revision}', 'name': args.name, 'pages': pages,
-            'labels': dict(label.split('=', 1) for label in args.label) if args.label else {}, 'check': check}
+            'labels': dict(label.split('=', 1) for label in args.label) if args.label else {}, 'check': check, 'carry': args.carry_over}
     out = make_output_dir(args.output_dir)
     html = (HERE/'line_editor.html').read_text()
     style, script = katex_inline(args.katex)
@@ -199,6 +199,7 @@ def main(argv=None):
     b.add_argument('--label', action='append', default=[], help='LABEL=what the page calls that reading')
     b.add_argument('--check', help='the reading whose mistakes the page can filter by (default the last)')
     b.add_argument('--katex', type=Path, required=True, help='a KaTeX dist folder to inline (formulas render offline)')
+    b.add_argument('--carry-over', action='append', default=[], help='the pack id of an earlier build whose progress this browser keeps: taken over while this build has none')
     b.add_argument('--name', required=True); b.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
     build(args)
