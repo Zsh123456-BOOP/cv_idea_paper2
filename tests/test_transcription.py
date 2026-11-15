@@ -63,6 +63,19 @@ def test_layered_images_of_a_region():
     assert (e[m > 0] == 255).all() and (e[m == 0] == s[m == 0]).all()
 
 
+def test_layered_images_are_white_outside_the_polygon():
+    grey = np.full((60, 80), 255, np.uint8); grey[20:30, 10:50] = 40              # writing that runs past the polygon
+    grey[24:26, 5:60] = 90
+    strike = np.zeros((20, 60), bool); strike[9:11, :55] = True
+    region = [[5, 15], [35, 15], [35, 35], [5, 35]]                               # the left half of the box (5, 15, 65, 35)
+    scan, erased, layer = struck_pack.layered(Image.fromarray(grey), {'box': [5, 15, 65, 35], 'runs': encode(strike), 'region': region})
+    s, e, m = (np.asarray(x) for x in (scan, erased, layer))
+    assert scan.size == (41, 32)                                                  # the polygon's box and six pixels: x 0..41, y 9..41
+    assert (s[:, 35:] == 255).all() and (e[:, 35:] == 255).all() and (m[:, 35:] == 0).all()   # outside the polygon: white, no strike
+    assert (s[11:21, 10:35] == grey[20:30, 10:35]).all()                          # inside it: the scan as it was
+    assert (m > 0).sum() == 2*30 and (e[m > 0] == 255).all()
+
+
 def test_revision_conditions():
     assert image_keys('pair_revision') == ('raw', 'erased') and image_keys('raw_revision') == ('raw',)
     assert 'mapped_revision' in MAPPED and CONDITIONS['mapped_revision'][0] == 'raw'

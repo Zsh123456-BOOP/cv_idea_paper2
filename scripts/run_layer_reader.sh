@@ -49,6 +49,16 @@
 #  writer interval above 0, exact and NED no worse, and, the struck writing gone, refuses at least twice as often as the pair's reader.
 #  The router stands when its readings beat the pair's by more than 3 points of AR with the writer interval above 0, exact no worse, and
 #  its area under the risk-coverage curve is below the pair's by its own confidence.
+# PART=masked (after the evidence part; the plan of 2026-11-15): the crops a reader sees, white outside the annotator's polygon.
+#  1. data.struck_pack folds, separated (the distilled students as they are, nothing taught anew) and counterfactual again: new packs
+#     ..._masked; then nothing more until the crops are looked at by hand (touch $R/masked_checked.done).
+#  2. per fold, taught anew on the new crops with the same recipe: the scan's reader, the human pair (the ceiling), the distilled
+#     erased crop's reader and the distilled pair; read with loops stopped, the distilled pair also with the strike taken off; the
+#     untaught 8B reads the scan and the human erased crop.
+#  3. eval.transcription: every way of reading on the new crops paired by writer with the same way on the old crops.
+#  The rule, written before any reading.  The new crops take the place of the old for every number after this one unless, for the
+#  distilled pair's reader, the writer interval of its AR difference or of its exact difference lies wholly below 0; then the old
+#  crops stay (the change is reverted) and the new numbers are only recorded.  A correction of the input, not a method.
 # Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
 # are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
@@ -61,7 +71,7 @@ PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
 SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
 CF=${N}_revision_folds_counterfactual
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
@@ -260,6 +270,62 @@ done_ distilled_score || { "$PY" -m revrender.eval.transcription --pack "$PACK" 
     --arm "human_pair=$(folds_of pair)" --arm "context=$(folds_of views_context)" --reference taught_pair --agreement context=taught_pair --agreement taught_pair=taught_scan \
     --output "$R/scores_distilled.json" > "$R/distilled_score.log" 2>&1; mark distilled_score; }
 touch "$R/DISTILLED_COMPLETE"; stamp 'distilled part complete'; exit 0; fi
+
+if [ "$PART" = masked ]; then test -e "$R/EVIDENCE_COMPLETE"
+HM=${N}_revision_folds_human_masked; DM=${N}_revision_folds_distilled_masked; CM=${N}_revision_folds_counterfactual_masked
+if ! done_ masked_packs; then
+    cards "${SEP_CARDS:-1}"
+    [ -e "$HM/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack folds --dataset "$DATA/regions.json" --pages "$DATA/pages" \
+        --pages "$O/paper2_full_review20261010/images" --hold-out test-page --output-dir "$HM" > "$R/masked_pack.log" 2>&1
+    [ -e "$DM/run_manifest.json" ] || place_job 6000 job "$DM" -- "$PY" -m revrender.data.struck_pack separated --pack "$HM" --sets "$SETS2" \
+        $(for k in 0 1 2 3 4; do echo --separator "${N}_revision_distilled_f$k"; done) --upstream "$UP" --output-dir "$DM"
+    wait; test -e "$DM/run_manifest.json"
+    [ -e "$CM/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack counterfactual --pack "$DM" --human "$HM" --output-dir "$CM" >> "$R/masked_pack.log" 2>&1
+    mark masked_packs; fi
+done_ masked_checked || { stamp 'the new packs are built: look at the crops, then touch masked_checked.done and run again'; exit 0; }
+cards "${CARDS:-1}"
+masked_teach() {   # NAME ARM PACK FOLD: the fold's reader NAME on the new crops
+    local name="$1" arm="$2" PACK="$3" k="$4" reader="${N}_revision_reader_masked_$1_f$4"
+    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" "$arm" "$k")
+}
+masked_read() {   # OUT NAME ARM FOLD PACK [more of recognize_lines]: the fold read by the reader NAME, loops stopped
+    local out="$R/masked_$1_f$4" name="$2" arm="$3" k="$4" PACK="$5"; shift 5
+    [ -e "$out/complete.json" ] || job "$CARD_" "$NUMA_" "$out" -- $(read_with "$out" "$arm" "${N}_revision_reader_masked_${name}_f$k" --fold "$k" --loop-limit 4 "$@")
+}
+masked_fold() {   # FOLD: its four readers, then every reading of the fold
+    local k="$1"
+    masked_teach raw raw "$HM" "$k"; masked_teach pair pair "$HM" "$k"; masked_teach distilled_erased erased "$DM" "$k"; masked_teach distilled_pair pair "$DM" "$k"
+    masked_read scan raw raw "$k" "$HM"; masked_read human_pair pair pair "$k" "$HM"; masked_read erased distilled_erased erased "$k" "$DM"
+    masked_read pair distilled_pair pair "$k" "$CM"; masked_read pair_strike_off distilled_pair pair "$k" "$CM" --intervention strike_off
+}
+MREAD=(scan human_pair erased pair pair_strike_off)
+if ! done_ masked_folds; then
+    for k in 0 1 2 3 4; do alone on_card masked_fold "$k"; done
+    [ -e "$R/masked_untaught/complete.json" ] || alone job "$R/masked_untaught" -- "$PY" -m revrender.recognize_lines --pack "$HM" --model "$MODEL" --backend hf \
+        --batch-size 8 --conditions raw_revision erased_revision --loop-limit 4 --output-dir "$R/masked_untaught"
+    wait; for k in 0 1 2 3 4; do for name in "${MREAD[@]}"; do test -e "$R/masked_${name}_f$k/complete.json"; done; done; test -e "$R/masked_untaught/complete.json"
+    mark masked_folds; fi
+five() { local a="$1" k s=; for k in 0 1 2 3 4; do s+="${s:+,}$R/${a}_f$k"; done; echo "$s"; }
+if ! done_ masked_score; then
+    pairs=("untaught_scan|$R/reread_untaught@raw_revision|$R/masked_untaught@raw_revision" "untaught_human_erased|$R/reread_untaught@erased_revision|$R/masked_untaught@erased_revision"
+           "taught_scan|$(five reread_raw)|$(five masked_scan)" "taught_erased|$(five evidence_erased)|$(five masked_erased)" "taught_pair|$(five reread_distilled_pair)|$(five masked_pair)"
+           "pair_strike_off|$(five evidence_pair_strike_off)|$(five masked_pair_strike_off)" "human_pair|$(five reread_pair)|$(five masked_human_pair)")
+    for p in "${pairs[@]}"; do IFS='|' read -r name old new <<< "$p"
+        [ -e "$R/scores_masked_$name.json" ] || "$PY" -m revrender.eval.transcription --pack "$CM" --arm "old=$old" --arm "new=$new" --reference old \
+            --output "$R/scores_masked_$name.json" > "$R/masked_score_$name.log" 2>&1
+    done
+    [ -e "$R/scores_masked.json" ] || "$PY" -m revrender.eval.transcription --pack "$CM" --arm "untaught_scan=$R/masked_untaught@raw_revision" \
+        --arm "untaught_human_erased=$R/masked_untaught@erased_revision" $(for name in "${MREAD[@]}"; do echo --arm "$name=$(five "masked_$name")"; done) \
+        --reference pair --output "$R/scores_masked.json" > "$R/masked_score.log" 2>&1
+    "$PY" - "$R/scores_masked_taught_pair.json" "$R/masked_decision.json" <<'PYTHON'
+import json, sys
+new = json.load(open(sys.argv[1]))['arms']['new']['against_reference']
+below = [m for m in ('ar', 'exact') if new[m]['interval'][1] < 0]
+json.dump({'adopted': not below, 'below_zero': below, **{m: new[m] for m in ('ar', 'exact', 'ned')}}, open(sys.argv[2], 'x'), indent=1)
+print('the new crops', 'stay out: ' + ', '.join(below) if below else 'take the place of the old')
+PYTHON
+    mark masked_score; fi
+touch "$R/MASKED_COMPLETE"; stamp 'masked part complete'; exit 0; fi
 
 test "$PART" = evidence; test -e "$R/DISTILLED_COMPLETE"
 HUMAN=$PACK; cards "${CARDS:-1}"

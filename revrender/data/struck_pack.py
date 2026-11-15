@@ -11,7 +11,7 @@ a cross-validation over writers.  The regions of the exports named by ``--hold-o
 writers stay out.  The writers go to ``FOLDS`` folds of about equal regions (``fold``); a tenth of the writers, by hash, are marked
 ``val`` (a reader taught on the other folds stops by them).  A row is one region: ``readable`` as the annotator said, ``target`` what a
 reader is taught to give (the text in the spelling of ``eval.coverage.prepare``, or ``recognize_lines.UNREADABLE``), and three images of
-its OCR window (the region's polygon box and six pixels) from the annotator's own pixels: the scan (``raw``), the scan with the strike
+its OCR window (the region's polygon box and six pixels, white outside the polygon) from the annotator's own pixels: the scan (``raw``), the scan with the strike
 pixels white (``erased``) and the layer map (``map``: white the strike pixels, black the rest).  A region is cut from the page its
 export showed the annotator (the dataset's ``image_source`` when that folder is here, else the first of ``--pages`` holding the page):
 the pixels were drawn on that image.
@@ -73,13 +73,16 @@ def fold_of(counts, folds=FOLDS):
 
 
 def layered(page, row):
-    """(scan, erased, layer map) of a region's OCR window, from the annotator's pixels: the strike pixels white in ``erased`` and in the
-    map, which is black elsewhere."""
+    """(scan, erased, layer map) of a region's OCR window, from the annotator's pixels: everything outside the annotator's polygon white
+    (the window is the polygon's box and six pixels, and the ink of the neighbours it holds is not the region's); the strike pixels white
+    in ``erased`` and in the map, which is black elsewhere."""
+    from .pixel_masks import region_pixels
     grey = np.asarray(page.convert('L')); bl, bt, br, bb = row['box']
     l, t, r, b = window(row['region'] or [[bl, bt], [br, bt], [br, bb], [bl, bb]], page.size)
     _, mask = reviewed_crop(page, {'box': row['box'], 'runs': row['runs'], 'region': row['region']})
-    strike = np.zeros(grey.shape, bool); strike[bt:bb, bl:br] = mask.astype(bool)
-    scan = grey[t:b, l:r]; erased = scan.copy(); erased[strike[t:b, l:r]] = 255
+    inside = np.zeros(grey.shape, bool); inside[bt:bb, bl:br] = region_pixels(row['region'], row['box'])
+    strike = np.zeros(grey.shape, bool); strike[bt:bb, bl:br] = mask.astype(bool); strike &= inside
+    scan = np.where(inside[t:b, l:r], grey[t:b, l:r], 255).astype(np.uint8); erased = scan.copy(); erased[strike[t:b, l:r]] = 255
     return Image.fromarray(scan), Image.fromarray(erased), Image.fromarray((255*strike[t:b, l:r]).astype(np.uint8))
 
 
