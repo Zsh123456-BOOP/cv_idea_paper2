@@ -179,7 +179,7 @@ def separated_pack(args):
         predict, checkpoint, _ = selected_predictor(run, args.upstream, None); inputs[str(checkpoint)] = digest(checkpoint)
         for i, n in enumerate(native):
             row = source[n['id']]; require(row['fold'] == k, f"{n['id']}: not of fold {k} in the pack")
-            image = arrays[f'image_{i}'].astype(np.float32)/255; restored = np.clip(restore_native(predict, image, None), 0, 1)
+            image = arrays[f'image_{i}'].astype(np.float32)/255; restored = np.clip(restore_native(predict, image), 0, 1)
             inside = region_pixels(n['region'], n['box']); share = taken_away(image, restored)*inside
             with Image.open(args.pack/row['images']['raw']) as opened: scan = np.asarray(opened.convert('L')).copy()
             origin = n['window'][:2]
