@@ -1,0 +1,94 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>整行框选与答案修正</title>
+<!--KATEX-->
+<style>
+:root{--bg:#f3f5f8;--line:#d5dbe3;--ink:#1d2430;--muted:#687385;--blue:#235cca;--red:#c8372d;--green:#137660;--violet:#7b4fc9;--amber:#b7791f}
+*{box-sizing:border-box}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:14px/1.45 'PingFang SC','Noto Sans CJK SC','Microsoft YaHei',sans-serif}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 12px;background:white;border-bottom:1px solid var(--line)}
+header h1{font-size:16px;margin:0 8px 0 0}header .grow{flex:1}button,select{font:inherit;padding:3px 9px;border:1px solid var(--line);border-radius:6px;background:white;cursor:pointer}
+button:hover{border-color:var(--blue)}button.primary{background:var(--blue);color:white;border-color:var(--blue)}button:disabled{opacity:.45;cursor:default}
+#saveState{font-size:12px;color:var(--green)}#saveState.error{color:white;background:var(--red);padding:3px 8px;border-radius:5px;font-weight:600}
+main{flex:1;display:grid;grid-template-columns:210px 1fr 440px;min-height:0}
+#pages{overflow:auto;border-right:1px solid var(--line);background:white}#pages div{padding:5px 10px;cursor:pointer;border-bottom:1px solid #eef1f5;font-size:12px;display:flex;justify-content:space-between;gap:6px}
+#pages div.on{background:#e7efff;font-weight:600}#pages div.done{color:var(--green)}#pages .count{color:var(--muted);white-space:nowrap}
+#centre{display:flex;flex-direction:column;min-width:0;min-height:0}#tools{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:5px 8px;background:white;border-bottom:1px solid var(--line);font-size:12px}
+#tools .hint{color:var(--muted)}#stage{flex:1;position:relative;min-height:0}#whole{position:absolute;inset:0;width:100%;height:100%;outline:none;touch-action:none}
+#side{overflow:auto;border-left:1px solid var(--line);background:white;padding:10px 12px}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin:2px 0 8px}.chip{min-width:28px;padding:1px 6px;border:1px solid var(--line);border-radius:12px;text-align:center;cursor:pointer;font-size:12px;background:white}
+.chip.seen{background:#e6f4ef;border-color:#9cd1bf}.chip.wrong{box-shadow:inset 0 -3px 0 var(--amber)}.chip.on{border-color:var(--blue);background:var(--blue);color:white}.chip.off{opacity:.35}
+h2{font-size:14px;margin:12px 0 6px;padding-top:8px;border-top:1px solid var(--line)}h2:first-child{border:0;padding:0;margin-top:0}
+.crops{display:grid;grid-template-columns:1fr 1fr;gap:8px}.crops figure{margin:0}.crops img{display:block;max-width:100%;max-height:150px;image-rendering:auto;border:1px solid var(--line);border-radius:4px;background:white}
+.crops figcaption{font-size:11px;color:var(--muted)}
+.readings{margin:8px 0;padding:6px 8px;border:1px dashed var(--line);border-radius:6px;background:#fbfcfd;font-size:13px}.readings .note{font-size:11px;color:var(--amber)}
+.readings .r{display:grid;grid-template-columns:150px 1fr;gap:6px;align-items:baseline}.readings .r small{color:var(--muted)}.readings .bad{color:var(--amber);font-weight:600}
+textarea{width:100%;min-height:54px;font:15px/1.5 ui-monospace,Menlo,monospace;padding:6px;border:1px solid var(--line);border-radius:6px}
+.text-preview{min-height:40px;padding:6px 10px;margin-top:4px;border-radius:6px;background:var(--bg);font:20px/1.7 'PingFang SC','Noto Sans CJK SC',sans-serif;overflow-x:auto}
+.text-preview .katex-display{display:inline-block;margin:.1em .2em;vertical-align:middle}.text-preview .none{color:var(--muted);font-size:13px}.text-preview .unparsed{color:var(--muted);font:14px ui-monospace,Menlo,monospace}
+.orig{font-size:12px;color:var(--muted);margin-top:3px}.orig code{color:var(--ink)}.changed{color:var(--violet);font-weight:600}
+.row{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:8px 0}.row label{display:flex;gap:4px;align-items:center;cursor:pointer}
+.muted{color:var(--muted);font-size:12px}.guess{font-size:11px;color:var(--amber)}
+details{margin-top:4px}summary{cursor:pointer;font-size:12px;color:var(--muted)}
+.symbol-field{position:relative}.symbol-bar{display:flex;flex-wrap:wrap;gap:3px}.symbol-bar button{padding:1px 6px;min-width:30px;font-size:14px}
+.symbol-group{display:flex;flex-wrap:wrap;align-items:center;gap:3px;width:100%;margin:0 0 3px}.symbol-group small{font-size:11px;color:var(--muted);min-width:2.4em}
+.symbol-palette{display:flex;flex-wrap:wrap;gap:3px;padding:6px;border:1px solid var(--line);border-radius:6px}
+.ac{position:absolute;left:0;right:0;top:100%;z-index:5;max-height:260px;overflow:auto;background:white;border:1px solid var(--blue);border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.ac-item{display:grid;grid-template-columns:130px 60px 1fr;gap:8px;align-items:center;padding:4px 9px;cursor:pointer;font-size:13px}.ac-item.on{background:var(--blue);color:white}.ac-item code{font:12px ui-monospace,Menlo,monospace}
+#linePanel ul{margin:4px 0;padding-left:18px}kbd{font:11px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-bottom-width:2px;border-radius:3px;padding:0 3px}
+#status{font-size:12px;color:var(--muted);min-height:1.4em}#status.error{color:var(--red);font-weight:600}
+</style></head><body>
+<!--PACK-->
+<header>
+  <h1>整行框选与答案修正</h1>
+  <span id="progress"></span>
+  <label class="muted">筛选 <select id="filter">
+    <option value="all">全部</option><option value="unseen">未看过</option><option value="wrong">上限读错</option>
+    <option value="whole">整行被划</option><option value="changed">改过答案</option></select></label>
+  <span class="grow"></span>
+  <span id="saveState">正在载入…</span>
+  <button id="bindBackup" title="选一个文件，之后每次修改都自动写进去">绑定备份文件</button>
+  <button id="exportBtn" class="primary">导出 JSON</button>
+  <button id="importBtn">导入续标</button><input type="file" id="importFile" accept=".json,application/json" hidden>
+  <button id="undoBtn" title="Ctrl/⌘+Z">撤销</button>
+</header>
+<main>
+  <nav id="pages" aria-label="题目"></nav>
+  <section id="centre">
+    <div id="tools">
+      <button id="fitBtn">适应窗口</button><span id="zoomLabel" class="muted"></span>
+      <button id="redrawBtn" disabled>重画选中行框</button><button id="deleteLineBtn" disabled>删除空行</button>
+      <span class="hint">点行框选中；拖白点改形状，拖边上小点加点，<kbd>Alt</kbd>+点白点删点；空白处拖出矩形 = 新建一行（中心落在里面的涂改归它）；<kbd>Shift</kbd>/右键拖动平移，滚轮缩放。红虚线是涂改框（只读）。</span>
+    </div>
+    <div id="stage"><canvas id="whole" tabindex="0" aria-label="整题图"></canvas></div>
+  </section>
+  <aside id="side">
+    <h2>本题的涂改 <span class="muted" id="pageInfo"></span></h2>
+    <div class="chips" id="chips"></div>
+    <div id="detail">
+      <div class="row"><b id="regionName"></b><span class="muted" id="regionWhere"></span></div>
+      <div class="crops">
+        <figure><img id="cropRaw" alt="原图小块"><figcaption>原图（折线框外涂白）</figcaption></figure>
+        <figure><img id="cropErased" alt="人工擦线小块"><figcaption>人工擦线</figcaption></figure>
+      </div>
+      <div class="readings"><div class="note">读数仅供找错，以图为准</div><div id="readings"></div></div>
+      <div class="muted">被划文字（看不清的字写 ?，公式写在 $ $ 里；打 \ 出符号表）</div>
+      <div class="symbol-field"><textarea id="text" spellcheck="false"></textarea><div class="ac" id="symbolList" hidden></div></div>
+      <details><summary>常用符号</summary><div class="symbol-bar" id="symbolBar"></div></details>
+      <div class="text-preview" id="preview"></div><small class="muted" id="previewNote" hidden>公式还没写完，先显示上一次能显示的样子。</small>
+      <div class="orig">原来：<code id="origText"></code> <span id="origReadable"></span> <span id="changedMark"></span> <button id="revertText">恢复原来</button></div>
+      <div class="row">
+        <label><input type="checkbox" id="unreadable"> 读不出</label>
+        <label><input type="checkbox" id="wholeLine"> 整行被划（行框 = 涂改框）</label><span class="guess" id="wholeGuess"></span>
+      </div>
+      <div class="row"><label>所属行 <select id="lineSelect"></select></label></div>
+      <div class="row">
+        <label><input type="checkbox" id="seen"> 已看过</label>
+        <button id="prevBtn">上一处</button><button id="nextBtn" class="primary">看过，下一处 <kbd>Enter</kbd></button>
+      </div>
+    </div>
+    <h2>选中的行</h2>
+    <div id="linePanel" class="muted">在图上点一个行框。</div>
+    <div id="status"></div>
+  </aside>
+</main>
+<script src="page_rules.js"></script><script src="pixel_overview.js"></script><script src="library_store.js"></script><script src="symbol_picker.js"></script><script src="line_rules.js"></script><script src="line_editor.js"></script>
+</body></html>

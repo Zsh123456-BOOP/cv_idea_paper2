@@ -68,7 +68,7 @@ class PixelOverview {
     const path=points=>{cx.beginPath();points.forEach((p,i)=>i?cx.lineTo(...p):cx.moveTo(...p));cx.closePath();};
     if(!this.hidden)this.rows().forEach((r,i)=>{
       const selected=r.id===this.selected,region=selected&&this.drag?.kind==='handle'?this.drag.region:r.region;
-      const colour=selected?'#235cca':r.not_revision?'#89939d':r.confirmed?'#137660':'#d34a3d';
+      const colour=this.cb.colour?this.cb.colour(r,selected):selected?'#235cca':r.not_revision?'#89939d':r.confirmed?'#137660':'#d34a3d';
       path(region);cx.lineWidth=(selected?2.5:1.5)/this.scale;cx.strokeStyle=colour;cx.stroke();
       const [l,t]=bounds(region);cx.font=`${12/this.scale}px sans-serif`;cx.fillStyle=colour;cx.fillRect(l,t-18/this.scale,23/this.scale,18/this.scale);cx.fillStyle='white';cx.fillText(String(i+1),l+5/this.scale,t-4/this.scale);
       if(selected&&this.editing)region.forEach((p,j)=>{
@@ -76,6 +76,7 @@ class PixelOverview {
         for(const [dot,radius] of [[p,5],[mid,3]]){cx.beginPath();cx.arc(...dot,radius/this.scale,0,Math.PI*2);cx.fillStyle='white';cx.fill();cx.strokeStyle=colour;cx.stroke();}
       });
     });
+    if(this.cb.overlay)this.cb.overlay(cx,this.scale);       // drawn in image coordinates over the polygons (the line page's regions)
     if(this.drag?.kind==='draw'&&this.drag.moved){cx.strokeStyle='#235cca';cx.lineWidth=2/this.scale;const a=this.drag.from,b=this.drag.to;cx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);}
     cx.setTransform(1,0,0,1,0,0);this.cb.zoom(this.scale);
   }

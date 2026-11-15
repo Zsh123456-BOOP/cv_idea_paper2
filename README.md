@@ -105,6 +105,7 @@ bash scripts/deploy.sh                    # 部署当前提交到 /home/zsh/hme/
 | 恢复网络基线（分离模型） | `revrender.baselines.restoration`，配方 `configs/restoration.toml`（`[finetune_long]`、`[real_only]`、`[prefill]`、`[pseudo]`），统一评测 `scripts/eval_unified_restoration.sh`（候选 `configs/unified_restoration.json`） |
 | 标注预填模型 | `scripts/run_prefill_model.sh`（数据 `revrender.data.prefill_set`，评测 `revrender.eval.prefill`，主指标「要改的块数」）；伪标签 `revrender.data.pseudo_regions` |
 | 标注页 | 全量库 `revrender.tools.annotate.pixel_library`，训练题分批 `scripts/build_training_batch.sh`，被划文字 `tools.annotate.struck_text`；页面规则见 `CLAUDE.md` |
+| 整行框选页 | `python -m revrender.tools.annotate.line_review build --dataset regions.json --ids 包的 pack.json 或 id 列表 --pages 清洁图目录 [--reading 名=目录[@条件] ...] --katex KaTeX目录 --name 包名 --output-dir OUT`：每处涂改所在整行的折线框（行目录预填，墨迹延伸补缺）、整行被划标记、被划文字的修正；导出 `paper2-line-review-v1`（按涂改、按行）。换 `--ids` 就能给测试页出一份 |
 | 去掉同门数据后的整套重跑 | `scripts/run_labmate_rebuild.sh`（名单守在 `revrender.data.allowed`） |
 | 十月的一次性试验 | `scripts/run_annotation_value.sh`、`run_learning_curve.sh`、`run_wider_validation.sh`、`run_real_only.sh`、`run_realistic_synthesis.sh`、`run_whole_question.sh`、`run_pseudo_student.sh`、`run_struck_diagnostics.sh` 等 |
 
