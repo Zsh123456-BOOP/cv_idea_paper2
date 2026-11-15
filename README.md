@@ -401,10 +401,10 @@ bash scripts/run_layer_reader.sh                    # 人工像素部分：四�
 PART=separator bash scripts/run_layer_reader.sh     # 分离模型部分：每折一个 NAFNet，读者等前一部分跑完
 PART=views bash scripts/run_layer_reader.sh         # 整行上下文、两档擦线图、两张图加注入，各对两张图
 PART=distilled bash scripts/run_layer_reader.sh     # 每折三个老师加一个学生的分离模型，再训两张图的读者；读数一致性
-PART=joint bash scripts/run_layer_reader.sh         # 分离模型接进读者的训练（models.hint_separator），会学对冻结，再加迁移检验
+PART=evidence bash scripts/run_layer_reader.sh      # 反事实读者、只看擦线图的读者、两种干预读数，再做读数路由（revrender.router）
 ```
 
-各部分按上面的顺序互相等待，卡默认都是 1 号（用户 2026-11-13 定只用 1 号卡）。结果见 RESULTS 2026-11-13、11-14：两张图的读者最好；分离做得好读得更对；注入、两档提示、分离模型跟读数损失学都没有过事先定的规则；整行上下文全对变好但多读框外的字。
+各部分按上面的顺序互相等待，卡默认都是 1 号（用户 2026-11-13 定只用 1 号卡，11-14 放宽到 1、2 号：`CARDS="1 2"`）。结果见 RESULTS 2026-11-13、11-14：两张图的读者最好；分离做得好读得更对；注入、两档提示、分离模型跟读数损失学（代码已删）、反事实读者、读数路由都没有过事先定的规则；整行上下文全对变好但多读框外的字。
 
 ## 数据
 
