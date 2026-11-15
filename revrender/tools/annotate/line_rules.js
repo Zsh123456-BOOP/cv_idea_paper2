@@ -124,6 +124,16 @@
     if (members(store, line).length) throw Error('这一行还有涂改，先把它们归到别的行');
     delete store.lines[line];
   }
+  function dropLine(pack, store, line, region = null) {
+    // Take away a line's outer polygon: an empty line goes; a line of one region becomes that region's own (whole-line) polygon; of
+    // several, the region named is the whole line and leaves on its own, the others stay.  Returns what it did.
+    const inside = members(store, line);
+    if (!inside.length) { delete store.lines[line]; return 'removed'; }
+    if (inside.some(id => store.regions[id].whole_line)) throw Error('这一行的框已经就是涂改框（整行被划），没有外框可删');
+    if (inside.length > 1 && !inside.includes(region)) throw Error('这一行有几处涂改，先选哪一处是整行被划');
+    setWhole(pack, store, inside.length === 1 ? inside[0] : region, true);
+    return 'whole';
+  }
   // ---------- the regions themselves ----------
   const union = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
   function window(pack, store, id) {
@@ -209,6 +219,6 @@
     if (draft.pack !== pack.id) { if (!other) throw Error('这份进度不属于这个页面'); draft.pack = pack.id; }
     return check(pack, draft);
   }
-  return {SCHEMA, MARGIN, index, row, ids, polygonOf, maskOf, initial, members, check, newLine, lineFor, assign, setWhole, reshape, removeLine,
+  return {SCHEMA, MARGIN, index, row, ids, polygonOf, maskOf, initial, members, check, newLine, lineFor, assign, setWhole, reshape, removeLine, dropLine,
           window, reshapeRegion, maskIn, setMask, addRegion, removeRegion, restoreRegion, changes, strike, exported, imported, validPolygon};
 });

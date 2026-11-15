@@ -6,11 +6,11 @@ const $ = id => document.getElementById(id), L = LineRules;
 const pack = JSON.parse($('line-pack').textContent), KEY = 'line-review-' + pack.id;
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
 const HINTS = {
-  lines: '点行框选中；拖白点改形状，拖边上小点加点，<kbd>Alt</kbd>+点白点删点；空白处拖出矩形 = 新建一行（中心落在里面的涂改归它）；<kbd>Shift</kbd>/右键拖动平移，滚轮缩放。红虚线是涂改框，点它在右边打开。',
+  lines: '点行框选中；一整行都被划掉就按 <kbd>Del</kbd> 删掉外面的行框；拖白点改形状，拖边上小点加点，<kbd>Alt</kbd>+点白点删点；空白处拖出矩形 = 新建一行（中心落在里面的涂改归它）；<kbd>Shift</kbd>/右键拖动平移，滚轮缩放。红虚线是涂改框，点它在右边打开。',
   regions: '点涂改框选中；拖白点改形状，拖边上小点加点，<kbd>Alt</kbd>+点白点删点；空白处拖出矩形 = 补一处漏标的涂改（再在右边涂划线像素、写被划文字）；<kbd>Shift</kbd>/右键拖动平移，滚轮缩放。紫虚线是行框。',
 };
 let store, page = 0, current = null, mode = 'lines', redraw = false, history = [], textMark = null, saveFailed = false;
-let backupHandle = null, backupPending = null, backupWriting = false, down = null, tool = 'brush', stroke = null, carried = null;
+let backupHandle = null, backupPending = null, backupWriting = false, down = null, tool = 'brush', stroke = null, carried = null, choosing = null;
 const images = new Map(), greys = new Map();
 
 // ---------- saving ----------
@@ -155,7 +155,9 @@ function preview() {
 }
 function renderLine() {
   const id = mode === 'lines' ? whole.selected : null, panel = $('linePanel');
-  $('redrawBtn').disabled = !id; $('deleteLineBtn').disabled = !id || !store.lines[id] || L.members(store, id).length > 0;
+  const wholeAlready = id && store.lines[id] && L.members(store, id).some(r => state(r).whole_line);
+  $('redrawBtn').disabled = !id; $('deleteLineBtn').disabled = !id || !store.lines[id] || wholeAlready;
+  if (choosing !== id) choosing = null;
   $('redrawBtn').textContent = redraw ? '在图上拖出新的行框…' : '重画选中行框';
   const line = mode === 'lines' ? id : state(current)?.line;
   if (!line || !store.lines[line]) { panel.textContent = mode === 'lines' ? '在图上点一个行框。' : '（这处没有行）'; return; }
@@ -164,6 +166,26 @@ function renderLine() {
   panel.querySelector('ul').replaceChildren(...(inside.length ? inside.map(r => {
     const li = document.createElement('li'); li.textContent = '涂改 ' + regionName(r) + (state(r).seen ? '（已看过）' : ''); li.style.cursor = 'pointer'; li.onclick = () => go(r); return li;
   }) : [Object.assign(document.createElement('li'), {textContent: '空行（导出时不算），可删除'})]));
+  if (choosing === line) {
+    const box = document.createElement('div'); box.className = 'choose';
+    box.append('这一行有 ' + inside.length + ' 处涂改。哪一处是整行被划？它单独成行、不再有外框，其余的留在这一行：', document.createElement('br'));
+    for (const r of inside) { const b = document.createElement('button'); b.textContent = '涂改 ' + regionName(r) + '：' + (state(r).text || '（空）').slice(0, 16); b.onclick = () => dropSelected(r); box.append(b); }
+    const cancel = document.createElement('button'); cancel.textContent = '取消'; cancel.onclick = () => { choosing = null; renderLine(); }; box.append(cancel);
+    panel.append(box);
+  }
+}
+function dropSelected(region = null) {
+  // Delete in the line mode: the selected line's outer polygon goes (line_rules dropLine); of several regions, which is asked first.
+  const id = whole.selected; if (mode !== 'lines' || !id || !store.lines[id]) return status('先在图上点一个行框', true);
+  const inside = L.members(store, id);
+  if (inside.length > 1 && !region) { choosing = id; renderLine(); $('linePanel').scrollIntoView({block: 'nearest'}); return status('这一行有几处涂改：在右边「选中的行」里选哪一处是整行被划'); }
+  choosing = null;
+  act(() => {
+    const did = L.dropLine(pack, store, id, region);
+    if (did === 'removed') { whole.selected = null; return '已删除空行'; }
+    const which = inside.length === 1 ? inside[0] : region; whole.selected = state(which).line;
+    return `已删除外面的行框：涂改 ${regionName(which)} 算整行被划，行框就是它的涂改框` + (inside.length > 1 ? '；其余涂改留在原来那一行，记得把那一行的框收窄' : '');
+  });
 }
 function render() {
   if (!state(current)) current = L.ids(pack, store, page)[0];
@@ -341,7 +363,7 @@ $('modeLines').onclick = () => setMode('lines'); $('modeRegions').onclick = () =
 $('brushBtn').onclick = () => setTool('brush'); $('eraserBtn').onclick = () => setTool('eraser');
 $('brushSize').oninput = () => { $('brushLabel').textContent = $('brushSize').value + ' 像素'; };
 $('redrawBtn').onclick = () => { redraw = !redraw; renderLine(); status(redraw ? '在图上拖出一个矩形，替换选中的行框' : '已取消重画'); };
-$('deleteLineBtn').onclick = () => { const id = whole.selected; act(() => { L.removeLine(store, id); whole.selected = null; }, '已删除空行'); };
+$('deleteLineBtn').onclick = () => dropSelected();
 $('undoBtn').onclick = undo;
 document.addEventListener('keydown', e => {
   const el = document.activeElement, typing = ['TEXTAREA', 'SELECT'].includes(el?.tagName) || (el?.tagName === 'INPUT' && !['checkbox', 'range'].includes(el.type));
@@ -350,6 +372,7 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); undo(); }
   else if (e.metaKey || e.ctrlKey || e.altKey) return;
   else if (e.key === 'Enter') { e.preventDefault(); $('nextBtn').click(); }
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && mode === 'lines') { e.preventDefault(); dropSelected(); }
   else if (k === 'b') setTool('brush'); else if (k === 'e') setTool('eraser');
   else if (k === 'l') setMode('lines'); else if (k === 'r') setMode('regions');
   else if (e.key === '[' || e.key === ']') { $('brushSize').value = +$('brushSize').value + (e.key === ']' ? 1 : -1); $('brushSize').oninput(); }

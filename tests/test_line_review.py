@@ -125,3 +125,21 @@ def test_regions_are_reshaped_painted_added_and_taken_out():
     assert out['restored'] == [[96, 146], [124, 146], [124, 174], [96, 174]]
     assert out['exported'] == [['q#a', False, False, 'q#L1'], ['q#b', True, False, None], ['q#c', False, False, 'q#L2'], ['q#add1', False, True, 'q#L1']]
     assert out['addedRow']['original_text'] is None and out['addedRow']['runs'] == [] and out['addedRow']['region_changed']
+
+
+@pytest.mark.skipif(not NODE, reason='needs node')
+def test_a_line_polygon_is_taken_away():
+    out = run_rules(PACK + """
+      const s = L.initial(pack), o = {};
+      try { L.dropLine(pack, s, 'q#L1'); } catch (e) { o.ask = e.message; }                 // two regions: which one first
+      o.chosen = [L.dropLine(pack, s, 'q#L1', 'q#a'), s.regions['q#a'].line, s.lines[s.regions['q#a'].line].polygon, L.members(s, 'q#L1')];
+      try { L.dropLine(pack, s, s.regions['q#a'].line); } catch (e) { o.already = e.message; }
+      o.single = [L.dropLine(pack, s, 'q#L1'), s.regions['q#b'].whole_line, s.lines['q#L1'].polygon];   // one region: it is the line
+      const empty = L.newLine(pack, s, 0, box(0, 150, 50, 190)); o.empty = [L.dropLine(pack, s, empty), !s.lines[empty]];
+      return o;
+    """)
+    assert '先选' in out['ask']
+    assert out['chosen'] == ['whole', 'q#N1', [[10, 10], [50, 10], [50, 30], [10, 30]], ['q#b']]
+    assert '没有外框' in out['already']
+    assert out['single'] == ['whole', True, [[60, 10], [90, 10], [90, 30], [60, 30]]]
+    assert out['empty'] == ['removed', True]
