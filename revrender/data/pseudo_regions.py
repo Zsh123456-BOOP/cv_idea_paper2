@@ -92,15 +92,19 @@ def predict(args):
 def combine(args):
     """The teachers' agreement as a review set: ``mask`` where at least ``agree`` teachers erased, ``weight`` 0 where fewer but some did;
     the review set's human training regions appended ``human_copies`` times with weight 1; its fixed validation copied.  Regions of the
-    synthetic pairs' validation writers (``--source``) are left out so the student keeps that validation apart.  ``--soft``: the target
+    synthetic pairs' validation writers (``--source``) are left out so the student keeps that validation apart, and so are those on a page the
+review set labels or of its held-out or fixed writers (a prefill set's ``summary.json``), teachers' labels made before it grew.  ``--soft``: the target
     is the teachers' mean image itself (``target_<k>``, weight 1 everywhere), knowledge distillation instead of a hard label."""
     out = make_output_dir(args.output_dir)
     teachers = [(json.loads((p/'regions.json').read_text()), np.load(p/'restored.npz')) for p in args.predictions]
     rows = teachers[0][0]; require(all(r == rows for r, _ in teachers), 'the teachers labelled different regions')
     apart = {r['group_uuid'] for r in json.loads((args.source/'records.json').read_text()) if r['split'] == 'val'} if args.source else set()
+    held = json.loads((args.review_set/'summary.json').read_text())
+    held_writers, held_pages = set(held.get('validation_writers', [])) | set(held.get('fixed_writers', [])), set(held.get('pages', []))
     native, arrays, records, counts = [], {}, [], Counter()
     for k, (r, grey) in enumerate(crops(rows)):
         if r['group_uuid'] in apart: counts['left_out_synthetic_validation_writer'] += 1; continue
+        if r['group_uuid'] in held_writers or r['page'] in held_pages: counts['left_out_review_set_writer_or_page'] += 1; continue
         ink = grey < INK
         votes = sum(((a[f'restored_{k}'].astype(np.int16) - grey) > ERASE) & ink for _, a in teachers)
         mask = votes >= args.agree; unreliable = (votes > 0) & ~mask

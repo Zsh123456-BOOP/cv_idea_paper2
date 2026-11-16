@@ -1,18 +1,20 @@
 """The prefill model's human data (plan 预填模型 of 2026-10-25): every confirmed region of the annotator's exports, real only.
 
-    python -m revrender.data.prefill_set --export E [--export E ...] --pages DIR [--pages DIR ...] --same-student P \
-        --fixed-validation FIXED [--new-export E] --output-dir OUT
+    python -m revrender.data.prefill_set (--export E [--export E ...] | --dataset REGIONS.json) --pages DIR [--pages DIR ...] \
+        --same-student P --fixed-validation FIXED [--new-export E] [--holdout SHARE] --output-dir OUT
 
 A region counts when its pixels are confirmed and certain (``pixel_masks.reviewed_crop``, on the page the export names as its
 ``image_source``, else the first of ``--pages`` holding it); a student's two ids are one writer.  The
-held-out writers are decided by a hash of the writer (``HOLDOUT`` of them, seed 42), so the split never has to be drawn again and a
-writer first seen in a later batch falls on the same side forever; the fixed validation's writers never train (their 16 regions are
+held-out writers are decided by a hash of the writer (``--holdout`` of them, ``HOLDOUT`` by default, seed 42), so the split never has
+to be drawn again and a writer first seen in a later batch falls on the same side forever (a smaller share holds out a subset of a
+larger one's writers); the fixed validation's writers never train (their 16 regions are
 reported apart).  This set feeds the prefill tool only: by the user's word of 2026-10-23 every annotated region may train it,
 the test questions' too, so unlike ``data.review_set`` no split of paper 1 is refused here (a labmate's pages still are,
 ``pages.page_files``).  OUT holds, as a review set does, ``training_native.*`` (training writers), ``validation_native.*`` (held-out
 writers), ``records.json`` and ``summary.json`` (the held-out and fixed writers, every labelled page); ``--new-export``: that
 export's regions also as ``new_native.*``, whatever their side (the forward test of the plan's section 4), each row with the
-annotator's edit count and seconds.
+annotator's edit count and seconds.  ``--dataset``: in place of the exports, the regions of a merged dataset (``data.struck_dataset``,
+after ``data.line_set merge`` its corrections too) whose pixels are confirmed and certain, each on the first of ``--pages`` holding its page.
 """
 import argparse
 import hashlib
@@ -30,8 +32,8 @@ from .prior_annotations import twins
 HOLDOUT = .15
 
 
-def held_out(writer):
-    return int(hashlib.sha256(f'prefill-holdout:{SEED}:{writer}'.encode()).hexdigest()[:8], 16)/16**8 < HOLDOUT
+def held_out(writer, share=HOLDOUT):
+    return int(hashlib.sha256(f'prefill-holdout:{SEED}:{writer}'.encode()).hexdigest()[:8], 16)/16**8 < share
 
 
 def regions(exports, folders):
@@ -50,6 +52,18 @@ def regions(exports, folders):
     return out
 
 
+def dataset_regions(path, folders):
+    """The confirmed, certain regions of a merged dataset, as ``regions`` gives them (its edits and prefill model under the export's names)."""
+    rows = [r for r in json.loads(path.read_text()) if r.get('pixels_confirmed') and not r.get('deleted') and not r.get('pixels_uncertain')]
+    files = pages_module.page_files(folders, sorted({r['page'] for r in rows})); out = []
+    for page_id in sorted({r['page'] for r in rows}):
+        with Image.open(files[page_id]) as im:
+            for r in (r for r in rows if r['page'] == page_id):
+                revision = {**r, 'id': r['id'], 'ops': r.get('edits'), 'model': r.get('prefill_model')}
+                image, mask = reviewed_crop(im, revision); out.append((path, page_id, revision, image, mask))
+    return out
+
+
 def save(out, name, rows):
     arrays = {}
     for k, (_, _, _, image, mask, _) in enumerate(rows): arrays[f'image_{k}'] = image; arrays[f'mask_{k}'] = mask.astype(np.uint8)
@@ -59,7 +73,8 @@ def save(out, name, rows):
 def build(args):
     other = twins(args.same_student); canon = lambda w: min(w, other.get(w, w))
     fixed = {r['group_uuid'] for r in json.loads((args.fixed_validation/'validation_native.json').read_text())}
-    found = regions([*args.export, *([args.new_export] if args.new_export else [])], args.pages)
+    require(bool(args.export) != bool(args.dataset), 'exports or a dataset, one of them')
+    found = dataset_regions(args.dataset, args.pages) if args.dataset else regions([*args.export, *([args.new_export] if args.new_export else [])], args.pages)
     sides = {'train': [], 'holdout': [], 'new': []}
     for export, page_id, r, image, mask in found:
         writer = canon(page_id.split('_')[0])
@@ -68,7 +83,7 @@ def build(args):
         item = (export, page_id, r, image, mask, row)
         if args.new_export and export == args.new_export: sides['new'].append(item)
         if writer in fixed: continue
-        sides['holdout' if held_out(writer) else 'train'].append(item)
+        sides['holdout' if held_out(writer, args.holdout) else 'train'].append(item)
     require(sides['train'] and sides['holdout'], 'a side is empty')
     out = make_output_dir(args.output_dir)
     save(out, 'training_native', sides['train']); save(out, 'validation_native', sides['holdout'])
@@ -78,10 +93,10 @@ def build(args):
     summary = {'training_regions': len(sides['train']), 'held_out_regions': len(sides['holdout']), 'new_regions': len(sides['new']),
                'training_writers': len({row['group_uuid'] for *_, row in sides['train']}),
                'validation_writers': sorted({row['group_uuid'] for *_, row in sides['holdout']}), 'fixed_writers': sorted(fixed),
-               'pages': sorted({page for _, page, *_ in found}), 'holdout_share': HOLDOUT, 'skipped_fixed_writers': sum(
+               'pages': sorted({page for _, page, *_ in found}), 'holdout_share': args.holdout, 'skipped_fixed_writers': sum(
                    canon(page.split('_')[0]) in fixed for _, page, *_ in found)}
     write_json(out/'summary.json', summary)
-    inputs = {str(p): digest(p) for p in [*args.export, *([args.new_export] if args.new_export else []), args.same_student,
+    inputs = {str(p): digest(p) for p in [*args.export, *([args.dataset] if args.dataset else []), *([args.new_export] if args.new_export else []), args.same_student,
                                           args.fixed_validation/'validation_native.json']}
     write_manifest(out, config={k: [str(x) for x in v] if isinstance(v, list) else str(v) for k, v in vars(args).items()}, inputs=inputs,
                    **{k: v for k, v in summary.items() if k != 'pages'})
@@ -90,7 +105,8 @@ def build(args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--export', type=Path, action='append', required=True); p.add_argument('--pages', type=Path, action='append', required=True)
+    p.add_argument('--export', type=Path, action='append', default=[]); p.add_argument('--dataset', type=Path, help='a merged dataset in place of the exports')
+    p.add_argument('--pages', type=Path, action='append', required=True); p.add_argument('--holdout', type=float, default=HOLDOUT, help='the share of writers held out')
     for name in ('same-student', 'fixed-validation', 'output-dir'): p.add_argument('--'+name, type=Path, required=True)
     p.add_argument('--new-export', type=Path, help="the latest batch: its regions also apart, for the forward test")
     build(p.parse_args(argv))

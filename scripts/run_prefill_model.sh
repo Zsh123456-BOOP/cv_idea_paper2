@@ -15,6 +15,11 @@
 #     switch rule (eval.prefill switch) against the soft student on the held-out writers.  Replacing the library's prefill is done
 #     after, by hand (headless Chrome first).
 # Unattended; a step whose marker is in $R is skipped.  Every job goes to whichever card has room (_common.sh open_card).
+# ROUND=2 (user 2026-11-16): every region confirmed so far (data.struck_dataset over the exports, then line_set merge with the line page's
+# review and corrections) as one prefill set, a tenth of the writers held out by the same hash (a subset of round 1's held-out writers,
+# so round 1's model never saw them); round 1's three teachers' labels, those on a page now labelled or of a held-out writer left out;
+# NAFNet from scratch with them (main) and without (real); both and round 1's main scored on the held-out writers, each against round
+# 1's main by the switch rule (main first, real only if main fails).  Card 2 only (the user's word); marker $O/paper2_prefill_model20261116.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -35,16 +40,57 @@ trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 source "$ROOT/scripts/_restorers.sh"
 spec_of() { "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1]))[sys.argv[2]]["spec"]; print(s["run"], s["checkpoint"])' "$CHOSEN" "$1"; }
 
+score_job() {   # CARD NUMA OUT MODEL... -- SET...: eval.prefill score
+    local card="$1" numa="$2" out="$3"; shift 3
+    bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$PY" -m revrender.eval.prefill score "$@" --upstream "$UP" --output-dir "$out" > "$out.log" 2>&1
+}
+if [ "${ROUND:-1}" = 2 ]; then
+    R=$O/paper2_prefill_model20261116; DS=$O/paper2_clean_struck_dataset20261116; MERGED=${N}_prefill_data20261116; SET=${N}_prefill_set_r2; VAL=$SET
+    R1=$O/paper2_prefill_model20261025; CARD=${ALL_CARDS[2]}; NUMA=$(numa_of "$CARD"); mkdir -p "$R"
+    exec 9>"$R/lock"; flock -n 9 || { echo 'another run of round 2 is still going'; exit 1; }
+    trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
+    if ! done_ sets; then
+        [ -e "$MERGED/run_manifest.json" ] || "$PY" -m revrender.data.line_set merge --dataset "$DS/regions.json" --folds "${N}_revision_folds_human_masked" \
+            --review "$O/paper2_line_review_returned20261115/export_corrected.json" --fixes "$O/paper2_line_reading_fix_returned20261116b/export.json" \
+            --output-dir "$MERGED" > "$R/sets.log" 2>&1
+        [ -e "$SET/run_manifest.json" ] || "$PY" -m revrender.data.prefill_set --dataset "$MERGED/regions.json" --holdout .1 \
+            --pages "$O/paper2_full_review20261010/images" --same-student "$SAME" --fixed-validation "$FIXED" --output-dir "$SET" >> "$R/sets.log" 2>&1
+        mark sets; fi
+    if ! done_ data; then
+        teachers=(); for t in NAFNet DE-GAN COR-Generator; do teachers+=("$R1/teacher_$t"); done
+        [ -e "${N}_prefill_pseudo_r2/run_manifest.json" ] || "$PY" -m revrender.data.pseudo_regions combine --predictions "${teachers[@]}" --review-set "$SET" \
+            --soft --human-share .25 --pseudo-weight .5 --output-dir "${N}_prefill_pseudo_r2" > "$R/data.log" 2>&1
+        for name in main real; do
+            src=$SET; [ $name = real ] || src=${N}_prefill_pseudo_r2
+            [ -e "${N}_prefill_tiles_r2_$name/run_manifest.json" ] || "$PY" -m revrender.data.restoration_pairs human --review-set "$src" --no-replay \
+                --output-dir "${N}_prefill_tiles_r2_$name" >> "$R/data.log" 2>&1
+        done
+        mark data; fi
+    if ! done_ train; then
+        for arm in main real; do
+            budget=prefill; [ $arm = main ] || budget=real_only
+            RESTORER_MEMORY=10000 RESTORER_ARGS="--select blocks" finetune_restorer NAFNet "$CARD" "$NUMA" - "${N}_prefill_tiles_r2_$arm" \
+                "${N}_prefill_model_r2_$arm" "$budget" > "$R/train_$arm.log" 2>&1 &
+            sleep 90
+        done
+        wait; for arm in main real; do test -e "${N}_prefill_model_r2_$arm/selection.json"; done; mark train; fi
+    if ! done_ score; then
+        score_job "$CARD" "$NUMA" "$R/scores" --model "r1-main=${N}_prefill_model_main" --model "r2-main=${N}_prefill_model_r2_main" \
+            --model "r2-real=${N}_prefill_model_r2_real" --set "held_out=$SET/validation_native.json" --set "fixed16=$FIXED/validation_native.json"
+        test -e "$R/scores/scores.json"
+        for arm in main real; do
+            [ -e "$R/switch_$arm.json" ] || "$PY" -m revrender.eval.prefill switch --scores "$R/scores/scores.json" --set held_out --current r1-main \
+                --candidate "r2-$arm" --output "$R/switch_$arm.json"
+        done
+        mark score; fi
+    touch "$R/COMPLETE"; stamp "round 2 complete"; exit 0
+fi
 if ! done_ sets; then
     [ -e "$SET/run_manifest.json" ] || "$PY" -m revrender.data.prefill_set --export "$TA" --export "$TE" --new-export "$B1" --pages "$O/paper2_full_review20261010/images" \
         --same-student "$SAME" --fixed-validation "$FIXED" --output-dir "$SET" > "$R/sets.log" 2>&1
     [ -e "$OLD/run_manifest.json" ] || "$PY" -m revrender.data.prefill_set --export "$TA" --pages "$O/paper2_full_review20261010/images" \
         --same-student "$SAME" --fixed-validation "$FIXED" --output-dir "$OLD" >> "$R/sets.log" 2>&1
     mark sets; fi
-score_job() {   # CARD NUMA OUT MODEL... -- SET...: eval.prefill score
-    local card="$1" numa="$2" out="$3"; shift 3
-    bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$PY" -m revrender.eval.prefill score "$@" --upstream "$UP" --output-dir "$out" > "$out.log" 2>&1
-}
 if ! done_ forward; then
     place_job 8000 score_job "$R/forward" --model "soft-student=$SOFT:step_14999" --model "nafnet-b=${N}_finetune_long_NAFNet:step_364" --set "batch1=$SET/new_native.json"
     wait; test -e "$R/forward/scores.json"; mark forward; fi

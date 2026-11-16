@@ -33,3 +33,25 @@ def test_the_held_out_writers_are_a_stable_seventh_or_so():
     writers = [f'{k:08x}-writer' for k in range(2000)]
     share = np.mean([held_out(w) for w in writers])
     assert .12 < share < .18 and held_out(writers[3]) == held_out(writers[3])
+
+
+def test_a_smaller_share_holds_out_a_subset_of_the_writers():
+    writers = [f'{k:08x}-writer' for k in range(2000)]
+    tenth = {w for w in writers if held_out(w, .1)}
+    assert .08 < len(tenth)/len(writers) < .12 and tenth <= {w for w in writers if held_out(w)}
+
+
+def test_a_dataset_gives_its_confirmed_certain_regions(tmp_path):
+    from PIL import Image
+    from revrender.data.pixel_masks import encode
+    from revrender.data.prefill_set import dataset_regions
+    page = np.full((40, 60), 255, np.uint8); page[20, 10:50] = 0
+    (tmp_path/'pages').mkdir(); Image.fromarray(page).save(tmp_path/'pages'/'aaaaaaaa-0000-0000-0000-000000000000_1_1.png')
+    mask = np.zeros((20, 50), bool); mask[10, :40] = True
+    row = lambda i, **k: {'id': f'aaaaaaaa-0000-0000-0000-000000000000_1_1#{i}', 'page': 'aaaaaaaa-0000-0000-0000-000000000000_1_1', 'box': [10, 10, 60, 30],
+                          'region': None, 'runs': encode(mask), 'pixels_confirmed': True, 'edits': 3, 'prefill_model': 'm', **k}
+    (tmp_path/'r.json').write_text(json.dumps([row('a'), row('b', deleted=True), row('c', pixels_confirmed=False), row('d', pixels_uncertain=True)]))
+    from unittest import mock
+    with mock.patch('revrender.pages.page_files', lambda folders, ids: {i: tmp_path/'pages'/f'{i}.png' for i in ids}):
+        found = dataset_regions(tmp_path/'r.json', [tmp_path/'pages'])
+    assert [r['id'][-1] for _, _, r, _, _ in found] == ['a'] and found[0][2]['ops'] == 3 and found[0][4].sum() == 40
