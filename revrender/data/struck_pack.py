@@ -13,7 +13,8 @@ writers stay out.  The writers go to ``FOLDS`` folds of about equal regions (``f
 earlier folds pack (the folds drawn anew would move with every region added).  A row is one region: ``readable`` as the annotator said, ``target`` what a
 reader is taught to give (the text in the spelling of ``eval.coverage.prepare``, or ``recognize_lines.UNREADABLE``), and three images of
 its OCR window (the region's polygon box and six pixels, white outside the polygon) from the annotator's own pixels: the scan (``raw``), the scan with the strike
-pixels white (``erased``) and the layer map (``map``: white the strike pixels, black the rest).  A region is cut from the page its
+pixels white (``erased``) and the layer map (``map``: white the strike pixels, black the rest); ``--erased-by RUN``: a restorer's strike on the
+annotator's crop in place of the annotator's pixels, so a reader taught on it sees what the prefill gives it.  A region is cut from the page its
 export showed the annotator (the dataset's ``image_source`` when that folder is here, else the first of ``--pages`` holding the page):
 the pixels were drawn on that image.
 
@@ -118,12 +119,28 @@ def chosen_regions(args):
     return chosen, {(folder, page): path for folder, files in listed.items() for page, path in files.items()}, held, skipped
 
 
+def model_strike(predict, page, r):
+    """The region's strike as a restorer erases it (``tools.annotate.pixel_library``'s rule) on the annotator's crop, inside the polygon."""
+    from ..baselines.restoration import restore_native
+    from ..tools.annotate.pixel_library import REMOVED
+    from .pixel_masks import encode, region_pixels
+    image = reviewed_crop(page, {**r, 'runs': []})[0].astype(np.float32)/255
+    mask = ((restore_native(predict, image)-image) > REMOVED) & (image < 245/255)
+    if r.get('region'): mask &= region_pixels(r['region'], r['box'])
+    return encode(mask)
+
+
 def folds_pack(args):
     chosen, files, held, skipped = chosen_regions(args)
     out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []
+    predict = None
+    if args.erased_by:   # the erased crop as the prefill will see it: a restorer's strike in place of the annotator's
+        from ..baselines.restoration_export import selected_predictor
+        predict = selected_predictor(args.erased_by, args.upstream, args.erased_step)[0]
     for key in sorted({(r['source'], r['page']) for r in chosen}):
         with Image.open(files[key]) as page:
             for r in (r for r in chosen if (r['source'], r['page']) == key):
+                if predict: r = {**r, 'runs': model_strike(predict, page, r)}
                 images = {name: f'crops/{len(rows):05d}_{name}.png' for name in ('raw', 'erased', 'map')}
                 for name, image in zip(images, layered(page, r)): image.save(out/images[name])
                 rows.append({'id': r['id'], 'line_id': r['id'], 'kind': 'line', 'writer': r['writer'], 'fold': r['fold'], 'val': r['val'],
@@ -316,6 +333,8 @@ def main(argv=None):
         f.add_argument('--hold-out', action='append', default=[], help='part of the name of an export whose regions, and their writers, stay out (the test page)')
         f.add_argument('--folds-from', type=Path, help='a folds pack whose folds and val marks the writers keep (else they are drawn anew)')
         f.add_argument('--holdout-share', type=float, help="two folds: 0 the writers data.prefill_set holds out at this share, 1 the rest")
+        f.add_argument('--erased-by', type=Path, help="folds: a restorer run whose strike makes the erased crop and the map (the annotator's pixels otherwise)")
+        f.add_argument('--erased-step', help='the step directory of --erased-by'); f.add_argument('--upstream', type=Path, help='the restorers\' sources, with --erased-by')
         f.add_argument('--output-dir', type=Path, required=True)
     d = sub.add_parser('separated')
     for key in ('pack', 'sets', 'upstream', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)

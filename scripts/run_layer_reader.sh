@@ -401,6 +401,37 @@ if ! done_ prefill_library; then
     [ -e "$P/site/run_manifest.json" ] || "$PY" -m revrender.tools.annotate.pixel_library bundle --pack "$P/library" --readings "$P/read_library/predictions.jsonl" \
         --condition pair_revision --katex "$KATEX" --output-dir "$P/site" > "$P/bundle.log" 2>&1
     mark prefill_library; fi
+# The reader taught on the model's erased crops (2026-11-16): taught on the annotator's, it read the model's crops at 44 AR on the held-out
+# writers (the annotator's: 86), the strike the model leaves unerased being new to it.  The same recipe on crops whose erased image is
+# the pixel model's strike on the annotator's polygon (struck_pack folds --erased-by); it takes the library's drafts if its exact on the
+# held-out writers' model crops is the higher of the two readers'.
+RPM=${N}_prefill_reader_pack_model20261116; RDM=${N}_prefill_reader_model20261116
+reader_model_job() {   # CARD NUMA
+    [ -e "$RDM/complete.json" ] || job "$1" "$2" "$RDM" -- $(PACK=$RPM teach "$RDM" pair 0)
+}
+read_model_job() {   # CARD NUMA OUT PACK
+    [ -e "$3/complete.json" ] || job "$1" "$2" "$3" -- $(PACK=$4 read_with "$3" pair "$RDM" --fold 0 --loop-limit 4)
+}
+pack_model_job() {   # CARD NUMA
+    job "$1" "$2" "$RPM" -- "$PY" -m revrender.data.struck_pack folds --dataset "$MERGED/regions.json" --pages "$O/paper2_full_review20261010/images" \
+        --holdout-share .1 --erased-by "$RUN" --erased-step "$STEP" --upstream "$UP" --output-dir "$RPM"
+}
+if ! done_ prefill_reader_model; then
+    [ -e "$RPM/run_manifest.json" ] || { alone pack_model_job; wait; }
+    alone reader_model_job; wait; test -e "$RDM/complete.json"
+    alone read_model_job "$P/read_heldout_m" "$LH"; wait; test -e "$P/read_heldout_m/complete.json"
+    [ -e "$P/scores_heldout_m.json" ] || "$PY" -m revrender.eval.transcription --pack "$LH" --only "$LH/held_out.json:ids" --arm "taught_on_model=$P/read_heldout_m@pair_revision" \
+        --arm "taught_on_annotator=$P/read_heldout@pair_revision" --arm "human_pixels=$P/read_human@pair_revision" --reference taught_on_annotator \
+        --readings "$P/readings_heldout_m.jsonl" --output "$P/scores_heldout_m.json" > "$P/scores_heldout_m.log" 2>&1
+    mark prefill_reader_model; fi
+if ! done_ prefill_library_m; then
+    better=$("$PY" -c 'import json,sys; a=json.load(open(sys.argv[1]))["arms"]; print("m" if a["taught_on_model"]["exact"] > a["taught_on_annotator"]["exact"] else "")' "$P/scores_heldout_m.json")
+    if [ "$better" = m ]; then
+        alone read_model_job "$P/read_library_m" "$LF"; wait; test -e "$P/read_library_m/complete.json"
+        [ -e "$P/site_m/run_manifest.json" ] || "$PY" -m revrender.tools.annotate.pixel_library bundle --pack "$P/library" --readings "$P/read_library_m/predictions.jsonl" \
+            --condition pair_revision --katex "$KATEX" --output-dir "$P/site_m" > "$P/bundle_m.log" 2>&1
+    fi
+    mark prefill_library_m; fi
 touch "$P/COMPLETE"; stamp 'prefill part complete'; exit 0; fi
 
 if [ "$PART" = ceiling ]; then cards "${CARDS:-1}"
