@@ -415,6 +415,271 @@ def human_pairs(review_set, source, arm, destination, no_replay=False):
     print(json.dumps(summary), flush=True)
 
 
+# ---- synthesis materials and their checks (plan of 2026-11-16, step one: no training) -----------------------------------------------
+SOURCES = ('H', 'P', 'D')
+LOOK = 200                    # materials per source checked (seed 42)
+NOMINAL = 40                  # a drawn strike (D) is drawn for a line this high
+DRAWN = {'line': .2, 'double': .1, 'wave': .1, 'zigzag': .2, 'cross': .15, 'scribble': .25}   # D's styles, heavy ones often
+SHARE_CUTS = (.23, .35)       # light, middle, heavy by the strike's share of the ink (eval.prefill's tiers)
+TINY = .5                     # or whose strike spans less than this share of the writing it struck (a speck the eraser took)
+GAPPY = .6                    # or with fewer pixels than this share of one pen stroke as long as it spans (dots left between writing)
+HOLES = .3                    # or with more writing in its holes than this share of its pixels (``strike_bank.holes``)
+FRAGMENTS = .4                # a human strike with more of its pixels in specks than this, closed or not, is left out
+
+
+def tier(share):
+    return 'light' if share < SHARE_CUTS[0] else 'middle' if share < SHARE_CUTS[1] else 'heavy'
+
+
+def excluded_writers(set_dir, mapping, same_student):
+    """The writers no material or host may come from: the held-out and fixed-validation writers of the prefill set, paper 1's test
+    writers, and each one's other id."""
+    summary = json.loads((set_dir/'summary.json').read_text()); other = twins(same_student); splits = writer_splits(mapping, same_student)
+    out = set(summary['validation_writers'])|set(summary['fixed_writers'])|{w for w, s in splits.items() if s == 'test'}
+    return out|{other[w] for w in out if w in other}
+
+
+def specks(mask):
+    labels, n = ndimage.label(mask, np.ones((3, 3)))
+    if not n: return 1.
+    sizes = np.bincount(labels.ravel())[1:]; width = max(2., 2*float(np.median(ndimage.distance_transform_edt(mask)[mask])))
+    return float(sizes[sizes < max(12, 2*width*width)].sum())/max(1, sizes.sum())
+
+
+def line_height_at(lines, page, box):
+    """The height of the catalogue line on the page that holds most of a box (None if none does)."""
+    best, height = 0, None
+    for line in lines.get(page, []):
+        l, t, r, b = line['px']; over = max(0, min(r, box[2])-max(l, box[0]))*max(0, min(b, box[3])-max(t, box[1]))
+        if over > best: best, height = over, b-t
+    return height
+
+
+def human_materials(set_dir, readable, lines, excluded):
+    """Source H: the strikes the annotator erased in the prefill set's training regions, with their gaps closed (``strike_bank.completed``).
+    Left out (counted): a region read as unreadable (a blackout), of an excluded writer, with too few strike pixels, or in specks."""
+    from .strike_bank import human_material
+    from .paste_strikes import writing_height
+    rows = json.loads((set_dir/'training_native.json').read_text()); arrays = np.load(set_dir/'training_native.npz')
+    made, left = [], Counter()
+    for k, r in enumerate(rows):
+        if r['group_uuid'] in excluded: left['excluded_writer'] += 1; continue
+        if readable.get(r['id']) is False: left['unreadable'] += 1; continue
+        grey, strike = arrays[f'image_{k}'], arrays[f'mask_{k}'].astype(bool)
+        if strike.sum() < 12: left['too_few_pixels'] += 1; continue
+        before, after, level, holed = human_material(grey, strike)
+        if specks(after >= .3) > FRAGMENTS: left['specks'] += 1; continue
+        if holed > HOLES: left['holes'] += 1; continue
+        writing = (grey < 200) & ~strike; wy, wx = np.nonzero(writing); sy, sx = np.nonzero(after >= .3)
+        tall = writing_height(writing) or grey.shape[0]
+        span = max(np.ptp(sy), np.ptp(sx))+1
+        if span < TINY*tall: left['tiny'] += 1; continue
+        stroke = max(2., 2*float(np.median(ndimage.distance_transform_edt(grey < 200)[grey < 200])))      # the pen's width
+        if len(sy) < GAPPY*stroke*span: left['mostly_gaps'] += 1; continue
+        rel_y = float(np.clip((sy.mean()-wy.min())/max(1, wy.max()-wy.min()), 0, 1)) if len(wy) else .5
+        height = line_height_at(lines, r['page'], r['box']) or (int(wy.max()-wy.min()+1) if len(wy) else grey.shape[0])
+        made.append({'id': f"H:{r['id']}", 'source': 'H', 'writer': r['group_uuid'], 'page': r['page'], 'box': r['box'], 'line_height': int(height),
+                     'writing_height': tall,
+                     'rel_y': rel_y, 'level': level, 'origin_share': float(strike.sum())/max(1, strike.sum()+writing.sum()),
+                     'arrays': {'before': before, 'after': after, 'origin': grey}})
+    return made, dict(left)
+
+
+def bank_materials(bank_dir, scans, excluded, other):
+    """Source P: paper 1's bank lines of writers not excluded, trimmed (``strike_bank.trimmed_line``).  Left out (counted): a line with
+    too little of its length inked (dots, pieces) or that is not one line once trimmed (letters, loops, several strokes)."""
+    from .strike_bank import trimmed_line, line_measures
+    from .paste_strikes import writing_height
+    pieces = json.loads((bank_dir/'pieces.json').read_text()); arrays = np.load(bank_dir/'bank.npz')
+    made, left, opened = [], Counter(), {}
+    for p in pieces:
+        if canonical(p['writer'], other) in excluded or p['writer'] in excluded: left['excluded_writer'] += 1; continue
+        before, after, measures = trimmed_line(arrays[p['id']], p['ink_level'])
+        if measures['broken']: left['broken'] += 1; continue
+        if not line_measures(after)['linear']: left['not_one_line'] += 1; continue
+        if p['image_id'] not in opened:
+            opened.clear()
+            with Image.open(scans[p['image_id']]) as im: opened[p['image_id']] = np.asarray(im.convert('L'))
+        page = opened[p['image_id']]; l, t, r, b = p['box']; m = p['line_height']//2
+        L, T, R, B = max(0, l-m), max(0, t-m), min(page.shape[1], r+m), min(page.shape[0], b+m)
+        window = page[T:B, L:R]; mine = np.zeros(window.shape, bool); mine[t-T:b-T, l-L:r-L] = arrays[p['id']] < 255
+        writing = (window < 200) & ~mine; wy = np.flatnonzero(writing[:, l-L:r-L].any(1))
+        rel_y = float(np.clip(((t+b)/2-T-wy.min())/max(1, wy.max()-wy.min()), 0, 1)) if len(wy) else .5
+        made.append({'id': f"P:{p['id']}", 'source': 'P', 'writer': canonical(p['writer'], other), 'page': p['image_id'], 'box': p['box'],
+                     'line_height': p['line_height'], 'writing_height': writing_height(writing[:, l-L:r-L]) or p['line_height'], 'rel_y': rel_y, 'level': p['ink_level'],
+                     'origin_share': float(mine.sum())/max(1, mine.sum()+writing[:, l-L:r-L].sum()),
+                     'arrays': {'before': before, 'after': after, 'origin': window}})
+    return made, dict(left)
+
+
+def drawn_material(rng, n):
+    """Source D: a strike drawn by ``paste_strikes.strokes`` (no blackouts) for a line ``NOMINAL`` high, in one of ``DRAWN``'s styles."""
+    from .paste_strikes import strokes, STROKE
+    style = rng.choices(list(DRAWN), weights=list(DRAWN.values()))[0]
+    w, h = int(NOMINAL*rng.uniform(1., 4.)), int(NOMINAL*rng.uniform(.3, .8))
+    _, alpha = strokes((w, h), style, rng, (0, 0, 0), max(2., rng.uniform(*STROKE)*NOMINAL), 0)
+    return {'id': f'D:{n}', 'source': 'D', 'writer': None, 'style': style, 'line_height': NOMINAL, 'writing_height': NOMINAL, 'rel_y': rng.uniform(.4, .6), 'level': 0,
+            'arrays': {'before': alpha, 'after': alpha}}
+
+
+def host_lines(catalogue, files, excluded, other):
+    """Lines without a revision (the catalogue's ``has_edit`` false) of allowed writers outside ``excluded``, on pages there are."""
+    return [r for r in catalogue if not r.get('has_edit') and canonical(r['group_uuid'], other) not in excluded
+            and r['group_uuid'] not in excluded and r['image_id'] in files]
+
+
+PRINTED = .02                 # a host line with more of its ink on the page's printed template than this is printed (a question number)
+
+
+def usable_host(page, line, templates, image_id):
+    """Whether a host line is handwriting: little of its ink on its question's printed template, and written at least two heights wide."""
+    l, t, r, b = line['px']; ink = page[t:b, l:r] < 200
+    columns = np.flatnonzero(ink.any(0))
+    if not len(columns) or columns[-1]-columns[0] < 2*(b-t): return False
+    template = templates.get(group_key(image_id, (page.shape[1], page.shape[0])))
+    return template is None or (ink & template[t:b, l:r]).sum() <= PRINTED*ink.sum()
+
+
+def rendered(alpha, level=40):
+    return np.rint(255-(255-level)*np.clip(alpha, 0, 1)).astype(np.uint8)
+
+
+def png64(array, scale):
+    import base64, io
+    image = Image.fromarray(array); image = image.resize((max(1, image.width*scale), max(1, image.height*scale)), Image.NEAREST)
+    buffer = io.BytesIO(); image.save(buffer, 'PNG'); return 'data:image/png;base64,'+base64.b64encode(buffer.getvalue()).decode()
+
+
+def look_page(chosen, path):
+    """Check 4's page: per material its original place, before and after cleaning, and put on a host; two boxes to tick (writing
+    carried, gaps) kept in the browser and counted at the top, exportable."""
+    import html
+    rows = []
+    for m in chosen:
+        a = m['arrays']; shown = [x for x in (a.get('origin'), a['after'], m.get('pasted')) if x is not None]
+        scale = max(1, min(4, 100//max(x.shape[0] for x in shown)))
+        cells = [png64(a['origin'], scale) if a.get('origin') is not None else None, png64(rendered(a['before']), scale), png64(rendered(a['after']), scale),
+                 png64(m['pasted'], scale) if m.get('pasted') is not None else None]
+        info = ' '.join(f'{k}={v}' for k, v in m['shown'].items())
+        rows.append(f'<tr data-id="{html.escape(m["id"])}"><td class="id">{html.escape(m["id"][:40])}<br><small>{html.escape(info)}</small></td>'
+                    + ''.join(f'<td>{f"<img src={chr(34)}{c}{chr(34)}>" if c else "—"}</td>' for c in cells)
+                    + '<td><label><input type="checkbox" data-k="writing">带字</label><br><label><input type="checkbox" data-k="gap">缺口</label></td></tr>')
+    page = f"""<!doctype html><html lang="zh"><meta charset="utf-8"><title>合成素材检查</title>
+<style>body{{font:14px sans-serif;margin:16px;background:#fff;color:#111}}table{{border-collapse:collapse}}td{{border:1px solid #ddd;padding:4px;vertical-align:middle}}
+td.id{{width:200px;min-width:200px;word-break:break-all;font-size:11px}}img{{image-rendering:pixelated;max-width:340px;max-height:200px}}#top{{position:sticky;top:0;background:#fff;padding:6px 0;border-bottom:1px solid #ccc}}
+h2{{margin-top:28px}}</style>
+<div id="top">勾选：带字 / 缺口。计数（按来源）：<span id="count"></span> <button id="export">导出勾选</button></div>
+<p>每行：原处｜清洗前｜清洗后｜贴到宿主上。D 是程序画的，没有原处、不清洗。</p>"""
+    for source in SOURCES:
+        part = [r for r, m in zip(rows, chosen) if m['source'] == source]
+        page += f'<h2>来源 {source}（{len(part)} 条）</h2><table><tr><th>素材</th><th>原处</th><th>清洗前</th><th>清洗后</th><th>贴到宿主上</th><th>看出</th></tr>{"".join(part)}</table>'
+    page += """<script>const K='synth-materials-check-20261116';let s={};try{s=JSON.parse(localStorage.getItem(K)||'{}')}catch(e){}
+function count(){const c={};for(const tr of document.querySelectorAll('tr[data-id]')){const src=tr.dataset.id[0];c[src]=c[src]||{n:0,writing:0,gap:0,any:0};c[src].n++;
+let any=0;for(const b of tr.querySelectorAll('input')){if(b.checked){c[src][b.dataset.k]++;any=1}}c[src].any+=any}
+document.getElementById('count').textContent=Object.entries(c).map(([k,v])=>`${k}: 带字 ${v.writing}、缺口 ${v.gap}、任一 ${v.any}/${v.n}（${(100*v.any/v.n).toFixed(1)}%）`).join('；')}
+for(const tr of document.querySelectorAll('tr[data-id]'))for(const b of tr.querySelectorAll('input')){b.checked=!!(s[tr.dataset.id]||{})[b.dataset.k];
+b.onchange=()=>{(s[tr.dataset.id]=s[tr.dataset.id]||{})[b.dataset.k]=b.checked;try{localStorage.setItem(K,JSON.stringify(s))}catch(e){}count()}}
+document.getElementById('export').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(s,null,1)],{type:'application/json'}));a.download='synth_materials_check.json';a.click()};count()</script>"""
+    path.write_text(page)
+
+
+def materials(args):
+    """The three sources of strikes (H human, P paper 1's bank, D drawn), cleaned; checks 1 and 2 on ``LOOK`` of each (before and after),
+    check 4's page and check 3's reader pack (each material alone on white) on the same ones."""
+    from .strike_bank import line_measures
+    other = twins(args.same_student); excluded = excluded_writers(args.set, args.mapping, args.same_student)
+    readable = {r['id']: r.get('readable') for r in json.loads(args.dataset.read_text())}
+    from .lines import read_catalogue
+    catalogue = read_catalogue(args.catalogue); files = pages.page_files(args.pages)
+    hosts = host_lines(catalogue, files, excluded, other)
+    lines = {}
+    for r in catalogue:
+        if r['image_id'] in files: lines.setdefault(r['image_id'], []).append(r)
+    sizes = {}
+    def size(page):
+        if page not in sizes:
+            with Image.open(files[page]) as im: sizes[page] = im.size
+        return sizes[page]
+    for page, rows in lines.items():
+        for r in rows: r['px'] = crop_box(r['box_1000'], *size(page))
+    human, human_left = human_materials(args.set, readable, lines, excluded)
+    bank, bank_left = bank_materials(args.bank, files, excluded, other)
+    rng = random.Random(SEED); drawn = [drawn_material(rng, n) for n in range(LOOK)]
+    out = make_output_dir(args.output_dir)
+    store = {}
+    for m in human+bank:
+        for key in ('before', 'after'): store[f"{m['id']}|{key}"] = np.rint(m['arrays'][key]*255).astype(np.uint8)
+    np.savez_compressed(out/'materials.npz', **store)
+    write_json(out/'materials.json', [{k: v for k, v in m.items() if k != 'arrays'} for m in human+bank])
+    chosen = [m for source, pool in (('H', human), ('P', bank), ('D', drawn)) for m in random.Random(SEED).sample(pool, min(LOOK, len(pool)))]
+    by_page = {}
+    for r in hosts: by_page.setdefault(r['image_id'], []).append(r)
+    host_pages = sorted(by_page); opened = {}
+    checks = {s: {'before': [], 'after': [], 'tiers': Counter(), 'shares': []} for s in SOURCES}
+    templates = dict(np.load(args.templates))
+    pack_rows = []; (out/'reader'/'assets').mkdir(parents=True)
+    from .paste_strikes import on_writing
+    for n, m in enumerate(chosen):
+        draw = random.Random(f'{SEED}:{m["id"]}')
+        put = None
+        for _ in range(30):
+            page = draw.choice(host_pages)
+            if page not in opened:
+                if len(opened) > 64: opened.clear()
+                with Image.open(files[page]) as im: opened[page] = review_clean(np.asarray(im.convert('L')))
+            line = draw.choice(by_page[page])
+            if not usable_host(opened[page], line, templates, page): continue
+            put = on_writing(opened[page], line['px'], m['arrays']['after'], m, draw)
+            if put is not None: break
+        mb, ma = line_measures(m['arrays']['before']), line_measures(m['arrays']['after'])
+        checks[m['source']]['before'].append(mb); checks[m['source']]['after'].append(ma)
+        m['pasted'] = put['image'] if put else None
+        if put: checks[m['source']]['tiers'][tier(put['strike_share'])] += 1; checks[m['source']]['shares'].append(put['strike_share'])
+        m['shown'] = {'线状': ma.get('linear'), 'fill': f"{mb.get('fill')}→{ma.get('fill')}", 'cover': f"{mb.get('cover')}→{ma.get('cover')}",
+                      **({'share': round(put['strike_share'], 2)} if put else {}), **({'style': m['style']} if 'style' in m else {})}
+        for key in ('before', 'after') if m['source'] != 'D' else ('after',):
+            name = f"{m['source']}_{key}_{n}.png"
+            Image.fromarray(np.pad(rendered(m['arrays'][key]), 8, constant_values=255)).convert('RGB').save(out/'reader'/'assets'/name)
+            pack_rows.append({'id': f"{m['id']}|{key}", 'line_id': f"{m['id']}|{key}", 'source': m['source'], 'cleaning': key, 'images': {'raw': f'assets/{name}'}})
+    write_json(out/'reader'/'pack.json', {'schema': 'revrender-line-pack', 'seed': SEED, 'rows': pack_rows})
+    look_page(chosen, out/'check_page.html')
+    def summary_of(measures):
+        lined = [x for x in measures if x.get('linear')]
+        if not lined: return {'linear': 0, 'of': len(measures)}
+        fill = np.array([x['fill'] for x in lined]); cover = np.array([x['cover'] for x in lined])
+        return {'linear': len(lined), 'of': len(measures), 'fill_median': round(float(np.median(fill)), 3), 'fill_p95': round(float(np.percentile(fill, 95)), 3),
+                'cover_median': round(float(np.median(cover)), 3), 'cover_below_0.8': round(float((cover < .8).mean()), 3)}
+    result = {s: {'before': summary_of(c['before']), 'after': summary_of(c['after']), 'pasted_tiers': dict(c['tiers']),
+                  'pasted_share_median': round(float(np.median(c['shares'])), 3) if c['shares'] else None} for s, c in checks.items()}
+    kept = {'H': human, 'P': bank}
+    produced = {s: {'materials': len(pool), 'writers': len({m['writer'] for m in pool}),
+                    'origin_tiers': dict(Counter(tier(m['origin_share']) for m in pool))} for s, pool in kept.items()}
+    summary = {'checks_1_2': result, 'produced': produced, 'left_out': {'H': human_left, 'P': bank_left}, 'hosts': {'lines': len(hosts),
+               'writers': len({canonical(r['group_uuid'], other) for r in hosts}), 'pages': len(host_pages)}, 'excluded_writers': len(excluded),
+               'looked': {s: sum(m['source'] == s for m in chosen) for s in SOURCES}}
+    write_json(out/'summary.json', summary)
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [args.set/'training_native.npz', args.bank/'bank.npz', args.dataset,
+                   args.catalogue, args.mapping, args.same_student, args.templates]}, **summary)
+    print(json.dumps(summary, ensure_ascii=False), flush=True)
+
+
+def read_check(pack, predictions, output):
+    """Check 3: the share of each source's materials (alone on white) a reader that was never taught read at least one letter, digit or
+    Chinese character in (not the refusal, not empty), against the drawn strikes (D)."""
+    import re
+    rows = {r['id']: r for r in json.loads((pack/'pack.json').read_text())['rows']}
+    readings = [json.loads(s) for s in predictions.read_text().splitlines() if s.strip()]
+    found = Counter(); total = Counter()
+    for p in readings:
+        r = rows[p['id']]; key = f"{r['source']}_{r['cleaning']}"; total[key] += 1
+        text = (p.get('text') or '').replace('[读不出]', '').replace('[空]', '')
+        found[key] += bool(re.search(r'[0-9A-Za-z\u4e00-\u9fff]', text))
+    shares = {k: round(found[k]/total[k], 3) for k in total}
+    out = {'read_share': shares, 'counts': dict(total), 'control': shares.get('D_after'),
+           'within_5_points_of_control': {k: shares[k] <= shares.get('D_after', 0)+.05 for k in shares if k.endswith('_after') and not k.startswith('D')}}
+    write_json(output, out); print(json.dumps(out), flush=True)
+
+
 def main(argv=None):
     argv=sys.argv[1:] if argv is None else argv
     if argv[:1]==['darken']:
@@ -429,6 +694,15 @@ def main(argv=None):
         for name in ('export','pages','ids','review-set','source','output-dir'):p.add_argument('--'+name,type=Path,required=True)
         p.add_argument('--arm',choices=ARMS,default='gold_pixels');p.add_argument('--whole',action='store_true',help='every tile of each question, not only its regions')
         a=p.parse_args(argv[1:]);question_pairs(a.export,a.pages,a.ids,a.review_set,a.source,a.arm,a.whole,a.output_dir);return
+    if argv[:1]==['materials']:
+        p=argparse.ArgumentParser(description=materials.__doc__)
+        for name in ('set','bank','dataset','catalogue','mapping','same-student','templates','output-dir'):p.add_argument('--'+name,type=Path,required=True)
+        p.add_argument('--pages',type=Path,action='append',required=True,help='clean pages (hosts) and the scans the bank was cut from')
+        materials(p.parse_args(argv[1:]));return
+    if argv[:1]==['read-check']:
+        p=argparse.ArgumentParser(description=read_check.__doc__)
+        for name in ('pack','predictions','output'):p.add_argument('--'+name,type=Path,required=True)
+        a=p.parse_args(argv[1:]);read_check(a.pack,a.predictions,a.output);return
     if argv[:1]==['human']:
         p=argparse.ArgumentParser(description=human_pairs.__doc__);p.add_argument('--review-set',type=Path,required=True)
         p.add_argument('--source',type=Path,help='the synthetic pairs replayed and checked against (none: the human regions alone)');p.add_argument('--arm',choices=ARMS,default='gold_pixels')

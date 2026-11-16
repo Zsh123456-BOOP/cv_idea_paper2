@@ -208,3 +208,175 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+# ---- synthesis materials (plan of 2026-11-16): a strike as the opacity of its own ink, cleaned, and measured -------------------------
+INK_ALPHA = .3             # a pixel of a strike at least this opaque is its ink (to measure it)
+REACH = 60                 # a human strike's gap over writing is closed up to this many pixels from its pixels on each side
+LINE_SHARE = .1            # a straight part of a human strike holds at least this share of its pixels
+LINES = 6                  # and a strike has at most this many
+STUB = 4.                  # a piece off a line's band that touches it and holds at most this many widths squared is writing the eraser took
+HOLE_REACH = 1.            # a human strike's holes are looked for within this many of its widths
+TRIM = .5                 # a cleaned bank line keeps this many pixels beyond half its local median width from its centre
+WINDOW_WIDTHS = 3.         # the local median width is taken over this many widths along the line on each side
+MIN_COVER = .7             # a bank line with less of its centre covered by ink is broken (dots, pieces) and left out
+
+
+def opacity(grey, level, where=None):
+    """The opacity of ink of grey ``level`` in a grey image (1 at the level and darker), 0 outside ``where``."""
+    alpha = np.clip((255.-grey.astype(np.float32))/(255.-min(float(level), 200.)), 0, 1)
+    return alpha if where is None else np.where(where, alpha, 0.).astype(np.float32)
+
+
+def axis_frame(points):
+    """(t, s) of points (y, x) along and across their principal axis, and the two variances."""
+    centred = points-points.mean(0)
+    values, vectors = np.linalg.eigh(np.cov(centred.T) if len(points) > 2 else np.eye(2))
+    along, across = vectors[:, 1], vectors[:, 0]
+    return centred @ along, centred @ across, values[::-1]
+
+
+def line_measures(alpha):
+    """How much a strike looks like one clean line: its length along its axis, its typical width (the median ink across it), ``fill`` (its
+    ink over one line of that width and length: above 1 it carries more, e.g. writing) and ``cover`` (the share of its length that has
+    ink).  ``linear``: elongated, one run of ink across it at most places and at least three widths long; only then are fill and cover
+    meant (check 1 and 2 of the plan)."""
+    ys, xs = np.nonzero(alpha >= INK_ALPHA)
+    if len(ys) < 6:
+        return {'linear': False, 'pixels': int(len(ys))}
+    t, s, var = axis_frame(np.stack([ys, xs], 1).astype(float))
+    bins = np.round(t-t.min()).astype(int); length = int(bins.max())+1
+    count = np.bincount(bins, minlength=length)
+    runs = []
+    for b in np.flatnonzero(count):
+        across = np.unique(np.round(s[bins == b]).astype(int)); runs.append(1+int((np.diff(across) > 1).sum()))
+    width = float(np.median(count[count > 0]))
+    measures = {'pixels': int(len(ys)), 'length': length, 'width': round(width, 2), 'fill': round(float(len(ys))/(length*width), 3),
+                'cover': round(float((count > 0).mean()), 3), 'elongation': round(float(var[0]/max(var[1], .25)), 1),
+                'one_run': round(float(np.mean(np.array(runs) == 1)), 3)}
+    measures['linear'] = bool(measures['elongation'] >= 9 and measures['one_run'] >= .7 and length >= 3*width)
+    return measures
+
+
+def along_line(seeds, ink, theta, rho, half, reach):
+    """The pixels between seeds along the line x cos(theta) + y sin(theta) = rho (within ``half`` of it), on each row of the line's band
+    reachable from a seed on both sides through ink alone, at most ``reach`` pixels from each."""
+    h, w = ink.shape; normal = np.array([np.cos(theta), np.sin(theta)]); direction = np.array([-np.sin(theta), np.cos(theta)])
+    ys, xs = np.nonzero(seeds); along = xs*direction[0]+ys*direction[1]
+    t = np.arange(int(np.floor(along.min()))-1, int(np.ceil(along.max()))+2)
+    filled = np.zeros_like(ink)
+    for s in np.arange(-half, half+1):
+        x = np.rint(rho*normal[0]+s*normal[0]+t*direction[0]).astype(int); y = np.rint(rho*normal[1]+s*normal[1]+t*direction[1]).astype(int)
+        inside = (x >= 0) & (x < w) & (y >= 0) & (y < h); xi, yi = np.clip(x, 0, w-1), np.clip(y, 0, h-1)
+        seed = inside & seeds[yi, xi]; dark = inside & ink[yi, xi]
+        if seed.sum() < 2:
+            continue
+        n = np.arange(len(t))
+        last_seed = np.maximum.accumulate(np.where(seed, n, -1)); last_break = np.maximum.accumulate(np.where(~dark, n, -1))
+        next_seed = np.minimum.accumulate(np.where(seed, n, len(t))[::-1])[::-1]; next_break = np.minimum.accumulate(np.where(~dark, n, len(t))[::-1])[::-1]
+        good = (last_seed > last_break) & (next_seed < next_break) & (n-last_seed <= reach) & (next_seed-n <= reach) & dark & (last_seed >= 0)
+        filled[yi[good], xi[good]] = True
+    return filled
+
+
+def straight_parts(ys, xs, apart, least):
+    """Up to ``LINES`` lines (theta, rho: x cos theta + y sin theta = rho) through at least ``least`` of the points, strongest first (a Hough
+    transform at a degree and a pixel); a line within ``apart`` pixels and 6 degrees of a stronger one is the same line."""
+    angles = np.deg2rad(np.arange(-90, 90)); rho = np.rint(np.outer(xs, np.cos(angles))+np.outer(ys, np.sin(angles))).astype(int)
+    low = rho.min(); votes = np.zeros((rho.max()-low+1, len(angles)), int)
+    np.add.at(votes, (rho-low, np.broadcast_to(np.arange(len(angles)), rho.shape)), 1)
+    found = []
+    while len(found) < LINES:
+        r, a = np.unravel_index(np.argmax(votes), votes.shape)
+        if votes[r, a] < least:
+            break
+        found.append((float(angles[a]), float(r+low)))
+        for da in range(-6, 7):                       # the angle wraps round: -90 degrees is 90 with rho reversed
+            aa = a+da; flip = aa < 0 or aa >= len(angles); aa %= len(angles)
+            centre = -(r+low)-low if flip else r
+            votes[max(0, centre-apart):max(0, centre+apart+1), aa] = 0
+    return found
+
+
+def completed(grey, strike, width):
+    """A human strike (the pixels the annotator erased) with its gaps closed where it crossed writing.  The strike's straight parts are
+    found as lines through its pixels (a Hough transform: a dashed line is one line); along each, between its pixels, a gap is closed
+    on every row of its band where the scan has ink all the way from a strike pixel on one side to one on the other (there the strike
+    lay on the writing), at most ``REACH`` pixels from each.  Nothing is closed across a line (two parallel strokes stay two), nor where
+    the paper shows between (a real break); scribbled pixels off every line are left as they are."""
+    ink = grey < INK_BELOW; full = strike.copy(); total = int(strike.sum())
+    if total < 6:
+        return full
+    half = max(1, int(round(width/2)))
+    ys, xs = np.nonzero(strike); yy, xx = np.mgrid[:grey.shape[0], :grey.shape[1]]
+    bands = np.zeros_like(strike)
+    for theta, rho in straight_parts(ys, xs, max(3, int(width)), max(6, LINE_SHARE*total)):
+        near = np.abs(xs*np.cos(theta)+ys*np.sin(theta)-rho) <= half+.5
+        if near.sum() < 6:
+            continue
+        seeds = np.zeros_like(strike); seeds[ys[near], xs[near]] = True
+        seeds = ndimage.binary_dilation(seeds, np.ones((3, 3), bool)) & ink       # a curved stroke leaves a row of its band for the next
+        full |= along_line(seeds, ink, theta, rho, half, REACH)
+        along = xx*-np.sin(theta)+yy*np.cos(theta); at = xs[near]*-np.sin(theta)+ys[near]*np.cos(theta)
+        bands |= (np.abs(xx*np.cos(theta)+yy*np.sin(theta)-rho) <= half+1) & (along >= at.min()-half) & (along <= at.max()+half)
+    if bands.any():                        # stubs of the writing the eraser took with a line: off its band, touching it, small
+        labels, n = ndimage.label(full & ~bands, np.ones((3, 3)))
+        touching = np.unique(labels[ndimage.binary_dilation(bands) & (labels > 0)])
+        sizes = np.bincount(labels.ravel(), minlength=n+1)
+        stubs = [k for k in touching if sizes[k] <= STUB*width*width]
+        full &= ~np.isin(labels, stubs)
+    rest = full & ~bands                   # the scribbled part: its small holes where it lay on writing closed
+    if rest.any():
+        disk = ndimage.generate_binary_structure(2, 1); r = max(1, half)
+        full |= ndimage.binary_closing(np.pad(rest, r+1), disk, iterations=r)[r+1:-r-1, r+1:-r-1] & ink
+    return full
+
+
+def holes(grey, strike, width):
+    """The writing a strike still has holes on: ink within its closing (``HOLE_REACH`` widths) that is not the strike, over the strike."""
+    r = max(1, int(round(HOLE_REACH*width)))
+    closed = ndimage.binary_closing(np.pad(strike, r+1), ndimage.generate_binary_structure(2, 1), iterations=r)[r+1:-r-1, r+1:-r-1]
+    return float((closed & ~strike & (grey < INK_BELOW)).sum())/max(1, strike.sum())
+
+
+def human_material(grey, strike):
+    """(opacity before, opacity after, ink level, ``holes`` left) of a human strike: before is its erased pixels as they are, after with its gaps closed
+    (``completed``), the closed pixels as opaque as the scan is there up to the strike's own ink (where writing lies under it the scan is
+    darker: the strike's own grey is taken)."""
+    level = ink_level(grey, strike)
+    before = opacity(grey, level, strike)
+    width = max(MIN_WIDTH, 2*float(np.median(ndimage.distance_transform_edt(strike)[strike]))) if strike.any() else MIN_WIDTH
+    after = completed(grey, strike, width)
+    return before, opacity(grey, level, after), level, holes(grey, after, width)
+
+
+def trimmed_line(grey, level):
+    """(opacity before, opacity after, measures) of a bank line (``strike``'s piece): after, the bumps the writing it crossed left on it
+    cut off -- at each place along its axis, ink farther from its centre than half the local median width (over ``WINDOW_WIDTHS`` widths
+    each side) and ``TRIM`` is dropped -- and its darker crossings at its own grey (the opacity stops at 1).  ``measures['broken']``: less
+    than ``MIN_COVER`` of its length has ink (dots, pieces): left out."""
+    before = opacity(grey, level, grey < 255)
+    ys, xs = np.nonzero(before >= INK_ALPHA)
+    if len(ys) < 6:
+        return before, before, {'broken': True}
+    t, s, _ = axis_frame(np.stack([ys, xs], 1).astype(float))
+    bins = np.round(t-t.min()).astype(int); length = int(bins.max())+1
+    count = np.bincount(bins, minlength=length).astype(float)
+    centre = np.full(length, np.nan)
+    for b in np.flatnonzero(count):
+        centre[b] = np.median(s[bins == b])
+    have = ~np.isnan(centre)
+    centre = np.interp(np.arange(length), np.flatnonzero(have), centre[have])
+    width = float(np.median(count[count > 0])); half = max(2, int(round(WINDOW_WIDTHS*width)))
+    centre = ndimage.median_filter(centre, size=2*half+1, mode='nearest')
+    local = np.array([np.median(count[max(0, b-half):b+half+1][count[max(0, b-half):b+half+1] > 0]) for b in range(length)])
+    # every pixel of the piece (its faint edge too) is judged by where it lies along and across the line
+    py, px = np.nonzero(grey < 255)
+    mean = np.stack([ys, xs], 1).astype(float).mean(0)
+    _, vectors = np.linalg.eigh(np.cov(np.stack([ys, xs], 1).astype(float).T))
+    pt = (np.stack([py, px], 1)-mean) @ vectors[:, 1]; ps = (np.stack([py, px], 1)-mean) @ vectors[:, 0]
+    pb = np.clip(np.round(pt-t.min()).astype(int), 0, length-1)
+    keep = np.abs(ps-centre[pb]) <= local[pb]/2+TRIM
+    mask = np.zeros(grey.shape, bool); mask[py[keep], px[keep]] = True
+    after = opacity(grey, level, mask)
+    return before, after, {'broken': bool((count > 0).mean() < MIN_COVER), 'cover': round(float((count > 0).mean()), 3)}

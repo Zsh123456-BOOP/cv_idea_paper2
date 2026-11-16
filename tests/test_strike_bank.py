@@ -110,3 +110,41 @@ def test_the_bank_holds_the_training_writers_struck_lines_with_their_lines_heigh
     with np.load(out/'bank.npz') as arrays:
         assert arrays['piece_0'].shape[0] <= 7 and arrays['piece_0'].min() == 40
     assert (out/'sheet_kept.png').exists() and (out/'sheet_left_out.png').exists()
+
+
+def test_a_clean_line_measures_as_one_line_of_its_width_and_length():
+    alpha = np.zeros((20, 80), np.float32); alpha[9:12, 5:75] = 1
+    m = B.line_measures(alpha)
+    assert m['linear'] and abs(m['fill']-1) < .02 and m['cover'] == 1 and m['width'] == 3
+    alpha[9:12, 30:40] = 0                                   # a gap
+    assert B.line_measures(alpha)['cover'] < .9
+
+
+def test_a_human_strike_is_closed_over_the_writing_it_crossed_but_not_over_paper():
+    grey = np.full((40, 120), 255, np.uint8)
+    grey[19:22, 10:110] = 40                                 # the strike
+    grey[5:35, 40:44] = 30; grey[5:35, 70:74] = 30           # two letters' strokes across it
+    strike = grey < 200; strike[:, 40:44] = False; strike[:, 70:74] = False    # the annotator left the crossings
+    strike[19:22, 90:95] = False; grey[19:22, 90:95] = 255   # and the strike has a real break on paper
+    full = B.completed(grey, strike, 3.)
+    assert full[19:22, 40:44].all() and full[19:22, 70:74].all()
+    assert not full[5:15, 40:44].any() and not full[25:35, 70:74].any()      # the letters above and below it stay writing
+    assert not full[19:22, 90:95].any()
+
+
+def test_two_parallel_strikes_are_not_joined():
+    grey = np.full((40, 100), 255, np.uint8); grey[12:15, 10:90] = 40; grey[24:27, 10:90] = 40
+    grey[5:35, 50:53] = 30
+    strike = grey < 200; strike[:, 50:53] = False
+    full = B.completed(grey, strike, 3.)
+    assert full[12:15, 50:53].all() and full[24:27, 50:53].all() and not full[16:23, 50:53].any()
+
+
+def test_a_bank_line_loses_the_bump_the_writing_left_on_it():
+    grey = np.full((30, 90), 255, np.uint8); grey[14:17, 5:85] = 40
+    grey[4:26, 44:47] = 20                                   # a letter's stroke left across the line
+    before, after, m = B.trimmed_line(grey, 40)
+    assert not m['broken'] and (after[4:10, 44:47] == 0).all() and (after[14:17, 44:47] == 1).all()
+    assert B.line_measures(after)['fill'] < B.line_measures(before)['fill']
+    dots = np.full((30, 90), 255, np.uint8); dots[14:17, 5:85:12] = 40
+    assert B.trimmed_line(dots, 40)[2]['broken']
