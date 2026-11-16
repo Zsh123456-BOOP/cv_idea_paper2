@@ -303,10 +303,11 @@ def completed(grey, strike, width):
     found as lines through its pixels (a Hough transform: a dashed line is one line); along each, between its pixels, a gap is closed
     on every row of its band where the scan has ink all the way from a strike pixel on one side to one on the other (there the strike
     lay on the writing), at most ``REACH`` pixels from each.  Nothing is closed across a line (two parallel strokes stay two), nor where
-    the paper shows between (a real break); scribbled pixels off every line are left as they are."""
-    ink = grey < INK_BELOW; full = strike.copy(); total = int(strike.sum())
+    the paper shows between (a real break); scribbled pixels off every line are left as they are.  Returns it and the least share of a
+    line's length the closed strike covers (1 without lines)."""
+    ink = grey < INK_BELOW; full = strike.copy(); total = int(strike.sum()); found = []
     if total < 6:
-        return full
+        return full, 1.
     half = max(1, int(round(width/2)))
     ys, xs = np.nonzero(strike); yy, xx = np.mgrid[:grey.shape[0], :grey.shape[1]]
     bands = np.zeros_like(strike)
@@ -318,7 +319,8 @@ def completed(grey, strike, width):
         seeds = ndimage.binary_dilation(seeds, np.ones((3, 3), bool)) & ink       # a curved stroke leaves a row of its band for the next
         full |= along_line(seeds, ink, theta, rho, half, REACH)
         along = xx*-np.sin(theta)+yy*np.cos(theta); at = xs[near]*-np.sin(theta)+ys[near]*np.cos(theta)
-        bands |= (np.abs(xx*np.cos(theta)+yy*np.sin(theta)-rho) <= half+1) & (along >= at.min()-half) & (along <= at.max()+half)
+        band = (np.abs(xx*np.cos(theta)+yy*np.sin(theta)-rho) <= half+1) & (along >= at.min()-half) & (along <= at.max()+half)
+        bands |= band; found.append((band & (along >= at.min()) & (along <= at.max()), along))
     if bands.any():                        # stubs of the writing the eraser took with a line: off its band, touching it, small
         labels, n = ndimage.label(full & ~bands, np.ones((3, 3)))
         touching = np.unique(labels[ndimage.binary_dilation(bands) & (labels > 0)])
@@ -329,7 +331,11 @@ def completed(grey, strike, width):
     if rest.any():
         disk = ndimage.generate_binary_structure(2, 1); r = max(1, half)
         full |= ndimage.binary_closing(np.pad(rest, r+1), disk, iterations=r)[r+1:-r-1, r+1:-r-1] & ink
-    return full
+    covers = []
+    for band, along in found:              # how much of each line's length has the strike once closed
+        steps = np.round(along[band]).astype(int); inked = np.round(along[band & full]).astype(int)
+        covers.append(len(np.unique(inked))/max(1, len(np.unique(steps))))
+    return full, min(covers, default=1.)
 
 
 def holes(grey, strike, width):
@@ -340,14 +346,14 @@ def holes(grey, strike, width):
 
 
 def human_material(grey, strike):
-    """(opacity before, opacity after, ink level, ``holes`` left) of a human strike: before is its erased pixels as they are, after with its gaps closed
+    """(opacity before, opacity after, ink level, ``holes`` left, the least ``cover`` of its lines) of a human strike: before is its erased pixels as they are, after with its gaps closed
     (``completed``), the closed pixels as opaque as the scan is there up to the strike's own ink (where writing lies under it the scan is
     darker: the strike's own grey is taken)."""
     level = ink_level(grey, strike)
     before = opacity(grey, level, strike)
     width = max(MIN_WIDTH, 2*float(np.median(ndimage.distance_transform_edt(strike)[strike]))) if strike.any() else MIN_WIDTH
-    after = completed(grey, strike, width)
-    return before, opacity(grey, level, after), level, holes(grey, after, width)
+    after, cover = completed(grey, strike, width)
+    return before, opacity(grey, level, after), level, holes(grey, after, width), cover
 
 
 def trimmed_line(grey, level):

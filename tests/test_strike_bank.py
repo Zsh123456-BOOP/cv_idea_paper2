@@ -126,7 +126,8 @@ def test_a_human_strike_is_closed_over_the_writing_it_crossed_but_not_over_paper
     grey[5:35, 40:44] = 30; grey[5:35, 70:74] = 30           # two letters' strokes across it
     strike = grey < 200; strike[:, 40:44] = False; strike[:, 70:74] = False    # the annotator left the crossings
     strike[19:22, 90:95] = False; grey[19:22, 90:95] = 255   # and the strike has a real break on paper
-    full = B.completed(grey, strike, 3.)
+    full, cover = B.completed(grey, strike, 3.)
+    assert .9 < cover < 1
     assert full[19:22, 40:44].all() and full[19:22, 70:74].all()
     assert not full[5:15, 40:44].any() and not full[25:35, 70:74].any()      # the letters above and below it stay writing
     assert not full[19:22, 90:95].any()
@@ -136,7 +137,7 @@ def test_two_parallel_strikes_are_not_joined():
     grey = np.full((40, 100), 255, np.uint8); grey[12:15, 10:90] = 40; grey[24:27, 10:90] = 40
     grey[5:35, 50:53] = 30
     strike = grey < 200; strike[:, 50:53] = False
-    full = B.completed(grey, strike, 3.)
+    full, _ = B.completed(grey, strike, 3.)
     assert full[12:15, 50:53].all() and full[24:27, 50:53].all() and not full[16:23, 50:53].any()
 
 

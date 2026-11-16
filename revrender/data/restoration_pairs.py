@@ -422,6 +422,7 @@ NOMINAL = 40                  # a drawn strike (D) is drawn for a line this high
 DRAWN = {'line': .2, 'double': .1, 'wave': .1, 'zigzag': .2, 'cross': .15, 'scribble': .25}   # D's styles, heavy ones often
 SHARE_CUTS = (.23, .35)       # light, middle, heavy by the strike's share of the ink (eval.prefill's tiers)
 TINY = .5                     # or whose strike spans less than this share of the writing it struck (a speck the eraser took)
+LINE_COVER = .8               # or with a straight part still less covered than this once closed (check 2's line)
 GAPPY = .6                    # or with fewer pixels than this share of one pen stroke as long as it spans (dots left between writing)
 HOLES = .3                    # or with more writing in its holes than this share of its pixels (``strike_bank.holes``)
 FRAGMENTS = .4                # a human strike with more of its pixels in specks than this, closed or not, is left out
@@ -467,7 +468,8 @@ def human_materials(set_dir, readable, lines, excluded):
         if readable.get(r['id']) is False: left['unreadable'] += 1; continue
         grey, strike = arrays[f'image_{k}'], arrays[f'mask_{k}'].astype(bool)
         if strike.sum() < 12: left['too_few_pixels'] += 1; continue
-        before, after, level, holed = human_material(grey, strike)
+        before, after, level, holed, cover = human_material(grey, strike)
+        if cover < LINE_COVER: left['line_still_broken'] += 1; continue
         if specks(after >= .3) > FRAGMENTS: left['specks'] += 1; continue
         if holed > HOLES: left['holes'] += 1; continue
         writing = (grey < 200) & ~strike; wy, wx = np.nonzero(writing); sy, sx = np.nonzero(after >= .3)
@@ -665,14 +667,15 @@ def materials(args):
 
 def read_check(pack, predictions, output):
     """Check 3: the share of each source's materials (alone on white) a reader that was never taught read at least one letter, digit or
-    Chinese character in (not the refusal, not empty), against the drawn strikes (D)."""
+    Chinese character in (not the refusal, not empty; a LaTeX command's name is not read writing: ``\cancel{}`` reads nothing), against
+    the drawn strikes (D)."""
     import re
     rows = {r['id']: r for r in json.loads((pack/'pack.json').read_text())['rows']}
     readings = [json.loads(s) for s in predictions.read_text().splitlines() if s.strip()]
     found = Counter(); total = Counter()
     for p in readings:
         r = rows[p['id']]; key = f"{r['source']}_{r['cleaning']}"; total[key] += 1
-        text = (p.get('text') or '').replace('[读不出]', '').replace('[空]', '')
+        text = re.sub(r'\\[A-Za-z]+', '', (p.get('text') or '').replace('[读不出]', '').replace('[空]', ''))
         found[key] += bool(re.search(r'[0-9A-Za-z\u4e00-\u9fff]', text))
     shares = {k: round(found[k]/total[k], 3) for k in total}
     out = {'read_share': shares, 'counts': dict(total), 'control': shares.get('D_after'),
