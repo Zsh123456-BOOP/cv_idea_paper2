@@ -22,8 +22,11 @@ _NAMES = {'because': '∵', 'therefore': '∴', 'angle': '∠', 'triangle': '△
           'gamma': 'γ', 'theta': 'θ', 'lambda': 'λ', 'mu': 'μ', 'Delta': 'Δ', 'approx': '≈', 'in': '∈', 'cap': '∩', 'cup': '∪',
           'rightarrow': '→', 'to': '→', 'Rightarrow': '⇒', 'ldots': '…', 'dots': '…', 'backsim': '~'}
 # one sign for each relation however it is spelt (user 2026-10-22): the textbook ≌ and ≅ are congruence, ∽, ∼ and ~ similarity;
-# the division and the dot of multiplication as \div and \cdot are spelt (plan of 2026-11-15)
-_SAME = (('≌', '≅'), ('∽', '~'), ('∼', '~'), ('÷', '/'), ('·', '*'), ('⋅', '*'))
+# the division and the dot of multiplication as \div and \cdot are spelt (plan of 2026-11-15); parallel as // and ‖ (user 2026-11-16)
+_SAME = (('//', '∥'), ('‖', '∥'), ('≌', '≅'), ('∽', '~'), ('∼', '~'), ('÷', '/'), ('·', '*'), ('⋅', '*'))
+_ENTITIES = {'&gt;': '>', '&lt;': '<', '&amp;': ' ', '&nbsp;': ' '}      # a reader's HTML escapes of the signs
+# the parentheses of a root round one number or one letter are spelling: √(12) and √12 alike (user 2026-11-16); round more they stay
+_ROOT_ATOM = re.compile(r'√\(([0-9.]+|[A-Za-zα-ωπ])\)')
 _CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩'
 _SUPERSCRIPT = {str(i): c for i, c in enumerate('⁰¹²³⁴⁵⁶⁷⁸⁹')}
 _LAYOUT = ('left', 'right', 'quad', 'qquad', 'displaystyle', 'limits', 'big', 'Big', 'bigg', 'Bigg', 'mathrm', 'mathbf', 'mathit',
@@ -35,6 +38,7 @@ def normalise(text):
     if not text:
         return ''
     s = unicodedata.normalize('NFKC', text)
+    s = re.sub('|'.join(_ENTITIES), lambda m: _ENTITIES[m.group(0)], s)
     s = re.sub(r'\\right\s*\.', ' ', s)                   # the empty side of a one-sided brace (\left\{ ... \right.)
     s = re.sub(r'\\(?:' + '|'.join(_LAYOUT) + r')(?![a-zA-Z])', ' ', s)
     s = re.sub(r'\\[{}]', ' ', s).replace('&', ' ')       # brace delimiters and alignment marks are layout
@@ -44,6 +48,7 @@ def normalise(text):
     s = re.sub(r'\\\\', ' ', s)
     for _ in range(6):                                     # fractions, roots and overlines, nested
         t = re.sub(r'\\d?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', r'(\1)/(\2)', s)
+        t = re.sub(r'\\sqrt\s*\[([^\]{}]*)\]\s*\{([^{}]*)\}', r'\1√(\2)', t)
         t = re.sub(r'\\sqrt\s*\{([^{}]*)\}', r'√(\1)', t)
         t = re.sub(r'\\overline\s*\{([^{}]*)\}', r'\1', t)
         if t == s:
@@ -52,6 +57,7 @@ def normalise(text):
     s = re.sub(r'\\textcircled\s*\{?\s*(\d+)\s*\}?',
                lambda m: _CIRCLED[int(m.group(1))-1] if m.group(1).isdigit() and 1 <= int(m.group(1)) <= 10 else m.group(1), s)
     s = re.sub(r'\^\s*\{?\s*\\circ\s*\}?', '°', s)
+    s = re.sub(r'\\sqrt(?![a-zA-Z])', '√', s)              # a root without braces (\sqrt 3)
     for name in sorted(_NAMES, key=len, reverse=True):     # whole command names only: \le must not eat \left
         s = re.sub(r'\\' + name + r'(?![a-zA-Z])', _NAMES[name], s)
     s = re.sub(r'\^\s*\{?\s*(\d)\s*\}?', lambda m: _SUPERSCRIPT[m.group(1)], s)
@@ -60,7 +66,8 @@ def normalise(text):
     s = s.replace('$', ' ').replace('{', ' ').replace('}', ' ')
     for wide, narrow in (('（', '('), ('）', ')'), ('，', ','), ('。', '.'), ('：', ':'), ('、', ','), ('；', ';'), *_SAME):
         s = s.replace(wide, narrow)
-    return ''.join(c for c in unicodedata.normalize('NFKC', s) if not c.isspace())
+    s = ''.join(c for c in unicodedata.normalize('NFKC', s) if not c.isspace())
+    return _ROOT_ATOM.sub(r'√\1', s)
 
 
 def split_region(content):

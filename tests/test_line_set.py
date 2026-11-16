@@ -2,6 +2,7 @@
 import json
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from revrender.data import line_set as LS
@@ -67,6 +68,17 @@ def test_merge_orders_regions_and_keeps_the_fold(tmp_path):
     assert lines[0]['regions'] == ['q#b', 'q#a']                # left to right
     chosen, skipped = LS.chosen_lines(lines, regions)
     assert [c['text'] for c in chosen] == ['yx2'] and skipped == {'nothing_readable': 1}
+    fixes = {'schema': LS.FIXES, 'fixes': [{'region': 'q#b', 'original_text': 'y', 'original_readable': True, 'text': 'y3', 'readable': True,
+                                            'text_changed': True, 'pixels_changed': True, 'box': [10, 10, 30, 30], 'runs': [[0, 4]]}]}
+    (tmp_path/'fixes.json').write_text(json.dumps(fixes))
+    LS.main(['merge', '--dataset', str(tmp_path/'regions.json'), '--folds', str(tmp_path/'folds'), '--review', str(tmp_path/'export.json'),
+             '--fixes', str(tmp_path/'fixes.json'), '--output-dir', str(tmp_path/'fixed')])
+    fixed = {r['id']: r for r in json.loads((tmp_path/'fixed'/'regions.json').read_text())}
+    assert fixed['q#b']['text'] == 'y3' and fixed['q#b']['strike_pixels'] == 4 and fixed['q#b']['reading_fix']['text'] == 'y'
+    stale = {**fixes, 'fixes': [{**fixes['fixes'][0], 'original_text': 'not y'}]}; (tmp_path/'stale.json').write_text(json.dumps(stale))
+    with pytest.raises(Exception, match='another text'):
+        LS.main(['merge', '--dataset', str(tmp_path/'regions.json'), '--folds', str(tmp_path/'folds'), '--review', str(tmp_path/'export.json'),
+                 '--fixes', str(tmp_path/'stale.json'), '--output-dir', str(tmp_path/'stale')])
 
 
 def test_a_line_read_three_ways():
@@ -81,3 +93,12 @@ def test_a_line_read_three_ways():
 def test_the_spelling_of_division_and_dot():
     from revrender.eval.coverage import prepare
     assert prepare('$a\\div b$') == prepare('a÷b') and prepare('$a\\cdot b$') == prepare('a·b') == prepare('a⋅b')
+
+
+def test_the_spelling_of_roots_parallels_and_escapes():
+    from revrender.eval.coverage import prepare
+    assert prepare('$\\sqrt{12}$') == prepare('√12') == prepare('√(12)') and prepare('$2\\sqrt{x}$') == prepare('2√x')
+    assert prepare('$\\sqrt{x+1}$') == '√(x+1)' != prepare('√x+1')          # round more than one number or letter the parentheses stay
+    assert prepare('$\\sqrt 3$') == '√3' and prepare('$\\sqrt[3]{8}$') == '3√8'
+    assert prepare('FG//BC') == prepare('FG‖BC') == prepare('$FG\\parallel BC$') == 'FG∥BC' and prepare('1/2/3') == '1/2/3'
+    assert prepare('a &gt; b') == 'a>b' and prepare('a &lt; b') == 'a<b'
