@@ -43,6 +43,14 @@ def test_refusal_and_pairing():
     assert p['regions'] == 3 and p['writers'] == 3 and abs(p['ar']['difference']-1/3) < 1e-9 and p['exact']['interval'] == [1., 1.]
 
 
+
+def test_what_is_left_wrong_and_exact_by_length():
+    labels = {'a': 'ab', 'b': 'abc', 'c': 'abcdefghijk', 'd': 'abcd', 'e': 'x'}
+    readings = {'a': 'ab', 'b': 'abd', 'c': 'abcdefghxyz', 'd': UNREADABLE, 'e': 'yz'}
+    out = transcription.left_wrong(readings, {k: transcription.counts(labels[k], readings[k]) for k in labels})
+    assert out['left_wrong'] == {'right': 1, 'refused': 1, '1': 1, '2': 1, '3+': 1}
+    assert out['exact_by_length'] == {'1-2': {'regions': 2, 'exact': .5}, '3-9': {'regions': 2, 'exact': 0.}, '10+': {'regions': 1, 'exact': 0.}}
+
 def test_folds_are_whole_writers_of_about_equal_regions():
     counts = {f'w{i}': n for i, n in enumerate([38, 28, 23, 19, 17, 9, 9, 6, 6, 5, 4, 3, 2, 2, 1, 1])}
     fold = struck_pack.fold_of(counts)

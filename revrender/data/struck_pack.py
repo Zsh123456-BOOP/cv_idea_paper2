@@ -9,7 +9,8 @@
 ``folds``: the regions of the merged dataset (``data.struck_dataset``) whose pixels and struck text are both confirmed, as one pack for
 a cross-validation over writers.  The regions of the exports named by ``--hold-out`` (the test page) and every other region of their
 writers stay out.  The writers go to ``FOLDS`` folds of about equal regions (``fold``); a tenth of the writers, by hash, are marked
-``val`` (a reader taught on the other folds stops by them).  A row is one region: ``readable`` as the annotator said, ``target`` what a
+``val`` (a reader taught on the other folds stops by them); ``--folds-from PACK`` keeps instead each writer's fold and val mark in an
+earlier folds pack (the folds drawn anew would move with every region added).  A row is one region: ``readable`` as the annotator said, ``target`` what a
 reader is taught to give (the text in the spelling of ``eval.coverage.prepare``, or ``recognize_lines.UNREADABLE``), and three images of
 its OCR window (the region's polygon box and six pixels, white outside the polygon) from the annotator's own pixels: the scan (``raw``), the scan with the strike
 pixels white (``erased``) and the layer map (``map``: white the strike pixels, black the rest).  A region is cut from the page its
@@ -101,11 +102,16 @@ def chosen_regions(args):
         if reason: skipped[reason] += 1
         else: chosen.append({**r, 'target': target if r['readable'] else UNREADABLE})
     require(chosen, 'no region to teach or read')
-    fold = fold_of({w: sum(r['writer'] == w for r in chosen) for w in {r['writer'] for r in chosen}})
+    if args.folds_from:   # the folds and val marks of an earlier pack, writer by writer (a region added keeps its writer's)
+        kept = {r['writer']: (r['fold'], r['val']) for r in json.loads((args.folds_from/'pack.json').read_text())['rows']}
+        require({r['writer'] for r in chosen} <= set(kept), f'writers not in {args.folds_from}')
+        fold, val = {w: f for w, (f, _) in kept.items()}, lambda w: kept[w][1]
+    else:
+        fold, val = fold_of({w: sum(r['writer'] == w for r in chosen) for w in {r['writer'] for r in chosen}}), validation_writer
     source = lambda r: r['image_source'] if r['image_source'] and Path(r['image_source']).is_dir() else ''
     listed = {folder: pages_module.page_files([folder] if folder else args.pages, sorted({r['page'] for r in chosen if source(r) == folder}))
               for folder in {source(r) for r in chosen}}
-    chosen = sorted(({**r, 'fold': fold[r['writer']], 'val': validation_writer(r['writer']), 'source': source(r)} for r in chosen), key=lambda r: (r['source'], r['page'], r['id']))
+    chosen = sorted(({**r, 'fold': fold[r['writer']], 'val': val(r['writer']), 'source': source(r)} for r in chosen), key=lambda r: (r['source'], r['page'], r['id']))
     return chosen, {(folder, page): path for folder, files in listed.items() for page, path in files.items()}, held, skipped
 
 
@@ -269,6 +275,7 @@ def main(argv=None):
             for key in ('pack', 'sets'): f.add_argument('--'+key, type=Path, required=True)
         f.add_argument('--dataset', type=Path, required=True, help='regions.json of data.struck_dataset'); f.add_argument('--pages', type=Path, action='append', required=True)
         f.add_argument('--hold-out', action='append', default=[], help='part of the name of an export whose regions, and their writers, stay out (the test page)')
+        f.add_argument('--folds-from', type=Path, help='a folds pack whose folds and val marks the writers keep (else they are drawn anew)')
         f.add_argument('--output-dir', type=Path, required=True)
     d = sub.add_parser('separated')
     for key in ('pack', 'sets', 'upstream', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)

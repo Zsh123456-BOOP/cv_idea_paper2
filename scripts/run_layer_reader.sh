@@ -59,6 +59,18 @@
 #  The rule, written before any reading.  The new crops take the place of the old for every number after this one unless, for the
 #  distilled pair's reader, the writer interval of its AR difference or of its exact difference lies wholly below 0; then the old
 #  crops stay (the change is reverted) and the new numbers are only recorded.  A correction of the input, not a method.
+# PART=ceiling (the plan of 2026-11-16, work/literature_revision_reader20261113/人工像素上限重训_方案与判定规则_2026-11-16.md): the ceiling
+#  (the human pair) taught anew on the data the user has gone through.
+#  1. data.struck_pack folds on paper2_clean_line_dataset20261116b, each writer keeping its fold and val mark of the masked pack
+#     (--folds-from); data.line_set unchanged: the regions whose box, polygon and pixels (and text) the corrections left alone.  Then
+#     nothing more until the crops are looked at by hand (touch $R/ceiling_checked.done).
+#  2. per fold, the pair's reader of the masked part, its recipe unchanged, taught on the new pack and reading the fold it never saw.
+#  3. eval.transcription: the old readings and the new on the unchanged regions (pixels; pixels and text), the new against the untaught
+#     reader of the line part (R0) with every region's readings written out; eval.line_reading: the new readings line by line.
+#  The rules, written before the readings, are the plan's: the old readings first give 85.3 / 59.1 again on the old pack and labels (the
+#  spelling of 876943d, the code table 4 was scored with); the ceiling is the reader taught anew whichever way it moves; it is marked
+#  worse after teaching when, on the regions nothing changed, its AR or exact difference from the old readings lies wholly below 0;
+#  taught beats untaught when the lower end of its exact interval against R0 is above 0; differences under 2 AR are not read.
 # Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
 # are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
@@ -71,7 +83,7 @@ PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
 SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; ceiling) echo CEILING_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
 CF=${N}_revision_folds_counterfactual
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
@@ -326,6 +338,34 @@ print('the new crops', 'stay out: ' + ', '.join(below) if below else 'take the p
 PYTHON
     mark masked_score; fi
 touch "$R/MASKED_COMPLETE"; stamp 'masked part complete'; exit 0; fi
+
+if [ "$PART" = ceiling ]; then cards "${CARDS:-1}"
+C=$O/paper2_ceiling_reader20261116; OLDHM=${N}_revision_folds_human_masked; HM=${N}_revision_folds_human_masked20261116b
+MERGED=${N}_line_dataset20261116b; LP=${N}_line_pack20261116b; R0=$O/paper2_line_reader20261116b; mkdir -p "$C"
+if ! done_ ceiling_pack; then
+    [ -e "$HM/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack folds --dataset "$MERGED/regions.json" --pages "$DATA/pages" \
+        --pages "$O/paper2_full_review20261010/images" --hold-out test-page --folds-from "$OLDHM" --output-dir "$HM" > "$C/pack.log" 2>&1
+    [ -e "$C/unchanged.json" ] || "$PY" -m revrender.data.line_set unchanged --old "$DATA/regions.json" --new "$MERGED/regions.json" --output "$C/unchanged.json" >> "$C/pack.log" 2>&1
+    mark ceiling_pack; fi
+done_ ceiling_checked || { stamp 'the new folds pack is built: look at the crops, then touch ceiling_checked.done and run again'; exit 0; }
+ceiling_fold() {   # FOLD: the pair's reader taught anew on the new pack (the recipe of the masked part), then the fold it never saw
+    local k="$1" reader="${N}_revision_reader_ceiling20261116_pair_f$1" PACK="$HM"
+    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" pair "$k")
+    [ -e "$C/pair_f$k/complete.json" ] || job "$CARD_" "$NUMA_" "$C/pair_f$k" -- $(read_with "$C/pair_f$k" pair "$reader" --fold "$k" --loop-limit 4)
+}
+if ! done_ ceiling_folds; then
+    for k in 0 1 2 3 4; do alone on_card ceiling_fold "$k"; wait; test -e "$C/pair_f$k/complete.json"; done
+    mark ceiling_folds; fi
+five_in() { local d="$1" a="$2" k s=; for k in 0 1 2 3 4; do s+="${s:+,}$d/${a}_f$k"; done; echo "$s"; }
+if ! done_ ceiling_score; then
+    OLD="$(five_in "$R" masked_human_pair)"; U="$(five_in "$C" pair)"
+    for only in pixels all; do [ -e "$C/scores_unchanged_$only.json" ] || "$PY" -m revrender.eval.transcription --pack "$HM" --only "$C/unchanged.json:$only" \
+        --arm "old=$OLD" --arm "U=$U" --reference old --output "$C/scores_unchanged_$only.json" > "$C/score_unchanged_$only.log" 2>&1; done
+    [ -e "$C/scores.json" ] || "$PY" -m revrender.eval.transcription --pack "$HM" --arm "U=$U" --arm "R0=$R0/read_regions@erased_revision" --reference R0 \
+        --readings "$C/readings.jsonl" --output "$C/scores.json" > "$C/score.log" 2>&1
+    [ -e "$C/lines" ] || "$PY" -m revrender.eval.line_reading --pack "$LP" --regions "$U@pair_revision" --lines "$R0/read_lines" --output-dir "$C/lines" > "$C/lines.log" 2>&1
+    mark ceiling_score; fi
+touch "$C/COMPLETE"; stamp 'ceiling part complete'; exit 0; fi
 
 test "$PART" = evidence; test -e "$R/DISTILLED_COMPLETE"
 HUMAN=$PACK; cards "${CARDS:-1}"

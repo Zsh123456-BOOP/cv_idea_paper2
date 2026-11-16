@@ -3,7 +3,8 @@
     python -m revrender.eval.line_reading --pack LINE_PACK --regions DIR --lines DIR --output-dir OUT
 
 The pack is one of ``data.line_set pack`` (a row per line, its label the struck text of its readable regions left to right); the
-readings are ``recognize_lines``'s: DIR of ``--regions`` the pack's ``regions`` read under ``erased_revision``, DIR of ``--lines`` the
+readings are ``recognize_lines``'s: ``--regions`` the pack's ``regions`` read under ``erased_revision`` (or under the condition named
+after ``@``, over the folders of a cross-validation given apart by commas), DIR of ``--lines`` the
 lines read under ``before_line``, ``after_line`` and ``difference_line``.  The reading of a line:
 
   crops       (R0) the readings of its regions' erased crops, in the order of the label, a refusal reading nothing
@@ -97,12 +98,17 @@ def summary(rows, by_way):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    for key in ('pack', 'regions', 'lines', 'output-dir'):
+    for key in ('pack', 'lines', 'output-dir'):
         p.add_argument('--'+key, type=Path, required=True)
+    p.add_argument('--regions', required=True, help='DIR[,DIR...][@CONDITION]: the regions\' readings (condition erased_revision if none is named)')
     args = p.parse_args(argv)
     rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
     region_rows = {r['id']: r for r in json.loads((args.pack/'regions'/'pack.json').read_text())['rows']}
-    crops = readings(args.regions, 'erased_revision'); before, after, pair = (readings(args.lines, c) for c in ('before_line', 'after_line', 'difference_line'))
+    folders, _, condition = args.regions.partition('@'); folders = folders.split(',')
+    crops = {}
+    for folder in folders:
+        got = readings(folder, condition or 'erased_revision'); require(not crops.keys() & got.keys(), f'{folder}: a region read twice'); crops.update(got)
+    before, after, pair = (readings(args.lines, c) for c in ('before_line', 'after_line', 'difference_line'))
     read = line_readings(rows.values(), crops, before, after, pair); by_way = scored(rows, read)
     require(read['crops'], 'no line read every way')
     writers = {k: r['writer'] for k, r in rows.items()}
@@ -118,7 +124,7 @@ def main(argv=None):
               'crops_by_region': {'regions': len(regions), **rates(list(regions.values()))},
               'unmatched': {'partial_lines': len(partial), 'lines': len(spoilt), 'share': len(spoilt)/len(partial) if partial else None,
                             'difference_exact_there': exact(spoilt), 'difference_exact_elsewhere': exact(clean)},
-              'inputs': {str(f): digest(f) for f in (args.pack/'pack.json', args.pack/'regions'/'pack.json', Path(args.regions)/'predictions.jsonl', Path(args.lines)/'predictions.jsonl')}}
+              'inputs': {str(f): digest(f) for f in (args.pack/'pack.json', args.pack/'regions'/'pack.json', *(Path(f)/'predictions.jsonl' for f in folders), Path(args.lines)/'predictions.jsonl')}}
     write_json(out/'scores.json', result)
     with (out/'readings.jsonl').open('x', encoding='utf-8') as stream:
         for k in sorted(read['crops']):

@@ -102,3 +102,14 @@ def test_the_spelling_of_roots_parallels_and_escapes():
     assert prepare('$\\sqrt 3$') == '√3' and prepare('$\\sqrt[3]{8}$') == '3√8'
     assert prepare('FG//BC') == prepare('FG‖BC') == prepare('$FG\\parallel BC$') == 'FG∥BC' and prepare('1/2/3') == '1/2/3'
     assert prepare('a &gt; b') == 'a>b' and prepare('a &lt; b') == 'a<b'
+
+
+def test_unchanged_regions(tmp_path):
+    base = {'box': [0, 0, 4, 4], 'region': [[0, 0], [4, 0], [4, 4]], 'runs': [[0, 3]], 'text': 'ab', 'readable': True}
+    old = [{'id': 'same', **base}, {'id': 'text', **base}, {'id': 'pixels', **base}, {'id': 'gone', **base}, {'id': 'unreadable', **base}]
+    new = [{'id': 'same', **base}, {'id': 'text', **base, 'text': 'ac'}, {'id': 'pixels', **base, 'runs': [[1, 3]]}, {'id': 'gone', **base, 'deleted': True},
+           {'id': 'unreadable', **base, 'readable': False}, {'id': 'added', **base}]
+    (tmp_path/'old.json').write_text(json.dumps(old)); (tmp_path/'new.json').write_text(json.dumps(new))
+    LS.main(['unchanged', '--old', str(tmp_path/'old.json'), '--new', str(tmp_path/'new.json'), '--output', str(tmp_path/'out.json')])
+    out = json.loads((tmp_path/'out.json').read_text())
+    assert out['pixels'] == ['same', 'text'] and out['all'] == ['same']

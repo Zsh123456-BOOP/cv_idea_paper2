@@ -1,6 +1,7 @@
 """The struck regions by the line they stand in: the annotator's line review merged into the dataset, and each line's two images.
 
     python -m revrender.data.line_set merge --dataset regions.json --folds FOLDS_PACK --review EXPORT.json [--fixes FIXES.json] --output-dir OUT
+    python -m revrender.data.line_set unchanged --old regions.json --new MERGED/regions.json --output OUT.json
     python -m revrender.data.line_set pack --dataset OUT/regions.json --lines OUT/lines.json --pages DIR [...] --output-dir PACK
 
 ``merge``: the export of the line page (``tools.annotate.line_review``, ``paper2-line-review-v1``) laid over the dataset
@@ -187,6 +188,17 @@ def line_pack(args):
     print(json.dumps(summary), flush=True)
 
 
+def unchanged(args):
+    """The regions readable in both datasets whose box, polygon and strike pixels are the same (``pixels``), and of those the ones whose
+    text is too (``all``): where a reading scored against both labels shows what changing the labels did, apart from the regions."""
+    old = {r['id']: r for r in json.loads(args.old.read_text())}; new = {r['id']: r for r in json.loads(args.new.read_text()) if not r.get('deleted')}
+    same = lambda a, b, keys: all(a[k] == b[k] for k in keys)
+    pixels = sorted(k for k in old.keys() & new.keys() if old[k]['readable'] and new[k]['readable'] and same(old[k], new[k], ('box', 'region', 'runs')))
+    result = {'pixels': pixels, 'all': [k for k in pixels if old[k]['text'] == new[k]['text']]}
+    require(not args.output.exists(), 'output exists'); write_json(args.output, {**result, 'inputs': {str(p): digest(p) for p in (args.old, args.new)}})
+    print(json.dumps({k: len(v) for k, v in result.items()}), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     m = sub.add_parser('merge')
@@ -197,8 +209,11 @@ def main(argv=None):
     for key in ('dataset', 'lines', 'output-dir'):
         k.add_argument('--'+key, type=Path, required=True)
     k.add_argument('--pages', type=Path, action='append', required=True)
+    u = sub.add_parser('unchanged')
+    for key in ('old', 'new', 'output'):
+        u.add_argument('--'+key, type=Path, required=True)
     args = p.parse_args(argv)
-    {'merge': merge, 'pack': line_pack}[args.command](args)
+    {'merge': merge, 'pack': line_pack, 'unchanged': unchanged}[args.command](args)
 
 
 if __name__ == '__main__':

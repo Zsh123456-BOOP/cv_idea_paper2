@@ -20,7 +20,10 @@ arm is paired with ``--reference`` on the regions both read: the differences of 
 writers (1,000 draws, seed 42).  ``--agreement A=B``: whether two arms giving different readings of a region tells that A's is wrong
 (a reading refused is a reading of its own) -- how often they differ, A's exact share where they agree and where they differ, and, of
 the regions the annotator could not read, the share on which they differ.  ``--gone NAME``: an arm read with the struck writing taken
-off the images (``recognize_lines --intervention writing_off``): the share of its readings that refuse, as they all should.
+off the images (``recognize_lines --intervention writing_off``): the share of its readings that refuse, as they all should.  ``--only
+FILE:KEY``: only the regions listed under KEY in a JSON file (``data.line_set unchanged``).  Each arm's readable regions also by what
+is left wrong (refused, 1, 2, 3 or more edits) and its exact share by the label's length (1-2, 3-9, 10 and more characters);
+``--readings OUT.jsonl``: a row per region (writer, fold, label, each arm's reading) -- student text, it stays out of Git.
 """
 import argparse
 import json
@@ -86,6 +89,22 @@ def refusal(readings, readable):
             'readable_refused': len(said & can)/len(can) if can else None}
 
 
+LENGTHS = (('1-2', 1, 2), ('3-9', 3, 9), ('10+', 10, None))
+
+
+def left_wrong(readings, scored):
+    """The readable regions by what is left wrong, and the exact share by the length of the label."""
+    wrong = {'right': 0, 'refused': 0, '1': 0, '2': 0, '3+': 0}
+    for k, c in scored.items():
+        e = c['s']+c['d']+c['i']
+        wrong['right' if not e else 'refused' if refused(readings[k]) else str(e) if e < 3 else '3+'] += 1
+    by_length = {}
+    for name, low, high in LENGTHS:
+        sel = [c['exact'] for c in scored.values() if low <= c['n'] and (high is None or c['n'] <= high)]
+        by_length[name] = {'regions': len(sel), 'exact': float(np.mean(sel)) if sel else None}
+    return {'left_wrong': wrong, 'exact_by_length': by_length}
+
+
 def paired(reference, version, writers, rng, draws=1000):
     """The version's scores minus the reference's on the regions both have counts for, with writer-resampled 95% intervals."""
     ids = sorted(set(reference) & set(version)); names = sorted({writers[k] for k in ids}); by = {w: [k for k in ids if writers[k] == w] for w in names}
@@ -131,9 +150,14 @@ def main(argv=None):
     p.add_argument('--reference', required=True, help='the arm every other is paired with'); p.add_argument('--output', type=Path, required=True)
     p.add_argument('--agreement', action='append', default=[], help='A=B: do the two arms differing mark the errors of A')
     p.add_argument('--gone', action='append', default=[], help='an arm read with the struck writing taken off: the share of its readings that refuse')
+    p.add_argument('--only', help='FILE:KEY, only the regions listed under KEY in a JSON file')
+    p.add_argument('--readings', type=Path, help='OUT.jsonl, a row per region with every arm\'s reading')
     args = p.parse_args(argv)
-    require(not args.output.exists(), 'output exists')
+    require(not args.output.exists() and not (args.readings and args.readings.exists()), 'output exists')
     rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
+    if args.only:
+        file, _, key = args.only.rpartition(':'); only = set(json.loads(Path(file).read_text())[key])
+        rows = {k: r for k, r in rows.items() if k in only}
     readable = {k: r.get('readable', True) for k, r in rows.items()}; writers = {k: r.get('writer') or r['line_id'].split('_')[0] for k, r in rows.items()}
     arms, inputs = {}, {}
     for spec in args.arm:
@@ -143,7 +167,8 @@ def main(argv=None):
     scored = {name: {k: counts(rows[k]['text'], text) for k, text in readings.items() if readable[k]} for name, readings in arms.items()}
     rng = np.random.default_rng(SEED); result = {}
     for name in arms:
-        result[name] = {'regions': len(arms[name]), 'readable': len(scored[name]), **rates(list(scored[name].values())), 'refusal': refusal(arms[name], readable)}
+        result[name] = {'regions': len(arms[name]), 'readable': len(scored[name]), **rates(list(scored[name].values())), 'refusal': refusal(arms[name], readable),
+                        **left_wrong(arms[name], scored[name])}
         if name != args.reference:
             result[name]['against_reference'] = paired(scored[args.reference], scored[name], writers, rng)
     for name in args.gone:
@@ -155,7 +180,13 @@ def main(argv=None):
         a, _, b = pair.partition('='); require(a in arms and b in arms, f'--agreement {pair}: not two arms')
         agreed[pair] = agreement(arms[a], arms[b], rows)
         print('agreement', pair, json.dumps({k: round(v, 3) if isinstance(v, float) else v for k, v in agreed[pair].items()}))
-    write_json(args.output, {'reference': args.reference, 'arms': result, 'agreement': agreed, 'inputs': inputs})
+    write_json(args.output, {'reference': args.reference, 'only': args.only, 'arms': result, 'agreement': agreed, 'inputs': inputs})
+    if args.readings:
+        with args.readings.open('x', encoding='utf-8') as stream:
+            for k in sorted(set().union(*arms.values())):
+                r = rows[k]
+                stream.write(json.dumps({'region': k, 'line': r.get('line'), 'writer': writers[k], 'fold': r.get('fold'), 'readable': readable[k],
+                                         'label': r.get('text'), **{name: got.get(k) for name, got in arms.items()}}, ensure_ascii=False)+'\n')
     for name, r in result.items():
         a, f = r.get('against_reference'), r['refusal']
         print(f"{name:28s} AR {100*r['ar']:6.1f} CR {100*r['cr']:5.1f} exact {100*r['exact']:5.1f} NED {100*r['ned']:5.1f} n={r['readable']}"
