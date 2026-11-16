@@ -45,7 +45,7 @@ from PIL import Image
 
 from .. import pages as pages_module
 from ..util import SEED, digest, make_output_dir, require, write_json, write_manifest
-from .pixel_masks import reviewed_crop
+from .pixel_masks import decode, reviewed_crop
 
 VALIDATION = .1
 FOLDS = 5
@@ -102,7 +102,10 @@ def chosen_regions(args):
         if reason: skipped[reason] += 1
         else: chosen.append({**r, 'target': target if r['readable'] else UNREADABLE})
     require(chosen, 'no region to teach or read')
-    if args.folds_from:   # the folds and val marks of an earlier pack, writer by writer (a region added keeps its writer's)
+    if args.holdout_share:   # two folds: 0 the prefill set's held-out writers (data.prefill_set.held_out), 1 the rest
+        from .prefill_set import held_out
+        fold, val = {w: 0 if held_out(w, args.holdout_share) else 1 for w in {r['writer'] for r in chosen}}, validation_writer
+    elif args.folds_from:   # the folds and val marks of an earlier pack, writer by writer (a region added keeps its writer's)
         kept = {r['writer']: (r['fold'], r['val']) for r in json.loads((args.folds_from/'pack.json').read_text())['rows']}
         require({r['writer'] for r in chosen} <= set(kept), f'writers not in {args.folds_from}')
         fold, val = {w: f for w, (f, _) in kept.items()}, lambda w: kept[w][1]
@@ -128,7 +131,7 @@ def folds_pack(args):
                              'size': list(image.size), 'boxes': [], 'strike_pixels': r['strike_pixels'], 'mode': r['mode']})
     write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
     side = lambda sel: {'regions': len(sel), 'readable': sum(r['readable'] for r in sel), 'unreadable': sum(not r['readable'] for r in sel), 'writers': len({r['writer'] for r in sel})}
-    summary = {**side(rows), 'folds': [side([r for r in rows if r['fold'] == k]) for k in range(FOLDS)], 'val': side([r for r in rows if r['val']]),
+    summary = {**side(rows), 'folds': [side([r for r in rows if r['fold'] == k]) for k in range(max(r['fold'] for r in rows)+1)], 'val': side([r for r in rows if r['val']]),
                'held_out_writers': len(held), **skipped}
     write_manifest(out, config={k: [str(x) for x in v] if isinstance(v, list) else str(v) for k, v in vars(args).items() if k != 'command'},
                    inputs={str(args.dataset): digest(args.dataset)}, **summary)
@@ -267,6 +270,42 @@ def views_pack(args):
     print(json.dumps({'regions': len(rows)}), flush=True)
 
 
+def library_pack(args):
+    """The regions a model prefilled in a review library (``tools.annotate.pixel_library infer``), as a pack to read: each region not
+    the annotator's (a group of near-identical crops once, as the library shows it), its OCR window from the model's pixels and polygon,
+    all fold 0.  ``--dataset``: a region the merged dataset holds (confirmed pixels and text) carries its target, the rest are unlabelled
+    (``labelled`` false, readable, target empty)."""
+    from ..eval.coverage import prepare
+    from ..recognize_lines import UNREADABLE
+    from ..tools.annotate.pixel_library import duplicate_groups
+    from .prefill_set import held_out
+    source = json.loads((args.library/'pack.json').read_text()); pages = source['pages']
+    groups = duplicate_groups(source['rows']); alias = {i for g in groups for i in g['ids'][1:]}; merged = {g['ids'][0]: g for g in groups}
+    labels = {d['id']: d for d in json.loads(args.dataset.read_text()) if d.get('pixels_confirmed') and d.get('text_confirmed') and not d.get('deleted')} if args.dataset else {}
+    chosen = [{**r, **({k: merged[r['id']][k] for k in ('box', 'region', 'runs')} if r['id'] in merged else {})}
+              for r in source['rows'] if not r.get('preserved_manual') and not r.get('deleted') and r['id'] not in alias]
+    out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []
+    for pi in sorted({r['page'] for r in chosen}):
+        page_id = pages[pi]['id']
+        with Image.open(args.library/pages[pi]['image']) as page:
+            for r in (r for r in chosen if r['page'] == pi):
+                key = page_id+'#'+r['id'].split('#')[-1]; d = labels.get(key); writer = d['writer'] if d else pages[pi]['writer_group']
+                target = (prepare(d['text'] or '').replace('?', '') if d['readable'] else UNREADABLE) if d else ''
+                images = {name: f'crops/{len(rows):05d}_{name}.png' for name in ('raw', 'erased', 'map')}
+                for name, image in zip(images, layered(page, r)): image.save(out/images[name])
+                rows.append({'id': key, 'line_id': key, 'kind': 'line', 'writer': writer, 'fold': 0, 'val': False, 'labelled': bool(d),
+                             'held_out': bool(d) and held_out(writer, args.holdout_share) if args.holdout_share else None,
+                             'readable': bool(d['readable']) if d else True, 'text': (d['text'] or '') if d and d['readable'] else '', 'target': target,
+                             'images': images, 'size': list(image.size), 'boxes': [], 'strike_pixels': int(decode(r['runs'], (r['box'][3]-r['box'][1], r['box'][2]-r['box'][0])).sum()),
+                             'mode': 'erase'})
+    write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
+    summary = {'regions': len(rows), 'labelled': sum(r['labelled'] for r in rows), 'held_out': sum(bool(r['held_out']) for r in rows), 'aliases': len(alias)}
+    write_json(out/'held_out.json', {'ids': [r['id'] for r in rows if r['held_out']]})
+    inputs = {str(args.library/'pack.json'): digest(args.library/'pack.json'), **({str(args.dataset): digest(args.dataset)} if args.dataset else {})}
+    write_manifest(out, config={k: str(v) for k, v in vars(args).items() if k != 'command'}, inputs=inputs, **summary)
+    print(json.dumps(summary), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     for name in ('folds', 'fold-sets', 'views'):
@@ -276,14 +315,20 @@ def main(argv=None):
         f.add_argument('--dataset', type=Path, required=True, help='regions.json of data.struck_dataset'); f.add_argument('--pages', type=Path, action='append', required=True)
         f.add_argument('--hold-out', action='append', default=[], help='part of the name of an export whose regions, and their writers, stay out (the test page)')
         f.add_argument('--folds-from', type=Path, help='a folds pack whose folds and val marks the writers keep (else they are drawn anew)')
+        f.add_argument('--holdout-share', type=float, help="two folds: 0 the writers data.prefill_set holds out at this share, 1 the rest")
         f.add_argument('--output-dir', type=Path, required=True)
     d = sub.add_parser('separated')
     for key in ('pack', 'sets', 'upstream', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)
     d.add_argument('--separator', type=Path, action='append', required=True, help="a fold's separator run (baselines.restoration), given once per fold in order")
+    b = sub.add_parser('library')
+    for key in ('library', 'output-dir'): b.add_argument('--'+key, type=Path, required=True)
+    b.add_argument('--dataset', type=Path, help='regions.json of a merged dataset: the regions it labels carry their targets')
+    b.add_argument('--holdout-share', type=float, help="mark the labelled regions of the writers data.prefill_set holds out at this share")
     c = sub.add_parser('counterfactual')
     for key in ('pack', 'human', 'output-dir'): c.add_argument('--'+key, type=Path, required=True)
     args = p.parse_args(argv)
-    {'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack, 'views': views_pack, 'counterfactual': counterfactual_pack}[args.command](args)
+    {'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack, 'views': views_pack, 'counterfactual': counterfactual_pack,
+     'library': library_pack}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -83,7 +83,7 @@ PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
 SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; ceiling) echo CEILING_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; ceiling) echo CEILING_FAILED ;; prefill) echo PREFILL_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
 CF=${N}_revision_folds_counterfactual
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
@@ -338,6 +338,70 @@ print('the new crops', 'stay out: ' + ', '.join(below) if below else 'take the p
 PYTHON
     mark masked_score; fi
 touch "$R/MASKED_COMPLETE"; stamp 'masked part complete'; exit 0; fi
+
+if [ "$PART" = prefill ]; then cards "${CARDS:-2}"
+# The prefill for the whole library (user 2026-11-16), after run_prefill_model.sh ROUND=2: the pixel model its switch rule chose (round
+# 2's main, else its real, else round 1's); every detection redrawn tight round the strike the model finds (tight_region) and the model
+# again on that crop; a pair reader taught on every confirmed region but the prefill set's held-out writers (struck_pack folds
+# --holdout-share .1: fold 0 those writers) writes each region's starting text.  Measured first on the held-out writers' pages, inferred
+# afresh without the annotator's records: the tight polygons against the annotator's (and those from the annotator's own strike, the
+# best the model's could give), and the text read from the model's crops against the annotator's (and from the annotator's crops).  Then
+# the library: the same pages as round 1's, every export's records kept (later exports first, the line page's corrections over them),
+# a record only moved or reshaped refilled in its own polygon, bundled with the drafts and one shared KaTeX.  Card 2 only.
+P=$O/paper2_prefill_text20261116; M2=$O/paper2_prefill_model20261116; MERGED=${N}_prefill_data20261116; SET2=${N}_prefill_set_r2
+LIB1=${N}_full_review_prefill_r1; EXPORTS=$O/paper2_annotation_exports20261116; KATEX=$O/paper2_katex_0.16.25
+SPL=$O/paper2_pixel_finetune_inputs20261007; RP=${N}_prefill_reader_pack20261116; RD=${N}_prefill_reader20261116
+LH=${N}_prefill_reader_heldout20261116; LF=${N}_prefill_reader_library20261116; mkdir -p "$P"; test -e "$M2/COMPLETE"
+if ! done_ prefill_choice; then
+    "$PY" - "$M2" "$N" "$LIB1" "$MERGED/regions.json" "$SET2/summary.json" "$P" <<'PYTHON'
+import json, sys
+m2, n, lib, merged, summary, out = sys.argv[1:]
+for arm in ('main', 'real'):
+    if json.load(open(f'{m2}/switch_{arm}.json'))['replace']: run = f'{n}_prefill_model_r2_{arm}'; break
+else: run = f'{n}_prefill_model_main'
+open(f'{out}/choice.txt', 'x').write(f"{run} {json.load(open(run+'/selection.json'))['checkpoint']}\n")
+pages = [p['id'] for p in json.load(open(lib+'/pack.json'))['pages']]; open(f'{out}/library_pages.txt', 'x').write('\n'.join(pages)+'\n')
+held = set(json.load(open(summary))['validation_writers'])
+mine = sorted({r['page'] for r in json.load(open(merged)) if r['writer'] in held} & set(pages)); open(f'{out}/held_out_pages.txt', 'x').write('\n'.join(mine)+'\n')
+PYTHON
+    mark prefill_choice; fi
+read -r RUN STEP < "$P/choice.txt"
+infer_job() {   # CARD NUMA OUT NAME IDS [more of pixel_library infer]
+    local card="$1" numa="$2" out="$3" name="$4" ids="$5"; shift 5
+    job "$card" "$numa" "$out" -- "$PY" -m revrender.tools.annotate.pixel_library infer --restorer "$RUN" --restorer-checkpoint "$STEP" --upstream "$UP" \
+        --pages "$O/paper2_pages_clean_unlabeled3976" --detector "$O/paper2_pages_clean_run_unlabeled3976_tight" --mapping "$SPL/index_manifest.json" \
+        --same-student "$SPL/same_student_pairs.json" --validation "$O/paper2_fixed_validation20261007/validation_native.json" --ids "$ids" --tight --name "$name" "$@" --output-dir "$out"
+}
+reader_job() {   # CARD NUMA: the pair reader, the held-out writers left out
+    [ -e "$RD/complete.json" ] || PACK=$RP job "$1" "$2" "$RD" -- $(PACK=$RP teach "$RD" pair 0)
+}
+read_job() {   # CARD NUMA OUT PACK
+    [ -e "$3/complete.json" ] || job "$1" "$2" "$3" -- $(PACK=$4 read_with "$3" pair "$RD" --fold 0 --loop-limit 4)
+}
+if ! done_ prefill_heldout; then
+    [ -e "$P/heldout_lib/COMPLETE" ] || { alone infer_job "$P/heldout_lib" paper2-full-review-heldout "$P/held_out_pages.txt"; wait; }
+    [ -e "$RP/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack folds --dataset "$MERGED/regions.json" --pages "$O/paper2_full_review20261010/images" \
+        --holdout-share .1 --output-dir "$RP" > "$P/reader_pack.log" 2>&1
+    [ -e "$LH/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack library --library "$P/heldout_lib" --dataset "$MERGED/regions.json" --holdout-share .1 \
+        --output-dir "$LH" >> "$P/reader_pack.log" 2>&1
+    alone reader_job; wait; test -e "$RD/complete.json"
+    alone read_job "$P/read_human" "$RP"; wait; alone read_job "$P/read_heldout" "$LH"; wait
+    test -e "$P/read_human/complete.json"; test -e "$P/read_heldout/complete.json"
+    for how in oracle predicted; do [ -e "$P/tight_$how.json" ] || "$PY" -m revrender.tools.annotate.tight_region score --dataset "$MERGED/regions.json" \
+        --library "$P/heldout_lib" --writers "$SET2/summary.json" $([ $how = predicted ] && echo --predicted) --output "$P/tight_$how.json" > "$P/tight_$how.log" 2>&1; done
+    [ -e "$P/scores_heldout.json" ] || "$PY" -m revrender.eval.transcription --pack "$LH" --only "$LH/held_out.json:ids" --arm "model_pixels=$P/read_heldout@pair_revision" \
+        --arm "human_pixels=$P/read_human@pair_revision" --reference human_pixels --readings "$P/readings_heldout.jsonl" --output "$P/scores_heldout.json" > "$P/scores_heldout.log" 2>&1
+    mark prefill_heldout; fi
+if ! done_ prefill_library; then
+    exports=(); for f in "$EXPORTS"/*.json; do exports+=(--review-export "$f"); done
+    [ -e "$P/library/COMPLETE" ] || { alone infer_job "$P/library" paper2-full-review "$P/library_pages.txt" "${exports[@]}" --dataset "$MERGED/regions.json"; wait; }
+    test -e "$P/library/COMPLETE"
+    [ -e "$LF/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack library --library "$P/library" --output-dir "$LF" > "$P/library_pack.log" 2>&1
+    alone read_job "$P/read_library" "$LF"; wait; test -e "$P/read_library/complete.json"
+    [ -e "$P/site/run_manifest.json" ] || "$PY" -m revrender.tools.annotate.pixel_library bundle --pack "$P/library" --readings "$P/read_library/predictions.jsonl" \
+        --condition pair_revision --katex "$KATEX" --output-dir "$P/site" > "$P/bundle.log" 2>&1
+    mark prefill_library; fi
+touch "$P/COMPLETE"; stamp 'prefill part complete'; exit 0; fi
 
 if [ "$PART" = ceiling ]; then cards "${CARDS:-1}"
 C=$O/paper2_ceiling_reader20261116; OLDHM=${N}_revision_folds_human_masked; HM=${N}_revision_folds_human_masked20261116b

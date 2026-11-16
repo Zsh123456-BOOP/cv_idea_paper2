@@ -105,7 +105,7 @@ def test_bundle_keeps_all_pages_rows_splits_and_human_labels(tmp_path):
         rows.append({'id':f'p{i}#r','page':i,'box':[0,0,10,10],'region':[[0,0],[10,0],[10,10],[0,10]],'runs':[[0,2]],'confirmed':True,'preserved_manual':True})
     data={'id':'full','schema':'paper2-pixel-review-pack-v1','task':'strike_only','image_revision':'review-clean-v1','model_revision':'model-A','image_source':'images','selected_checkpoint':'candidate','selection':{'selected':'manual','models':{}},'protected_validation_writers':['held'],'pages':pages,'rows':rows}
     (source/'pack.json').write_text(json.dumps(data))
-    out=tmp_path/'out';bundle(Namespace(pack=source,output_dir=out,pages_per_part=2,title='测试集'))
+    out=tmp_path/'out';bundle(Namespace(pack=source,output_dir=out,pages_per_part=2,title='测试集',readings=None,condition='pair_revision',katex=None))
     files=sorted((out/'parts').glob('*.html'));assert len(files)==2
     packed=[json.loads(EmbeddedReview(p.read_text()).values['review-pack']) for p in files]
     assert sum(len(p['rows']) for p in packed)==3
@@ -175,3 +175,16 @@ def test_prefill_export_merges_duplicates_and_keeps_human_rows(tmp_path):
     assert [r['id'] for r in revisions]==['p#det0000','p#r1']
     assert revisions[0]['merged_detection_ids']==['p#det0000','p#det0001'] and revisions[0]['runs']==[[0,10]] and not revisions[0]['confirmed']
     assert revisions[1]['confirmed']
+
+
+def test_drafts_reach_the_prefilled_regions_only(tmp_path):
+    import json
+    from revrender.tools.annotate.pixel_library import drafted
+    source={'task':'strike_only','rows':[{'id':'p#det0000'},{'id':'p#det0001'},{'id':'p#det0002','preserved_manual':True,'text':'人工'}]}
+    (tmp_path/'r.jsonl').write_text('\n'.join(json.dumps({'id':i,'condition':'pair_revision','text':t}) for i,t in
+                                              (('p#det0000','x+1'),('p#det0001','[读不出]'),('p#det0002','别的'))))
+    out,n=drafted(source,tmp_path/'r.jsonl','pair_revision')
+    rows={r['id']:r for r in out['rows']}
+    assert out['task']=='strike_text' and n==2 and source['task']=='strike_only'
+    assert rows['p#det0000']['text']=='x+1' and rows['p#det0000']['prefill']=='x+1'
+    assert rows['p#det0001']['text']=='' and rows['p#det0001']['unreadable_prefill'] and rows['p#det0002']['text']=='人工'

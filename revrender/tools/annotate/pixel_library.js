@@ -17,7 +17,7 @@ function output(training=false){const pages=combined();if(training)for(const [id
   p.revisions=(p.revisions||[]).filter(r=>r.confirmed&&!r.deleted&&!r.uncertainMask?.runs?.length);p.deleted_revisions=[];p.duplicate_revisions=[];
   if(!p.revisions.length)delete pages[id];
 }
-return {schema:'paper2-pixel-review-v1',annotation_version:3,pack:L.id,task:'strike_only',exported_at:new Date().toISOString(),image_source:L.image_source,image_revision:'review-clean-v1',selected_checkpoint:L.selected_checkpoint,protected_validation_writers:L.protected_validation_writers,training_only:training,pages};}
+return {schema:'paper2-pixel-review-v1',annotation_version:3,pack:L.id,task:L.task||'strike_only',exported_at:new Date().toISOString(),image_source:L.image_source,image_revision:'review-clean-v1',selected_checkpoint:L.selected_checkpoint,protected_validation_writers:L.protected_validation_writers,training_only:training,pages};}
 function download(value,name){const url=URL.createObjectURL(new Blob([JSON.stringify(value)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=name+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 async function refresh(){
   saved=new Map();for(const p of L.parts){const v=await S.get(key(p));if(v)saved.set(p.id,v);}

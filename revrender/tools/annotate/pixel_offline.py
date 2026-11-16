@@ -114,12 +114,15 @@ def katex_inline(folder):
     return '<style>'+css+'</style>', '<script>'+(folder/'katex.min.js').read_text().replace('</script', '<\\/script')+'</script>'
 
 
-def render_html(payload, draft=None, katex=None):
+def render_html(payload, draft=None, katex=None, katex_href=None):
+    """The offline editor page; ``katex``: a KaTeX dist folder inlined, or ``katex_href``: a folder beside the page holding
+    katex.min.css (its fonts inside) and katex.min.js, linked (pages of one library share one copy)."""
     from .pixel_review import HERE, ASSETS
     html = (HERE/'pixel_editor.html').read_text()
-    if katex:
+    if katex or katex_href:
         require(KATEX_CSS in html and KATEX_JS in html, 'the editor no longer loads KaTeX from the CDN this replaces')
-        style, script = katex_inline(katex)
+        style, script = katex_inline(katex) if katex else (f'<link rel="stylesheet" href="{katex_href}/katex.min.css">',
+                                                           f'<script src="{katex_href}/katex.min.js"></script>')
         html = html.replace(KATEX_CSS, style).replace(KATEX_JS, script)
     data = '<script id="review-pack" type="application/json">'+script_json(payload)+'</script>'
     data += '<script id="review-draft" type="application/json">'+script_json(draft)+'</script>'

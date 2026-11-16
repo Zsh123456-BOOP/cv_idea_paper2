@@ -330,7 +330,11 @@ async function start(){
   if(!store){store={rows:{},done:{},extra:[],pageSeconds:{}};if(pack.initial_export)store=R.importData(pack,store,pack.initial_export);}
   store.pageSeconds||={};
   if(pack.library&&store.modelRevision!==pack.model_revision){
-    for(const base of pack.rows){const old=store.rows[base.id];if(old&&!old.confirmed&&!old.ops&&!old.deleted&&!old.duplicate_of)store.rows[base.id]=R.restoreRow(base);}
+    // A new prefill reaches every region nobody touched; a record the annotator confirmed elsewhere (preserved_manual) arrives as it is.
+    const untouched=old=>!old.confirmed&&!old.ops&&!old.deleted&&!old.duplicate_of&&!old.text_confirmed;
+    for(const base of pack.rows){const old=store.rows[base.id];
+      if(base.preserved_manual){if(!old||untouched(old))store.rows[base.id]=R.restoreRow(base,{...base});}
+      else if(old&&untouched(old))store.rows[base.id]=R.restoreRow(base);}
     store.modelRevision=pack.model_revision;
   }
   if(pack.library&&pack.duplicate_groups?.length){

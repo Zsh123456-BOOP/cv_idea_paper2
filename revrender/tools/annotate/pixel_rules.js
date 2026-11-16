@@ -118,7 +118,7 @@
     return {runs:encode(mask), removed};
   }
   function restoreRow(base, saved) {
-    return {runs:base.runs,box:base.box,region:base.region,annotationMode:'erase',text:base.text||'',unreadable:false,text_confirmed:false,confirmed:false,not_revision:false,deleted:false,ops:0,seconds:0,note:'',...saved};
+    return {runs:base.runs,box:base.box,region:base.region,annotationMode:'erase',text:base.text||'',unreadable:!!base.unreadable_prefill,text_confirmed:false,confirmed:false,not_revision:false,deleted:false,ops:0,seconds:0,note:'',...saved};
   }
   function mergeDuplicates(pack, source) {
     const bases=new Map(pack.rows.map(r=>[r.id,r]));let count=0;
