@@ -212,7 +212,10 @@ def drafted(source,readings,condition):
     text empty and the region marked unreadable, for the annotator to undo."""
     from .page_pack import read_readings
     from ...recognize_lines import UNREADABLE
-    texts=read_readings(readings,condition);source={**source,'task':'strike_text','rows':[dict(r) for r in source['rows']]}
+    texts=read_readings(readings,condition)
+    # the prefill's revision names the text too, so a part opened before takes the drafts (the editor refreshes untouched regions on a new one)
+    revision=hashlib.sha256((source['model_revision']+':'+digest(readings)).encode()).hexdigest()
+    source={**source,'task':'strike_text','model_revision':revision,'rows':[dict(r) for r in source['rows']]}
     for r in source['rows']:
         if r.get('preserved_manual') or r['id'] not in texts:continue
         t=texts[r['id']]

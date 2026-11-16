@@ -330,6 +330,8 @@ async function start(){
   if(!store){store={rows:{},done:{},extra:[],pageSeconds:{}};if(pack.initial_export)store=R.importData(pack,store,pack.initial_export);}
   store.pageSeconds||={};
   if(pack.library&&store.modelRevision!==pack.model_revision){
+    // the draft as it was, kept before a new prefill reaches it (a region of it the new pack no longer lists stays recoverable)
+    if(cached)await ReviewLibraryStore.put(key+'-before-'+String(pack.model_revision).slice(0,12),{draft:cached,savedAt:Date.now()}).catch(()=>{});
     // A new prefill reaches every region nobody touched; a record the annotator confirmed elsewhere (preserved_manual) arrives as it is.
     const untouched=old=>!old.confirmed&&!old.ops&&!old.deleted&&!old.duplicate_of&&!old.text_confirmed;
     for(const base of pack.rows){const old=store.rows[base.id];

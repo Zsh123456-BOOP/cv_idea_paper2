@@ -180,11 +180,11 @@ def test_prefill_export_merges_duplicates_and_keeps_human_rows(tmp_path):
 def test_drafts_reach_the_prefilled_regions_only(tmp_path):
     import json
     from revrender.tools.annotate.pixel_library import drafted
-    source={'task':'strike_only','rows':[{'id':'p#det0000'},{'id':'p#det0001'},{'id':'p#det0002','preserved_manual':True,'text':'人工'}]}
+    source={'task':'strike_only','model_revision':'m','rows':[{'id':'p#det0000'},{'id':'p#det0001'},{'id':'p#det0002','preserved_manual':True,'text':'人工'}]}
     (tmp_path/'r.jsonl').write_text('\n'.join(json.dumps({'id':i,'condition':'pair_revision','text':t}) for i,t in
                                               (('p#det0000','x+1'),('p#det0001','[读不出]'),('p#det0002','别的'))))
     out,n=drafted(source,tmp_path/'r.jsonl','pair_revision')
     rows={r['id']:r for r in out['rows']}
-    assert out['task']=='strike_text' and n==2 and source['task']=='strike_only'
+    assert out['task']=='strike_text' and n==2 and source['task']=='strike_only' and out['model_revision'] not in ('m',None)
     assert rows['p#det0000']['text']=='x+1' and rows['p#det0000']['prefill']=='x+1'
     assert rows['p#det0001']['text']=='' and rows['p#det0001']['unreadable_prefill'] and rows['p#det0002']['text']=='人工'
