@@ -2,7 +2,8 @@
 so the annotator need not resize it), from the strike pixels a model would erase: no training.
 
     python -m revrender.tools.annotate.tight_region score --dataset REGIONS.json --library PACK_DIR --output OUT.json
-        [--writers SUMMARY.json]
+        [--writers SUMMARY.json] [--predicted]
+    python -m revrender.tools.annotate.tight_region learn --dataset REGIONS.json --library PACK_DIR --writers SUMMARY.json --output-dir OUT
 
 ``tight_polygon``: within the box widened by ``MARGIN`` pixels, the ink (grey below ``INK``) connected to the strike pixels (8-connected,
 the strike dilated by ``TOUCH``) -- the strike and the strokes it crosses -- and the strike itself; their convex hull widened by ``PAD``,
@@ -16,6 +17,11 @@ best a model's strike can give): the share of the annotator's strike pixels insi
 annotator's polygon (intersection over union, and the ink it adds or leaves out); ``--writers``: a prefill set's summary, its held-out
 writers reported apart; ``--predicted``: the library was inferred with ``--tight`` (and without the annotator's records on these pages),
 and the polygons scored are its own, from the model's strike.
+
+``learn`` (the second version, plan of 2026-11-16): the library inferred without ``--tight`` on the dataset's pages, so each detection
+keeps its box and the model's strike on it; a small classifier (gradient boosting) learns from the training writers' pieces (``pieces``;
+label: more than half the piece inside the annotator's polygon, from the annotator's strike and the model's) which to draw round, and both
+versions are scored on the held-out writers from the model's strike, with the rule written before.
 """
 import argparse
 import json
@@ -99,6 +105,12 @@ def cut(points, corners):
 def tight_polygon(grey, box, strike):
     """The tight polygon (page coordinates, integer corners) round the strike and what it crosses; the box's corners when nothing is struck."""
     mask, L, T = selected(grey, box, strike)
+    return shape(mask, L, T, grey.shape, box)
+
+
+def shape(mask, L, T, size, box):
+    """The polygon round a window's selected pixels (window at L, T): the hull, its turned rectangle when nearly the hull, else the hull
+    cut to ``CORNERS``, widened by ``PAD``; the box's corners when nothing is selected."""
     l, t, r, b = box
     if not mask.any(): return [[l, t], [r, t], [r, b], [l, b]]
     ys, xs = np.nonzero(mask)
@@ -111,8 +123,44 @@ def tight_polygon(grey, box, strike):
     rect, rect_area = turned_rectangle(hull)
     poly = rect if area(hull) >= RECTANGLE*rect_area else cut(hull, CORNERS)
     if cross(poly[1]-poly[0], poly[2]-poly[1]) < 0: poly = poly[::-1]
-    poly = widened(poly, PAD); h, w = grey.shape
+    poly = widened(poly, PAD); h, w = size
     return [[int(np.clip(round(x), 0, w)), int(np.clip(round(y), 0, h))] for x, y in poly]
+
+
+FEATURES = ('covered', 'off_axis', 'beyond_ends', 'within_ends', 'size', 'from_centre_x', 'from_centre_y')
+
+
+def pieces(grey, box, strike):
+    """(the strike in the box widened by ``MARGIN``, each piece of the ink left when it is taken away (8-connected), each piece's features,
+    left, top) -- the second version's candidates (plan of 2026-11-16): the share of the piece under or within ``TOUCH`` pixels of the
+    strike; its centre's distance from the strike's main axis and beyond its ends along it, over the box's height, and whether it is
+    within the ends; its size over the box's ink; its centre from the box's centre, over the box's width and height."""
+    h, w = grey.shape; l, t, r, b = box
+    L, T, R, B = max(0, l-MARGIN), max(0, t-MARGIN), min(w, r+MARGIN), min(h, b+MARGIN)
+    ink = grey[T:B, L:R] < INK; seed = strike[T:B, L:R] & ink
+    if not seed.any(): return seed, [], [], L, T
+    labels, n = ndimage.label(ink & ~seed, np.ones((3, 3))); near = ndimage.binary_dilation(seed, iterations=TOUCH)
+    sy, sx = np.nonzero(seed); points = np.stack([sx, sy], 1).astype(float); mean = points.mean(0)
+    u = np.linalg.svd(points-mean, full_matrices=False)[2][0] if len(points) > 1 else np.array([1., 0.]); v = np.array([-u[1], u[0]])
+    along = (points-mean)@u; height, width, box_ink = max(1, b-t), max(1, r-l), max(1, int(ink[t-T:b-T, l-L:r-L].sum()))
+    masks, rows = [], []
+    for k, where in enumerate(ndimage.find_objects(labels), 1):
+        piece = labels == k; ys, xs = np.nonzero(piece); c = np.array([xs.mean(), ys.mean()]); a = (c-mean)@u
+        beyond = max(0., along.min()-a, a-along.max())
+        masks.append(piece)
+        rows.append([float((piece & near).sum()/piece.sum()), float(abs((c-mean)@v))/height, beyond/height, float(beyond == 0), float(piece.sum())/box_ink,
+                     float(c[0]+L-(l+r)/2)/width, float(c[1]+T-(t+b)/2)/height])
+    return seed, masks, rows, L, T
+
+
+def tight_polygon_learned(grey, box, strike, model):
+    """The second version: the strike and the pieces the classifier keeps, drawn as the first version draws."""
+    seed, masks, rows, L, T = pieces(grey, box, strike)
+    keep = model.predict(np.array(rows)) if rows else []
+    chosen = seed.copy()
+    for m, k in zip(masks, keep):
+        if k: chosen |= m
+    return shape(chosen, L, T, grey.shape, box)
 
 
 def bounds(polygon):
@@ -170,13 +218,72 @@ def score(args):
     print(json.dumps({k: v for k, v in report.items() if k != 'regions'}, indent=1), flush=True)
 
 
+def matched(args):
+    """(page grey, ink, dataset row, the annotator's strike on the page, the detection's box, the model's strike on it) for each confirmed
+    region a detection of the library started, page by page."""
+    rows = [r for r in json.loads(args.dataset.read_text()) if r.get('pixels_confirmed') and not r.get('deleted') and r.get('region')]
+    pack = json.loads((args.library/'pack.json').read_text()); pages = pack['pages']
+    detections = {pages[r['page']]['id']+'#'+r['id'].split('#')[-1]: r for r in pack['rows']}
+    image_of = {p['id']: args.library/p['image'] for p in pages}
+    for page in sorted({r['page'] for r in rows if r['id'] in detections}):
+        with Image.open(image_of[page]) as im: grey = np.asarray(im.convert('L'))
+        for r in (r for r in rows if r['page'] == page and r['id'] in detections):
+            l, t, rr, b = r['box']; human = np.zeros(grey.shape, bool)
+            human[t:b, l:rr] = decode(r['runs'], (b-t, rr-l)) & region_pixels(r['region'], r['box'])
+            d = detections[r['id']]; box = d.get('detection_box') or d['box']; dl, dt, dr, db = d['box']
+            model = np.zeros(grey.shape, bool); model[dt:db, dl:dr] = decode(d['runs'], (db-dt, dr-dl))
+            yield grey, r, human, box, model
+
+
+def learn(args):
+    """The second version trained on the training writers' pieces (the annotator's strike and the model's), then both versions on the
+    held-out writers from the model's strike, and the rule written before (plan of 2026-11-16): the share with ink IoU of 0.9 or more
+    rises with the writer-resampled 95% interval above 0, and the annotator's strike inside falls by at most a point."""
+    import pickle
+    from sklearn.ensemble import GradientBoostingClassifier
+    from ...util import SEED
+    held = set(json.loads(args.writers.read_text())['validation_writers']); X, y, kept = [], [], []
+    for grey, r, human, box, model in matched(args):
+        if r['writer'] in held: kept.append((grey, r, human, box, model)); continue
+        truth = inside(r['region'], grey.shape)
+        l, t, rr, b = box
+        for strike in (human & np.pad(np.ones((b-t, rr-l), bool), ((t, grey.shape[0]-b), (l, grey.shape[1]-rr))), model):
+            _, masks, rows, L, T = pieces(grey, box, strike)
+            for m, f in zip(masks, rows):
+                X.append(f); y.append(int(truth[T:T+m.shape[0], L:L+m.shape[1]][m].mean() > .5))
+    require(X and kept, 'no pieces to learn from, or no held-out region')
+    clf = GradientBoostingClassifier(random_state=SEED).fit(np.array(X), np.array(y))
+    results = []
+    for grey, r, human, box, model in kept:
+        truth = inside(r['region'], grey.shape); ink = grey < INK
+        results.append({'id': r['id'], 'writer': r['writer'], 'first': compare(tight_polygon(grey, box, model), truth, ink, human),
+                        'second': compare(tight_polygon_learned(grey, box, model, clf), truth, ink, human)})
+    good = lambda x, k: float(x[k]['ink_iou'] >= .9)
+    writers = sorted({x['writer'] for x in results}); by = {w: [x for x in results if x['writer'] == w] for w in writers}
+    diff = lambda chosen: float(np.mean([good(x, 'second')-good(x, 'first') for x in chosen]))
+    rng = np.random.default_rng(SEED); draws = [diff([x for w in rng.choice(writers, len(writers)) for x in by[w]]) for _ in range(1000)]
+    interval = [float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))]
+    strike_drop = float(np.mean([x['first']['strike_inside']-x['second']['strike_inside'] for x in results]))
+    summary = {k: {'iou_0.9_share': float(np.mean([good(x, k) for x in results])), 'ink_iou_mean': float(np.mean([x[k]['ink_iou'] for x in results])),
+                   'strike_inside': float(np.mean([x[k]['strike_inside'] for x in results]))} for k in ('first', 'second')}
+    decision = {'difference': diff(results), 'interval': interval, 'strike_inside_drop': strike_drop,
+                'switchable': bool(interval[0] > 0 and strike_drop <= .01),
+                'rule': 'the share with ink IoU >= 0.9 rises, writer-resampled 95% lower end > 0, and the strike inside falls by at most a point'}
+    out = make_output_dir(args.output_dir); (out/'classifier.pkl').write_bytes(pickle.dumps(clf))
+    write_json(out/'report.json', {'pieces': len(X), 'kept_share': float(np.mean(y)), 'held_out_regions': len(results), 'writers': len(writers),
+                                   'features': FEATURES, 'importances': clf.feature_importances_.tolist(), 'summary': summary, 'decision': decision, 'regions': results})
+    print(json.dumps({'pieces': len(X), 'held_out_regions': len(results), 'summary': summary, 'decision': decision}, indent=1), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     s = sub.add_parser('score')
     for name in ('dataset', 'library', 'output'): s.add_argument('--'+name, type=Path, required=True)
     s.add_argument('--writers', type=Path, help="a prefill set's summary.json: its held-out writers apart")
     s.add_argument('--predicted', action='store_true', help="the library was inferred with --tight: its own polygons (from the model's strike) are scored")
-    args = p.parse_args(argv); {'score': score}[args.command](args)
+    n = sub.add_parser('learn')
+    for name in ('dataset', 'library', 'writers', 'output-dir'): n.add_argument('--'+name, type=Path, required=True)
+    args = p.parse_args(argv); {'score': score, 'learn': learn}[args.command](args)
 
 
 if __name__ == '__main__':

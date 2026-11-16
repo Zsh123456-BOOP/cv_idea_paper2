@@ -71,7 +71,7 @@ def spearman(a, b):
 
 
 def score(args):
-    from ..baselines.restoration import restore_native
+    from ..baselines.restoration import inside, restore_native
     from ..baselines.restoration_export import selected_predictor
     out = make_output_dir(args.output_dir); result = {}; inputs = {}
     sets = {}
@@ -88,7 +88,8 @@ def score(args):
             for k, r in enumerate(rows):
                 image = arrays[f'image_{k}'].astype(np.float32)/255
                 restored = restore_native(predict, image)
-                regions.append({'id': r['id'], 'writer': r['group_uuid'], **edits(image, arrays[f'mask_{k}'], restored),
+                image, restored, gold = inside(image, restored, arrays[f'mask_{k}'], arrays[f'inner_{k}'] if f'inner_{k}' in arrays.files else None)
+                regions.append({'id': r['id'], 'writer': r['group_uuid'], **edits(image, gold, restored),
                                 **{k_: r[k_] for k_ in ('ops', 'seconds', 'model') if k_ in r}})
             s = summary_of(regions)
             if any('seconds' in r for r in regions):

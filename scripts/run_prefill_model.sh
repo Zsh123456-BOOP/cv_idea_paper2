@@ -44,6 +44,83 @@ score_job() {   # CARD NUMA OUT MODEL... -- SET...: eval.prefill score
     local card="$1" numa="$2" out="$3"; shift 3
     bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$PY" -m revrender.eval.prefill score "$@" --upstream "$UP" --output-dir "$out" > "$out.log" 2>&1
 }
+if [ "${ROUND:-1}" = 3 ]; then
+    # The trials after round 2 (rules: work/prefill_round2_plan20261116/预填第2轮之后_三样试验与贴边框_判定规则_2026-11-16.md, user
+    # 2026-11-16): the baseline is the NAFNet round 2's rule kept (round 1's main); each trial changes one thing of its recipe, trained
+    # from scratch on its budget, seed 42, its versions chosen on the fixed validation alone, scored once on round 2's held-out writers.
+    # G: --augment.  C: each region with half its box's height of the page round it (prefill_variants context), scored inside the region.
+    # Both passing: C + G, against the better.  A: the real-only recipe on 25% and 50% of round 2's training writers (nested), beside
+    # round 2's real-only (100%).  The tight polygon's second version (tight_region learn) on the baseline's strike.  Card 2 only, one job
+    # at a time, after the library's prefill (paper2_prefill_text20261116/COMPLETE).  Marker $O/paper2_prefill_trials20261116.
+    R=$O/paper2_prefill_trials20261116; BASE=${N}_prefill_model_main; SET2=${N}_prefill_set_r2; LIBIMG=$O/paper2_full_review20261010/images
+    CTX_FIXED=${N}_fixed_validation_ctx; CTX_SET2=${N}_prefill_set_r2_ctx; CTX_PSEUDO=${N}_prefill_pseudo_main_ctx
+    CARD=${ALL_CARDS[2]}; NUMA=$(numa_of "$CARD"); mkdir -p "$R"
+    exec 9>"$R/lock"; flock -n 9 || { echo 'another run of the trials is still going'; exit 1; }
+    trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
+    until [ -e "$O/paper2_prefill_text20261116/COMPLETE" ]; do [ ! -e "$O/paper2_layer_reader20261113/PREFILL_FAILED" ] || exit 1; sleep 120; done
+    if ! done_ data; then
+        for pair in "$N"_prefill_pseudo_main:"$CTX_PSEUDO" "$FIXED":"$CTX_FIXED" "$SET2":"$CTX_SET2"; do
+            [ -e "${pair#*:}/run_manifest.json" ] || "$PY" -m revrender.data.prefill_variants context --set "${pair%%:*}" --pages "$LIB/images" --pages "$LIBIMG" \
+                --pages "$O/paper2_pages_clean_unlabeled3976" --output-dir "${pair#*:}" >> "$R/data.log" 2>&1
+        done
+        [ -e "${N}_prefill_tiles_main_ctx/run_manifest.json" ] || "$PY" -m revrender.data.restoration_pairs human --review-set "$CTX_PSEUDO" --no-replay \
+            --output-dir "${N}_prefill_tiles_main_ctx" >> "$R/data.log" 2>&1
+        for share in 25 50; do
+            [ -e "${SET2}_s$share/run_manifest.json" ] || "$PY" -m revrender.data.prefill_variants subset --set "$SET2" --share "0.$share" --output-dir "${SET2}_s$share" >> "$R/data.log" 2>&1
+            [ -e "${N}_prefill_tiles_r2_s$share/run_manifest.json" ] || "$PY" -m revrender.data.restoration_pairs human --review-set "${SET2}_s$share" --no-replay \
+                --output-dir "${N}_prefill_tiles_r2_s$share" >> "$R/data.log" 2>&1
+        done
+        mark data; fi
+    trial() {   # NAME TILES BUDGET VALIDATION [more of the restorer]: one trial trained alone on card 2
+        local name="$1" tiles="$2" budget="$3"; VAL="$4"; shift 4
+        RESTORER_MEMORY=10000 RESTORER_ARGS="--select blocks $*" finetune_restorer NAFNet "$CARD" "$NUMA" - "$tiles" "${N}_prefill_model_t_$name" "$budget" > "$R/train_$name.log" 2>&1
+        test -e "${N}_prefill_model_t_$name/selection.json"
+    }
+    if ! done_ train; then
+        trial g "${N}_prefill_tiles_main" prefill "$FIXED" --augment
+        trial c "${N}_prefill_tiles_main_ctx" prefill "$CTX_FIXED"
+        trial a25 "${N}_prefill_tiles_r2_s25" real_only "$FIXED"; trial a50 "${N}_prefill_tiles_r2_s50" real_only "$FIXED"
+        mark train; fi
+    merged() {   # OUT SCORES...: the models of several score files in one (their held-out regions are the same ids)
+        "$PY" -c 'import json,sys; m={}; [m.update(json.load(open(f))) for f in sys.argv[2:]]; json.dump(m, open(sys.argv[1], "x"))' "$@"
+    }
+    if ! done_ score; then
+        [ -e "$R/plain/scores.json" ] || score_job "$CARD" "$NUMA" "$R/plain" --model "baseline=$BASE" --model "g=${N}_prefill_model_t_g" \
+            --model "a25=${N}_prefill_model_t_a25" --model "a50=${N}_prefill_model_t_a50" --model "a100=${N}_prefill_model_r2_real" --set "held_out=$SET2/validation_native.json"
+        [ -e "$R/context/scores.json" ] || score_job "$CARD" "$NUMA" "$R/context" --model "c=${N}_prefill_model_t_c" --set "held_out=$CTX_SET2/validation_native.json"
+        [ -e "$R/scores.json" ] || merged "$R/scores.json" "$R/plain/scores.json" "$R/context/scores.json"
+        for arm in g c; do [ -e "$R/switch_$arm.json" ] || "$PY" -m revrender.eval.prefill switch --scores "$R/scores.json" --set held_out --current baseline \
+            --candidate $arm --output "$R/switch_$arm.json"; done
+        for pair in a25:a50 a50:a100; do [ -e "$R/curve_${pair/:/_}.json" ] || "$PY" -m revrender.eval.prefill switch --scores "$R/scores.json" --set held_out \
+            --current "${pair%%:*}" --candidate "${pair#*:}" --output "$R/curve_${pair/:/_}.json"; done
+        mark score; fi
+    passed() { "$PY" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["replace"] else 1)' "$1"; }
+    if ! done_ both; then
+        if passed "$R/switch_g.json" && passed "$R/switch_c.json"; then
+            trial cg "${N}_prefill_tiles_main_ctx" prefill "$CTX_FIXED" --augment
+            [ -e "$R/context_cg/scores.json" ] || score_job "$CARD" "$NUMA" "$R/context_cg" --model "cg=${N}_prefill_model_t_cg" --set "held_out=$CTX_SET2/validation_native.json"
+            [ -e "$R/scores_cg.json" ] || merged "$R/scores_cg.json" "$R/scores.json" "$R/context_cg/scores.json"
+            better=$("$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); print(min("gc", key=lambda m: s[m]["sets"]["held_out"]["summary"]["blocks"]))' "$R/scores.json")
+            [ -e "$R/switch_cg.json" ] || "$PY" -m revrender.eval.prefill switch --scores "$R/scores_cg.json" --set held_out --current "$better" --candidate cg --output "$R/switch_cg.json"
+        fi
+        [ -e "$R/tiers.json" ] || "$PY" -m revrender.eval.prefill tiers --scores "$( [ -e "$R/scores_cg.json" ] && echo "$R/scores_cg.json" || echo "$R/scores.json")" \
+            --set held_out --output "$R/tiers.json" > "$R/tiers.log" 2>&1
+        mark both; fi
+    if ! done_ tight; then
+        [ -e "$R/dataset_pages.txt" ] || "$PY" -c 'import json,sys; open(sys.argv[2], "x").write("\n".join(sorted({r["page"] for r in json.load(open(sys.argv[1]))}))+"\n")' \
+            "${N}_prefill_data20261116/regions.json" "$R/dataset_pages.txt"
+        if [ ! -e "$R/dataset_lib/COMPLETE" ]; then
+            step=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint"])' "$BASE/selection.json")
+            bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$R/dataset_lib" -- "$PY" -m revrender.tools.annotate.pixel_library infer --restorer "$BASE" \
+                --restorer-checkpoint "$step" --upstream "$UP" --pages "$O/paper2_pages_clean_unlabeled3976" --detector "$O/paper2_pages_clean_run_unlabeled3976_tight" \
+                --mapping "$O/paper2_pixel_finetune_inputs20261007/index_manifest.json" --same-student "$O/paper2_pixel_finetune_inputs20261007/same_student_pairs.json" \
+                --validation "$FIXED/validation_native.json" --ids "$R/dataset_pages.txt" --name paper2-dataset-pages --output-dir "$R/dataset_lib" > "$R/dataset_lib.log" 2>&1
+        fi
+        [ -e "$R/tight_v2/report.json" ] || "$PY" -m revrender.tools.annotate.tight_region learn --dataset "${N}_prefill_data20261116/regions.json" \
+            --library "$R/dataset_lib" --writers "$SET2/summary.json" --output-dir "$R/tight_v2" > "$R/tight_v2.log" 2>&1
+        mark tight; fi
+    touch "$R/COMPLETE"; stamp 'trials complete'; exit 0
+fi
 if [ "${ROUND:-1}" = 2 ]; then
     R=$O/paper2_prefill_model20261116; DS=$O/paper2_clean_struck_dataset20261116; MERGED=${N}_prefill_data20261116; SET=${N}_prefill_set_r2; VAL=$SET
     R1=$O/paper2_prefill_model20261025; CARD=${ALL_CARDS[2]}; NUMA=$(numa_of "$CARD"); mkdir -p "$R"

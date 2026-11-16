@@ -68,6 +68,30 @@ def restore_native(predict, grey):
     return (total/weight)[oy:oy+h,ox:ox+w]
 
 
+SCALE=(.8,1.25)     # --augment (plan of 2026-11-16, fixed): each training tile independently scaled, turned and its ink darkened or lightened
+TURN=5.             # degrees either way
+GAMMA=(.8,1.25)     # grey ** gamma: white stays white
+
+
+def augmented(x,y,w,rng):
+    """The tiles (grey on [0, 1]), their targets and loss weights under one random scale, turn and gamma per tile, the same for all
+    three; what the turn or a shrink brings in from outside is white with no weight.  No mirror: a mirrored character does not exist."""
+    from scipy import ndimage
+    x,y,w=x.copy(),y.copy(),w.copy();n=x.shape[-1];centre=np.array([(n-1)/2]*2)
+    for i in range(len(x)):
+        s=rng.uniform(*SCALE);a=np.deg2rad(rng.uniform(-TURN,TURN));g=rng.uniform(*GAMMA)
+        m=np.array([[np.cos(a),-np.sin(a)],[np.sin(a),np.cos(a)]])/s;offset=centre-m@centre
+        x[i]=ndimage.affine_transform(x[i],m,offset,order=1,cval=1.)**g;y[i]=ndimage.affine_transform(y[i],m,offset,order=1,cval=1.)**g
+        w[i]=ndimage.affine_transform(w[i],m,offset,order=0,cval=0.)
+    return x,y,w
+
+
+def inside(im,pred,gold,inner):
+    """A native crop scored only inside ``inner`` (a crop with context: its region; ``None``: all of it): outside it white."""
+    if inner is None:return im,pred,gold
+    keep=inner.astype(bool);return np.where(keep,im,1.),np.where(keep,pred,1.),gold.astype(bool)&keep
+
+
 class Experiment:
     w=None          # per-pixel loss weights of the data (weights.npy)
 
@@ -89,6 +113,7 @@ class Experiment:
         self.best=(-np.inf,None,'');self.start=time.monotonic()   # the best score may be negative (--select edits or blocks: fewer the better)
         self.stale=0;self.stop=False;self.last_step=0
         self.unpaired_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(1)[0])
+        self.augment_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(2)[1])   # its own stream: the batches drawn stay the same
         self.candidate_improved=False
         self.source=verified_source(upstream_of(args.upstream,args.model))
         inputs=[
@@ -112,7 +137,9 @@ class Experiment:
         targets=self.unpaired_rng.choice(self.train,self.args.batch_size,replace=False) if unpaired else ids
         x,y=self.x[ids].astype(np.float32)/255,self.y[targets].astype(np.float32)/255
         if not weights:return x,y
-        return x,y,(self.w[ids].astype(np.float32) if self.w is not None else np.ones_like(x)),self.s[ids]
+        w=self.w[ids].astype(np.float32) if self.w is not None else np.ones_like(x)
+        if getattr(self.args,'augment',False):x,y,w=augmented(x,y,w,self.augment_rng)
+        return x,y,w,self.s[ids]
 
     def log(self,record):
         record={**record,'elapsed_seconds':round(time.monotonic()-self.start,2)}
@@ -126,6 +153,7 @@ class Experiment:
         for i,_ in enumerate(self.native_rows):
             im=self.native[f'image_{i}'].astype(np.float32)/255;gold=self.native[f'mask_{i}']
             pred=restore_native(predict,im);require(np.isfinite(pred).all(),'nonfinite restoration')
+            im,pred,gold=inside(im,pred,gold,self.native[f'inner_{i}'] if f'inner_{i}' in self.native else None)
             count=removal_counts(im,pred,gold);counts+=count;native_out[f'image_{i}']=np.rint(pred*255).astype(np.uint8)
             edits.append((count[1]+count[2])/max(1,count[0]+count[2]))   # pixels to fix (missed + writing erased) over the strike's
             blocks.append(edit_counts(im,gold,pred)['blocks'])            # blocks to fix: about one stroke of the eraser or brush each
@@ -187,6 +215,7 @@ def main(argv=None):
     p.add_argument('--min-steps',type=int,default=0)
     p.add_argument('--patience',type=int,default=0)
     p.add_argument('--ema',action='store_true')
+    p.add_argument('--augment',action='store_true',help='each weighted training tile scaled 0.8-1.25, turned 5 degrees either way, ink gamma 0.8-1.25')
     p.add_argument('--select',choices=['f1','edits','blocks'],default='f1',
                    help="keep a version when the human validation's removal F1 rises, or its pixels (edits) or blocks to fix fall")
     p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
