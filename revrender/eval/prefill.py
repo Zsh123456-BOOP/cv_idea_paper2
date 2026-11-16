@@ -31,6 +31,9 @@ ERASED = .2
 BLOCK = 8
 FREE = .02
 BLOCK_MARGIN = .25
+NEAR = 2                         # pixels: a 3x3 dilation twice
+STRIKE_CUTS = (.23, .35)         # the strike's share of the ink: light, middle, heavy (plan of 2026-11-16, fixed from now on)
+NEAR_CUTS = (.28, .46)           # the writing's share near the strike
 
 
 def blocks(mask):
@@ -39,11 +42,17 @@ def blocks(mask):
 
 
 def edits(image, gold, restored):
-    """The counts of one region: image and restored grey on [0, 1], gold the annotator's erased pixels."""
-    ink = image < INK; removed = ((restored-image) > ERASED) & ink; truth = gold.astype(bool) & ink
+    """The counts of one region: image and restored grey on [0, 1], gold the annotator's erased pixels.  With them the region's
+    difficulty from the image and the annotator alone (plan of 2026-11-16): the strike's share of the ink (``strike_share``), the share
+    of the writing left within ``NEAR`` pixels of the strike (``near_share``), and where the errors lie: strike missed where it presses
+    on writing (within ``NEAR`` pixels of it), writing erased within ``NEAR`` pixels of the strike."""
+    ink = image < INK; removed = ((restored-image) > ERASED) & ink; truth = gold.astype(bool) & ink; writing = ink & ~truth
     missed = truth & ~removed; wrong = removed & ~truth
-    return {'missed': int(missed.sum()), 'writing_erased': int(wrong.sum()), 'strike': int(truth.sum()), 'writing': int((ink & ~truth).sum()),
-            'to_fix': float((missed.sum()+wrong.sum())/max(1, truth.sum())), 'blocks': blocks(missed)+blocks(wrong)}
+    near_strike = ndimage.binary_dilation(truth, np.ones((3, 3)), iterations=NEAR); near_writing = ndimage.binary_dilation(writing, np.ones((3, 3)), iterations=NEAR)
+    return {'missed': int(missed.sum()), 'writing_erased': int(wrong.sum()), 'strike': int(truth.sum()), 'writing': int(writing.sum()),
+            'to_fix': float((missed.sum()+wrong.sum())/max(1, truth.sum())), 'blocks': blocks(missed)+blocks(wrong),
+            'strike_share': float(truth.sum()/max(1, ink.sum())), 'near_share': float((writing & near_strike).sum()/max(1, writing.sum())),
+            'missed_on_writing': int((missed & near_writing).sum()), 'erased_near_strike': int((wrong & near_strike).sum())}
 
 
 def summary_of(regions):
@@ -110,6 +119,62 @@ def switch(args):
     write_json(args.output, {**result, 'inputs': {str(args.scores): digest(args.scores)}}); print(json.dumps(result), flush=True)
 
 
+def tier(value, cuts):
+    return 'light' if value <= cuts[0] else 'heavy' if value > cuts[1] else 'middle'
+
+
+def by_tier(regions, key):
+    """The regions' blocks by tier: count, blocks per region, blocks per 1,000 strike pixels; and the tiers' mean, each tier one weight."""
+    out = {}
+    for name in ('light', 'middle', 'heavy'):
+        chosen = [r for r in regions if key(r) == name]
+        out[name] = {'regions': len(chosen), 'blocks': float(np.mean([r['blocks'] for r in chosen])) if chosen else None,
+                     'blocks_per_1000_strike': 1000*sum(r['blocks'] for r in chosen)/max(1, sum(r['strike'] for r in chosen)) if chosen else None}
+    present = [v['blocks'] for v in out.values() if v['blocks'] is not None]
+    return {**out, 'tiers_mean': float(np.mean(present)) if present else None}
+
+
+def tiers(args):
+    """Step 1 of the plan of 2026-11-16 (tables only): each model's blocks on a set by the strike's share of the ink, the writing's share
+    near the strike and the strike's amount (thirds of the set), the tiers' mean; where its errors lie; on ``--train-set`` the same, to
+    tell a model too small from data too few; ``--readings`` (eval.transcription --readings): each arm's AR and exact by the same tiers."""
+    from .transcription import counts, rates
+    require(not args.output.exists(), 'output exists')
+    scores = json.loads(args.scores.read_text()); first = scores[next(iter(scores))]['sets'][args.set]['regions']
+    cuts = [float(v) for v in np.percentile([r['strike'] for r in first], [100/3, 200/3])]
+    keys = {'strike_share': lambda r: tier(r['strike_share'], STRIKE_CUTS), 'near_share': lambda r: tier(r['near_share'], NEAR_CUTS),
+            'strike_amount': lambda r: tier(r['strike'], cuts)}
+    def where(regions):
+        total = lambda k: sum(r[k] for r in regions)
+        return {'missed_share': total('missed')/max(1, total('strike')), 'writing_erased_share': total('writing_erased')/max(1, total('writing')),
+                'errors_missed': total('missed')/max(1, total('missed')+total('writing_erased')),
+                'missed_on_writing': total('missed_on_writing')/max(1, total('missed')), 'erased_near_strike': total('erased_near_strike')/max(1, total('writing_erased'))}
+    result = {'set': args.set, 'cuts': {'strike_share': STRIKE_CUTS, 'near_share': NEAR_CUTS, 'strike_amount': cuts}, 'models': {}}
+    for name, m in scores.items():
+        regions = m['sets'][args.set]['regions']
+        result['models'][name] = {'summary': summary_of(regions), **{k: by_tier(regions, f) for k, f in keys.items()}, 'where': where(regions)}
+        if args.train_set and args.train_set in m['sets']:
+            t = m['sets'][args.train_set]['regions']; result['models'][name]['train'] = {'summary': summary_of(t), 'where': where(t),
+                                                                                         'strike_share': by_tier(t, keys['strike_share'])}
+    if args.readings:
+        feature = {r['id']: r for r in first}; rows = [json.loads(line) for line in args.readings.read_text().splitlines()]
+        arms = [k for k in rows[0] if k not in ('region', 'line', 'writer', 'fold', 'readable', 'label')]; result['readings'] = {}
+        for arm in arms:
+            out = {}
+            for k, f in keys.items():
+                out[k] = {}
+                for name in ('light', 'middle', 'heavy'):
+                    chosen = [counts(r['label'], r[arm]) for r in rows if r['readable'] and r[arm] is not None and r['region'] in feature and f(feature[r['region']]) == name]
+                    out[k][name] = {'regions': len(chosen), **({m: rates(chosen)[m] for m in ('ar', 'exact')} if chosen else {})}
+                present = [v for v in out[k].values() if v['regions']]
+                out[k]['tiers_mean'] = {m: float(np.mean([v[m] for v in present])) for m in ('ar', 'exact')} if present else None
+            out['regions_with_features'] = sum(r['region'] in feature for r in rows if r['readable'])
+            result['readings'][arm] = out
+    write_json(args.output, {**result, 'inputs': {str(p): digest(p) for p in (args.scores, *([args.readings] if args.readings else []))}})
+    print(json.dumps({n: {'blocks': m['summary']['blocks'], 'heavy': m['strike_share']['heavy']['blocks'], 'tiers_mean': m['strike_share']['tiers_mean']}
+                      for n, m in result['models'].items()}), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     s = sub.add_parser('score')
@@ -119,7 +184,10 @@ def main(argv=None):
     for key in ('scores', 'output'): w.add_argument('--'+key, type=Path, required=True)
     for key in ('set', 'current', 'candidate'): w.add_argument('--'+key, required=True)
     w.add_argument('--measure', choices=('blocks', 'to_fix'), default='blocks')
-    args = p.parse_args(argv); {'score': score, 'switch': switch}[args.command](args)
+    t = sub.add_parser('tiers')
+    for key in ('scores', 'output'): t.add_argument('--'+key, type=Path, required=True)
+    t.add_argument('--set', required=True); t.add_argument('--train-set'); t.add_argument('--readings', type=Path)
+    args = p.parse_args(argv); {'score': score, 'switch': switch, 'tiers': tiers}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -55,3 +55,19 @@ def test_a_dataset_gives_its_confirmed_certain_regions(tmp_path):
     with mock.patch('revrender.pages.page_files', lambda folders, ids: {i: tmp_path/'pages'/f'{i}.png' for i in ids}):
         found = dataset_regions(tmp_path/'r.json', [tmp_path/'pages'])
     assert [r['id'][-1] for _, _, r, _, _ in found] == ['a'] and found[0][2]['ops'] == 3 and found[0][4].sum() == 40
+
+
+def test_tiers_split_the_blocks_by_how_heavy_the_strike_is(tmp_path):
+    from types import SimpleNamespace
+    from revrender.eval.prefill import tiers
+    region = lambda i, share, b: {'id': f'r{i}', 'writer': 'w', 'blocks': b, 'strike': 100*(i+1), 'writing': 100, 'missed': b, 'writing_erased': 0, 'to_fix': .1,
+                                  'strike_share': share, 'near_share': .3, 'missed_on_writing': b, 'erased_near_strike': 0}
+    regions = [region(0, .1, 1), region(1, .1, 1), region(2, .3, 2), region(3, .5, 6)]
+    (tmp_path/'s.json').write_text(json.dumps({'m': {'sets': {'h': {'regions': regions}}}}))
+    (tmp_path/'r.jsonl').write_text(json.dumps({'region': 'r3', 'readable': True, 'label': 'ab', 'a': 'ab'}) + '\n' + json.dumps({'region': 'r0', 'readable': True, 'label': 'ab', 'a': 'xb'}))
+    tiers(SimpleNamespace(scores=tmp_path/'s.json', set='h', train_set=None, readings=tmp_path/'r.jsonl', output=tmp_path/'t.json'))
+    t = json.loads((tmp_path/'t.json').read_text())
+    s = t['models']['m']['strike_share']
+    assert (s['light']['blocks'], s['middle']['blocks'], s['heavy']['blocks']) == (1, 2, 6) and s['tiers_mean'] == 3
+    assert t['readings']['a']['strike_share']['heavy']['exact'] == 1 and t['readings']['a']['strike_share']['light']['exact'] == 0
+    assert t['models']['m']['where']['missed_on_writing'] == 1
