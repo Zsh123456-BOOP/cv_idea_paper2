@@ -107,12 +107,20 @@ mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/$(failure)"' ERR
 
 CARDS_ALL=("${ALL_CARDS[@]}"); cards "${CARDS:-1}"
+roomy() {   # the cards of ours with room (22,000 MiB free) and no job of ours, the most room first; card 3 only while nobody else is on it
+    local c free
+    for c in "${ALL_CARDS[@]}"; do free=$(nvidia-smi -i "$c" --query-gpu=memory.free --format=csv,noheader,nounits)
+        [ "$(ours_on "$c")" -eq 0 ] && [ "$free" -ge 22000 ] || continue
+        if [ "$c" = "$CARD3" ] && card_users "$c" | grep -qvx "$ME"; then continue; fi; echo "$free $c"; done | sort -rn | awk '{print $2}'
+}
+steady() {   # N: the N roomiest cards, when two looks ten seconds apart agree (another user's jobs come and go, ours take time to leave)
+    local first; first=$(roomy | sed -n "1,$1p"); sleep 10
+    [ "$(grep -c . <<< "$first")" = "$1" ] && [ "$(roomy | sed -n "1,$1p")" = "$first" ] && paste -sd, <<< "$first"
+}
 alone() {   # FUNCTION ARGS...: run FUNCTION CARD NUMA ARGS... in the background on the card of ours with the most room of those with room and no
             # other job of ours (the 8B fills a card); card 3 only while nobody else is on it
-    local card c free best
-    until card=$(best=0; for c in "${ALL_CARDS[@]}"; do free=$(nvidia-smi -i "$c" --query-gpu=memory.free --format=csv,noheader,nounits)
-                     [ "$(ours_on "$c")" -eq 0 ] && [ "$free" -ge 22000 ] && [ "$free" -gt "$best" ] || continue
-                     if [ "$c" = "$CARD3" ] && card_users "$c" | grep -qvx "$ME"; then continue; fi; best=$free; echo "$c"; done | tail -1) && [ -n "$card" ]; do sleep 30; done
+    local card
+    until card=$(steady 1); do sleep 20; done
     ( [ "$card" != "$CARD3" ] || export ALLOW_GPU3=1; "$1" "$card" "$(numa_of "$card")" "${@:2}" ) & PLACED_PIDS+=($!); PLACED_CARDS+=("$card")
 }
 job() {   # CARD NUMA OUT -- COMMAND...: one GPU job
@@ -611,12 +619,9 @@ if not os.path.exists(sys.argv[2]):
     json.dump({'fraction': [r['id'] for r in can if '/' in r['target']], 'single': [r['id'] for r in can if len(r['target']) == 1]}, open(sys.argv[2], 'x'))
 PY
 two_cards() {   # FUNCTION ARGS...: run FUNCTION "CARD,CARD" NUMA ARGS... in the background on the two cards of ours with the most room of those
-                # with room and no job of ours; card 3 only while nobody else is on it
-    local pair c free
-    until pair=$(for c in "${ALL_CARDS[@]}"; do free=$(nvidia-smi -i "$c" --query-gpu=memory.free --format=csv,noheader,nounits)
-                     [ "$(ours_on "$c")" -eq 0 ] && [ "$free" -ge 22000 ] || continue
-                     if [ "$c" = "$CARD3" ] && card_users "$c" | grep -qvx "$ME"; then continue; fi; echo "$free $c"; done | sort -rn | head -2 | awk '{print $2}' | paste -sd,) \
-          && [ "$(tr ',' '\n' <<< "$pair" | grep -c .)" = 2 ]; do sleep 30; done
+                # with room and no job of ours (alone's rule)
+    local pair
+    until pair=$(steady 2); do sleep 20; done
     ( case "$pair" in *"$CARD3"*) export ALLOW_GPU3=1 ;; esac; "$1" "$pair" "$(numa_of "${pair%%,*}")" "${@:2}" ) & PLACED_PIDS+=($! $!); PLACED_CARDS+=("${pair%%,*}" "${pair##*,}")
 }
 untaught() {   # OUT MODEL TP [more of recognize_lines]: the untaught model on the ceiling's images and words, vLLM (which takes the cards by
