@@ -64,6 +64,7 @@ TINY = .5             # a unit less long or high than this many body heights is 
 MATCH = .2            # a host's struck run is as wide as the origin's in body heights to this share
 PEN = (.7, 1.5)       # the carried stroke, as put, is this many times the host's pen wide
 MAX_SCALE = 1.3       # and is never enlarged more than this (a stroke on a small character grows blurred)
+OFF_ROW = .02         # a region's box holds at most this share of its ink off the struck row (another row, writing no line box holds)
 FIGURE = (3., 8.)     # a piece of writing in the box this many body heights long and this many times longer than thick is a drawn line
 ACCEPT = {'under': .15, 'height': .15, 'press': .10, 'press_ratio': (.5, 2.)}
 PRINTED = .02         # a box with more of its ink on the page's printed template is printed
@@ -627,9 +628,9 @@ def put(unit, alpha, host, rng):
     jitter = [rng.uniform(-1, 1)*BOX_JITTER*d for d in (bw, bh, bw, bh)]
     boxes = [[base[0]-margin+jitter[0], base[1]-margin+jitter[1], base[2]+margin+jitter[2], base[3]+margin+jitter[3]],
              [base[0]-margin+jitter[0], base[1]-margin, base[2]+margin+jitter[2], base[3]+margin], [base[0]-margin, base[1], base[2]+margin, base[3]]]
-    for box in boxes:                            # the box as a detector gives it, or less of it across, but no other row's ink in it
+    for box in boxes:                            # the box as a detector gives it, or less of it across, with little other rows' ink in it
         L, T = max(0, int(round(box[0]))), max(0, int(round(box[1]))); R, B = min(grey.shape[1], int(round(box[2]))), min(grey.shape[0], int(round(box[3])))
-        if R-L >= 4 and B-T >= 4 and (others[T:B, L:R]).sum() < SPECK:
+        if R-L >= 4 and B-T >= 4 and others[T:B, L:R].sum() <= OFF_ROW*max(1, row['ink'][T:B, L:R].sum()):
             break
     else:
         return None, 'other_row_in_box'

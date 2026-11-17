@@ -256,14 +256,52 @@ def drawn_unit(rng, n, human):
             'arrays': {'origin': None, 'repaired': alpha, 'before': alpha, 'reference': None, 'ribbons': [], 'segments': []}}
 
 
+def clean_line(page, box, others):
+    """Why a host line's box is not clean, or None: another line's box on the page overlaps it where there is ink, or a piece of ink
+    it holds part of has its centre outside it (a neighbour's stroke reaching in, or its own reaching out)."""
+    l, t, r, b = box; ink = page < INK_BELOW
+    for o in others:
+        x0, y0, x1, y1 = max(l, o[0]), max(t, o[1]), min(r, o[2]), min(b, o[3])
+        if x1 > x0 and y1 > y0 and ink[y0:y1, x0:x1].any():
+            return 'boxes_overlap'
+    h = b-t; L, T, R, B = max(0, l-h), max(0, t-h), min(page.shape[1], r+h), min(page.shape[0], b+h)
+    labels, _ = ndimage.label(ink[T:B, L:R], np.ones((3, 3)))
+    inside = np.zeros(labels.shape, bool); inside[t-T:b-T, l-L:r-L] = True
+    for k in np.unique(labels[inside & (labels > 0)]):
+        ys, xs = np.nonzero(labels == k)
+        if len(ys) >= S.SPECK and not (t <= ys.mean()+T < b and l <= xs.mean()+L < r):
+            return 'piece_across_the_box'
+    return None
+
+
 def host_pool(catalogue, files, excluded, other, templates, page_lines):
-    """``POOL`` host lines (lines without a revision of allowed writers), drawn writer by writer (seed 42), whose writing
-    ``one_stroke.host_row`` finds: the clean page round each (its height above and below, as much to each side), its template, the height
-    of its writing and the boxes of the page's lines with a revision (the catalogue's ``has_edit``) in the window."""
+    """``POOL`` host lines drawn writer by writer (seed 42) from the clean ones: lines a person looked at one by one and found without a
+    revision (the catalogue's ``label_origin`` ``human_individual_review``, ``has_edit`` false), of text or an equation, of allowed
+    writers, whose box is clean (``clean_line``) and whose writing ``one_stroke.host_row`` finds.  Each: the clean page round it (its
+    height above and below, as much to each side), its template, the height of its writing and the boxes of the page's lines with a
+    revision (``has_edit``) in the window.  Also the count of lines and writers left after each condition."""
+    steps = {}
+    def count(name, rows):
+        steps[name] = {'lines': len(rows), 'writers': len({canonical(r['group_uuid'], other) for r in rows})}
     lines = [r for r in catalogue if not r.get('has_edit') and canonical(r['group_uuid'], other) not in excluded
              and r['group_uuid'] not in excluded and r['image_id'] in files]
-    by_writer = {}
+    count('without_revision_allowed_writers', lines)
+    lines = [r for r in lines if r.get('label_origin') == 'human_individual_review']; count('looked_at_by_a_person', lines)
+    lines = [r for r in lines if r.get('ocr_type') in ('text', 'equation')]; count('text_or_equation', lines)
+    clean, why, by_page = [], Counter(), {}
     for r in lines:
+        by_page.setdefault(r['image_id'], []).append(r)
+    for page_id in sorted(by_page):
+        with Image.open(files[page_id]) as im: page = review_clean(np.asarray(im.convert('L')))
+        for r in by_page[page_id]:
+            box = crop_box(r['box_1000'], page.shape[1], page.shape[0])
+            others = [e['px'] for e in page_lines.get(page_id, []) if e is not r and e['px'] != box]
+            reason = clean_line(page, box, others)
+            if reason: why[reason] += 1
+            else: clean.append(r)
+    count('clean_box', clean)
+    by_writer = {}
+    for r in clean:
         by_writer.setdefault(canonical(r['group_uuid'], other), []).append(r)
     rng = random.Random(SEED); writers = sorted(by_writer); rng.shuffle(writers)
     for w in writers:
@@ -281,7 +319,7 @@ def host_pool(catalogue, files, excluded, other, templates, page_lines):
         grey = page[T:B, L:R].copy()
         row = S.host_row(grey, (l-L, t-T, rr-L, b-T))
         if row is None:
-            continue
+            why['no_row_found'] += 1; continue
         keys = [k for c in row['chars'] for k in c[2]]
         template = templates.get(group_key(r['image_id'], (page.shape[1], page.shape[0])))
         edited = [[e['px'][0]-L, e['px'][1]-T, e['px'][2]-L, e['px'][3]-T] for e in page_lines.get(r['image_id'], [])
@@ -290,7 +328,10 @@ def host_pool(catalogue, files, excluded, other, templates, page_lines):
         pool.append({'grey': grey, 'template': None if template is None else template[T:B, L:R].copy(), 'line': (l-L, t-T, rr-L, b-T),
                      'page': r['image_id'], 'writer': canonical(r['group_uuid'], other), 'window': [L, T, R, B],
                      'pen_per_height': row['pen']/height, 'height': height, 'edited': edited})
-    return pool, len(lines), len(by_writer)
+    writers_in_pool = Counter(h['writer'] for h in pool)
+    steps['pool'] = {'lines': len(pool), 'writers': len(writers_in_pool),
+                     'writer_max_share': round(max(writers_in_pool.values())/max(1, len(pool)), 4) if pool else None}
+    return pool, steps, dict(why)
 
 
 def put_unit(unit, pool, rng):
@@ -424,7 +465,7 @@ def materials(args):
     np.savez_compressed(out/'materials.npz', **store)
     write_json(out/'materials.json', [{k: v for k, v in m.items() if k != 'arrays'} for m in human+bank])
     templates = dict(np.load(args.templates))
-    pool, host_lines, host_writers = host_pool(catalogue, files, excluded, other, templates, lines)
+    pool, host_steps, host_left = host_pool(catalogue, files, excluded, other, templates, lines)
     chosen = [m for pool_ in (human, bank, drawn) for m in random.Random(SEED).sample(pool_, min(LOOK, len(pool_)))]
     pack_rows = []; (out/'reader'/'assets').mkdir(parents=True)
     checks = {s: {'fill': [], 'cover': [], 'covered': {}, 'paper': {}, 'put': 0, 'tried': 0, 'why': Counter(), 'tiers': Counter(),
@@ -439,11 +480,12 @@ def materials(args):
             for x in stroke_measures(m):
                 if 'fill' in x: c['fill'].append(x['fill']); c['cover'].append(x['cover'])
         if m['source'] != 'D':
-            covered, paper = put_back(m, m['arrays']['reference'])
+            reference = m['arrays']['regrown'] if m['source'] == 'P' else m['arrays']['reference']   # P: its stroke found again (user 2026-11-17)
+            covered, paper = put_back(m, reference)
             c['covered'].setdefault(m['kind'], []).append(covered); c['paper'].setdefault(m['kind'], []).append(paper)
             if m['source'] == 'P':
-                covered, paper = put_back(m, m['arrays']['regrown'])
-                c['covered'].setdefault('line_regrown', []).append(covered); c['paper'].setdefault('line_regrown', []).append(paper)
+                covered, paper = put_back(m, m['arrays']['reference'])
+                c['covered'].setdefault('line_bank_pixels', []).append(covered); c['paper'].setdefault('line_bank_pixels', []).append(paper)
         m['shown'] = {'kind': m['kind'], 'chars': m['frame']['chars'], **({'style': m['style'], 'like': m['like']} if 'style' in m else {}),
                       'clean': m['clean'], 'origin': {k: (round(v, 2) if v is not None else None) for k, v in m['measures'].items()},
                       **({'here': {k: (round(v, 2) if v is not None else None) for k, v in got['measures'].items()}, 'share': round(got['strike_share'], 2),
@@ -469,7 +511,7 @@ def materials(args):
     produced = {s: {'units': len(pool_), 'writers': len({m['writer'] for m in pool_}), 'kinds': dict(Counter(m['kind'] for m in pool_)),
                     'kind_writers': {k: len({m['writer'] for m in pool_ if m['kind'] == k}) for k in ('line', 'group', 'blob')}} for s, pool_ in (('H', human), ('P', bank))}
     summary = {'checks': result, 'produced': produced, 'left_out': {'H': human_left, 'P': bank_left},
-               'hosts': {'lines': host_lines, 'writers': host_writers, 'pool': len(pool), 'pool_writers': len({h['writer'] for h in pool})},
+               'hosts': {'steps': host_steps, 'left_out': host_left},
                'excluded_writers': len(excluded), 'bars': CHECK}
     write_json(out/'summary.json', summary)
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [args.set/'training_native.npz', args.bank/'bank.npz', args.dataset,
