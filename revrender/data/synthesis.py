@@ -18,6 +18,7 @@ its host).  ``read-check``: check 4's shares.  Everything under OUT is student w
 """
 import argparse
 import base64
+import hashlib
 import html
 import io
 import json
@@ -538,6 +539,104 @@ def read_check(pack, predictions, output):
     write_json(output, out); print(json.dumps(out), flush=True)
 
 
+# ---- the row rule against the annotator's polygons (plan of 2026-11-17, 行内墨迹归属_先考规则) -------------------------------------
+ROW_WRONG = (.80, .10)        # a region is wrong below this IoU, or with more than this share of what the rule took not the row's
+
+
+def row_half(writer):
+    """'debug' or 'exam' by the writer's hash (seed 42)."""
+    return 'debug' if int(hashlib.sha256(f'row-rule:{SEED}:{writer}'.encode()).hexdigest()[:8], 16) % 2 == 0 else 'exam'
+
+
+def adjusted(polygon):
+    """Whether the annotator moved a region's outline: five points or more, or not an upright rectangle."""
+    if len(polygon) != 4:
+        return True
+    xs, ys = sorted({x for x, _ in polygon}), sorted({y for _, y in polygon})
+    return not (len(xs) == 2 and len(ys) == 2)
+
+
+def row_check(args):
+    """The rule that takes a host line's own ink (``one_stroke.host_row``: what synthesis round 4 strikes) against the annotator's
+    polygons: per confirmed region off the test pages, on the window of its line's box (half its height more above and below) across
+    the polygon's columns, the ink the rule takes against the ink inside the polygon (precision, recall, IoU); the line's whole box as
+    the control.  One half of the writers (``row_half``) at a time."""
+    from .page_labels import polygon_mask
+    other = twins(args.same_student)
+    regions = [r for r in json.loads(args.dataset.read_text()) if r.get('split') != 'test' and r.get('pixels_confirmed')]
+    catalogue = read_catalogue(args.catalogue); files = pages.page_files(args.pages)
+    by_page = {}
+    for r in catalogue:
+        by_page.setdefault(r['image_id'], []).append(r)
+    rows, left = [], Counter()
+    for page_id in sorted({r['page'] for r in regions}):
+        mine = [r for r in regions if r['page'] == page_id and row_half(canonical(r['writer'], other)) == args.half]
+        if not mine:
+            continue
+        if page_id not in files: left['no_page'] += len(mine); continue
+        with Image.open(files[page_id]) as im: page = review_clean(np.asarray(im.convert('L')))
+        boxes = [crop_box(x['box_1000'], page.shape[1], page.shape[0]) for x in by_page.get(page_id, [])]
+        ink = page < INK_BELOW
+        for r in mine:
+            poly = np.array(r['region'], float); x0, y0 = poly.min(0); x1, y1 = poly.max(0)
+            over = [max(0, min(b[2], x1)-max(b[0], x0))*max(0, min(b[3], y1)-max(b[1], y0)) for b in boxes]
+            if not over or max(over) <= 0: left['no_line_box'] += 1; continue
+            l, t, rr, b = boxes[int(np.argmax(over))]; h = b-t
+            L, T, R, B = max(0, l-h), max(0, t-h), min(page.shape[1], rr+h), min(page.shape[0], b+h)
+            row = S.host_row(page[T:B, L:R], (l-L, t-T, rr-L, b-T))
+            taken = np.zeros(page.shape, bool)
+            if row is not None:
+                taken[T:B, L:R] = row['own']
+            wy0, wy1 = max(0, int(t-h/2)), min(page.shape[0], int(b+h/2)); wx0, wx1 = int(x0)+2, int(np.ceil(x1))-2
+            if wx1 <= wx0: left['too_narrow'] += 1; continue
+            inside = polygon_mask(r['region'], (page.shape[1], page.shape[0]))[wy0:wy1, wx0:wx1]
+            win = ink[wy0:wy1, wx0:wx1]; answer = win & inside
+            if not answer.any(): left['no_ink_in_polygon'] += 1; continue
+            control = np.zeros(win.shape, bool); control[max(0, t-wy0):b-wy0, :] = True
+            def scores(said):
+                said = said & win; hit = (said & answer).sum(); iou = hit/max(1, (said | answer).sum())
+                extra = (said & ~answer).sum()/max(1, said.sum())
+                return {'precision': float(hit/max(1, said.sum())), 'recall': float(hit/answer.sum()), 'iou': float(iou), 'extra': float(extra),
+                        'wrong': bool(iou < ROW_WRONG[0] or extra > ROW_WRONG[1])}
+            rule = scores(taken[wy0:wy1, wx0:wx1])
+            rows.append({'id': r['id'], 'writer': canonical(r['writer'], other), 'adjusted': adjusted(r['region']), 'rule': rule,
+                         'control': scores(control), 'window': [wx0, wy0, wx1, wy1], 'found_row': row is not None,
+                         '_arrays': (page[wy0:wy1, wx0:wx1], answer, taken[wy0:wy1, wx0:wx1] & win)})
+    def summary(sel, who):
+        if not sel:
+            return {'n': 0}
+        v = {k: np.array([x[who][k] for x in sel]) for k in ('precision', 'recall', 'iou')}
+        wrong = np.array([x[who]['wrong'] for x in sel], float); writers = sorted({x['writer'] for x in sel})
+        idx = {w: [i for i, x in enumerate(sel) if x['writer'] == w] for w in writers}; rng = np.random.default_rng(SEED); boot = []
+        for _ in range(1000):
+            pick = np.concatenate([idx[w] for w in rng.choice(writers, len(writers))]); boot.append(wrong[pick].mean())
+        return {'n': len(sel), 'writers': len(writers), 'wrong': round(float(wrong.mean()), 3),
+                'wrong_95': [round(float(np.percentile(boot, 2.5)), 3), round(float(np.percentile(boot, 97.5)), 3)],
+                **{k: [round(float(np.percentile(a, q)), 3) for q in (25, 50, 75)] for k, a in v.items()}}
+    result = {'half': args.half, 'regions': len(rows), 'writers': len({x['writer'] for x in rows}), 'left_out': dict(left),
+              'bars': {'wrong_at_most': .10, 'iou_median_at_least': .90},
+              **{group: {who: summary(sel, who) for who in ('rule', 'control')}
+                 for group, sel in (('all', rows), ('adjusted', [x for x in rows if x['adjusted']]), ('rectangle', [x for x in rows if not x['adjusted']]))}}
+    out = make_output_dir(args.output_dir)
+    write_json(out/'regions.json', [{k: v for k, v in x.items() if k != '_arrays'} for x in rows])
+    write_json(out/'summary.json', result)
+    wrong = [x for x in rows if x['rule']['wrong']]
+    cells = []
+    for x in wrong:
+        grey, answer, said = x['_arrays']
+        user = overlay(grey, answer.astype(np.float32), colour=(30, 160, 30))
+        rgb = np.stack([grey]*3, -1).copy(); rgb[said & ~answer] = (220, 30, 30); rgb[answer & ~said] = (30, 90, 230)
+        cells.append(f'<tr><td class="id">{html.escape(x["id"])}<br><small>IoU {x["rule"]["iou"]:.2f} 多拿 {x["rule"]["extra"]:.2f} '
+                     f'（整框：IoU {x["control"]["iou"]:.2f}）</small></td>' + ''.join(f'<td><img src="{png64(a, 3)}"></td>' for a in (grey, user, rgb)) + '</tr>')
+    (out/'wrong_page.html').write_text(f"""<!doctype html><html lang="zh"><meta charset="utf-8"><title>行内墨迹归属：分错的区域</title>
+<style>body{{font:14px sans-serif;margin:16px;background:#fff;color:#111}}table{{border-collapse:collapse}}td{{border:1px solid #ddd;padding:4px;vertical-align:middle}}
+td.id{{width:180px;word-break:break-all;font-size:11px}}img{{image-rendering:pixelated;max-width:360px;max-height:260px}}</style>
+<p>{args.half} 半分错的区域 {len(wrong)} / {len(rows)}。每行：窗口原图｜用户的范围（绿）｜规则的回答（红 = 多拿，蓝 = 漏拿，黑 = 拿对）。</p>
+<table>{''.join(cells)}</table>""")
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.dataset, args.catalogue, args.same_student)}, **result)
+    print(json.dumps(result, ensure_ascii=False), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     m = sub.add_parser('materials', description=materials.__doc__)
@@ -547,9 +646,15 @@ def main(argv=None):
     r = sub.add_parser('read-check', description=read_check.__doc__)
     for name in ('pack', 'predictions', 'output'):
         r.add_argument('--'+name, type=Path, required=True)
+    c = sub.add_parser('row-check', description=row_check.__doc__)
+    for name in ('dataset', 'catalogue', 'same-student', 'output-dir'):
+        c.add_argument('--'+name, type=Path, required=True)
+    c.add_argument('--pages', type=Path, action='append', required=True); c.add_argument('--half', choices=('debug', 'exam'), required=True)
     a = p.parse_args(argv)
     if a.command == 'materials':
         materials(a)
+    elif a.command == 'row-check':
+        row_check(a)
     else:
         read_check(a.pack, a.predictions, a.output)
 

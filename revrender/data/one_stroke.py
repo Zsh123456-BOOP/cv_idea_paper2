@@ -54,6 +54,10 @@ DARKER = 30           # or darker than the stroke's own ink by this many grey le
 CLEAN = .3            # a stroke with less of its length clean is left out
 ONE_LINE = .85        # a line holds at least this share of its pixels within its ribbon
 SPECK = 4             # writing pieces smaller than this are dust
+ROW_PIECE = 20        # (pieces of at least this many pixels: a dot is no height)
+ROW_GAP = .6          # a host line's pieces whose centres lie this many typical piece heights apart are in different rows
+ROW_CUT = .5          # the row's own ink: its pieces' pixels within this many body heights above and below its body
+ROW_BAND = .25        # and a row's writing reaches this many body heights above and below its body
 MERGE = .3            # pieces overlapping along the writing across this share of the narrower are one character
 BODY = (10, 90)       # the body of writing: these percentiles of its rows across the writing
 TILT = 15.            # the writing's direction is at most this many degrees off the horizontal
@@ -506,23 +510,40 @@ def units_of(grey, strike, level):
 
 # ---- carried to a host ----------------------------------------------------------------------------------------------------------
 def host_row(grey, line_box):
-    """A host line's writing: its pieces, direction and characters (``line_box`` on ``grey``, a window round it); None with too few."""
+    """A host line's writing: its pieces, direction and characters (``line_box`` on ``grey``, a window round it); None with too few.
+    The row is its own ink only: of the pieces mostly inside the box, the centres (across the writing) are split into rows where two
+    in turn lie more than ``ROW_GAP`` of a piece's typical height apart, the row with the most ink is the line's, and the pieces with
+    most of them within its body (and ``ROW_BAND`` of it above and below) are its writing (a catalogue box is often twice a row's
+    height and holds a neighbour's strokes); ``own``, the row's own ink, is their pixels within ``ROW_CUT`` body heights of its body."""
     ink = grey < INK_BELOW
     found, labels = pieces(ink)
     l, t, r, b = line_box
     mine = [k for k, (ys, xs) in found.items() if ((ys >= t) & (ys < b)).mean() >= .5 and ((xs >= l) & (xs < r)).mean() >= .5]
     if len(mine) < 2:
         return None
-    theta = 0.
+    theta = tilt(found, mine)
+    centre = {k: across(*found[k], theta)[1].mean() for k in mine}
+    tall = float(np.median([np.ptp(across(*found[k], theta)[1])+1 for k in mine if len(found[k][0]) >= ROW_PIECE] or
+                           [np.ptp(across(*found[k], theta)[1])+1 for k in mine]))
+    order = sorted(mine, key=centre.get); rows = [[order[0]]]
+    for k in order[1:]:
+        if centre[k]-centre[rows[-1][-1]] > ROW_GAP*tall:
+            rows.append([k])
+        else:
+            rows[-1].append(k)
+    row = max(rows, key=lambda keys: sum(len(found[k][0]) for k in keys))
     for _ in range(2):
-        top, height = body(joined(found, mine), theta)
-        row = [k for k in mine if ((lambda v: ((v >= top-.25*height) & (v <= top+1.25*height)).mean())(across(*found[k], theta)[1])) >= .5]
+        top, height = body(joined(found, row), theta)
+        row = [k for k in mine if ((lambda v: ((v >= top-ROW_BAND*height) & (v <= top+(1+ROW_BAND)*height)).mean())(across(*found[k], theta)[1])) >= .5]
         if len(row) < 2:
             return None
         theta = tilt(found, row)
     chars = characters(found, row, theta)
     pen = pen_width(ink & np.isin(labels, row))
-    return {'found': found, 'labels': labels, 'theta': theta, 'chars': chars, 'pen': pen, 'ink': ink, 'row': row}
+    top, height = body(joined(found, row), theta)
+    gy, gx = np.mgrid[:grey.shape[0], :grey.shape[1]]; v = across(gy, gx, theta)[1]
+    own = ink & np.isin(labels, row) & (v >= top-ROW_CUT*height) & (v <= top+(1+ROW_CUT)*height)
+    return {'found': found, 'labels': labels, 'theta': theta, 'chars': chars, 'pen': pen, 'ink': ink, 'row': row, 'own': own}
 
 
 def target(row, frame, rng):
@@ -617,7 +638,7 @@ def put(unit, alpha, host, rng):
         return None, why
     strike = full >= REMOVE_ALPHA
     labels, mine = row['labels'], np.array(sorted(row['row']))
-    others = np.isin(labels, [k for k in row['found'] if k not in row['row']])  # the writing of other rows
+    others = np.isin(labels, list(row['found'])) & ~row['own']               # the writing of other rows (what the row's own ink is not)
     near = ndimage.binary_dilation(strike, iterations=2)
     if not unit.get('crosses_rows') and (near & others).sum() >= SPECK:
         return None, 'other_row'
