@@ -9,7 +9,8 @@
 #   3 and 5 and the page to look at; and check 4: the units alone on white read by the untaught Qwen3-VL-8B (raw_revision, loops
 #   stopped), the share with a letter, digit or character read against the drawn lines (synthesis read-check).
 # PART=train (stage two, after round 4 passed; planning session 2026-11-17): data.synthesis paste puts H's 364 units up to 12 times
-#   each, P and D at their shares (8,736 regions), cleaned (S) and as cut (S0) by the same maps; the real-only model R (its version
+#   each, P and D at their shares (8,736 regions), cleaned (S) and as cut (S0) by the same maps, the strike's ink the host writing's
+#   plus a real difference; check 6 (the strike-less-writing ink against the real, beside the set pasted before) must pass; R (its version
 #   scored before) on 1,000 of them beside its held-out numbers (reported, not judged); then NAFNet from scratch, seed 42, one at a
 #   time: R+S and R+S0 on R's data and budget, M+S on M's, each sample synthetic with half a chance (baselines.restoration --extra),
 #   the fixed 16 as their logged validation (the final step is the one used).
@@ -50,15 +51,20 @@ if [ "${PART:-materials}" = materials ]; then
 fi
 
 SET2=${N}_prefill_set_r2; FIXED=$O/paper2_fixed_validation20261007; UP=$O/paper2_restoration_sources20261008
-PASTE=${N}_synth_regions; RUN_R=${N}_prefill_model_r2_real; RUN_M=${N}_prefill_model_r2_main; LIB=${N}_prefill_model_main:step_8372
+PASTE=${N}_synth_regions_ink; RUN_R=${N}_prefill_model_r2_real; RUN_M=${N}_prefill_model_r2_main; LIB=${N}_prefill_model_main:step_8372
 final() { echo "$1:step_$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["config"]["steps"])' "$1/run_manifest.json")"; }
 if [ "${PART:-}" = train ]; then
     source "$ROOT/scripts/_restorers.sh"; VAL=$FIXED
-    if ! done_ paste; then
+    if ! done_ paste_ink; then
         "$PY" -m revrender.data.synthesis paste --set $SET2 --bank ${N}_strike_bank_strokes --dataset ${N}_struck_dataset20261116/regions.json \
             --catalogue "$CATALOGUE" --mapping $O/paper2_splits/index_manifest.json --same-student $O/paper2_splits/same_student_pairs.json \
-            --templates ${N}_page_templates/templates.npz --pages $O/paper2_pages_clean_unlabeled3976 --output-dir "$PASTE" > "$R/paste.log" 2>&1
-        mark paste; fi
+            --templates ${N}_page_templates/templates.npz --pages $O/paper2_pages_clean_unlabeled3976 --output-dir "$PASTE" > "$R/paste_ink.log" 2>&1
+        mark paste_ink; fi
+    if ! done_ ink_check; then            # check 6 (plan of 2026-11-17, 墨色对齐): the strike's ink against the writing's, before training
+        "$PY" -m revrender.data.synthesis ink-check --set $SET2 --paste "$PASTE" --before ${N}_synth_regions_unmatched_ink \
+            --pages $O/paper2_pages_clean_unlabeled3976 --output-dir "$R/ink_check" > "$R/ink_check.log" 2>&1
+        mark ink_check; fi
+    "$PY" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["pass"] else 1)' "$R/ink_check/ink_check.json" || { stamp "check 6 failed"; touch "$R/INK_FAILED"; exit 1; }
     if ! done_ synthetic_table; then
         bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$R/synthetic_scores" -- "$PY" -m revrender.eval.prefill score --model "R=$RUN_R" \
             --set "synthetic=$PASTE/scored.json" --upstream "$UP" --output-dir "$R/synthetic_scores" > "$R/synthetic_scores.log" 2>&1

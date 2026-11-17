@@ -53,6 +53,9 @@ WIDE = 1.4            # a section wider than this many times the stroke's median
 DARKER = 30           # or darker than the stroke's own ink by this many grey levels (a crossing)
 CLEAN = .3            # a stroke with less of its length clean is left out
 ONE_LINE = .85        # a line holds at least this share of its pixels within its ribbon
+GAIN = 2.             # a strike's opacity is raised at most this many times to reach its ink
+CORE_ALPHA = .25      # a carried stroke's core is taken from its pixels at least this opaque (about grey 200 in dark ink)
+CORE_LEAST = 30       # a core grey is taken from at least this many ink pixels
 SPECK = 4             # writing pieces smaller than this are dust
 ROW_PIECE = 20        # (pieces of at least this many pixels: a dot is no height)
 ROW_GAP = .6          # a host line's pieces whose centres lie this many typical piece heights apart are in different rows
@@ -228,6 +231,37 @@ def agrees(here, there):
     if abs(here['press']-there['press']) > ACCEPT['press'] and not ACCEPT['press_ratio'][0] <= ratio <= ACCEPT['press_ratio'][1]:
         return False, 'press'
     return True, None
+
+
+def core_grey(grey, where):
+    """The core grey of some ink: the 25th percentile of its pixels darker than ``INK_BELOW`` (its darker quarter, off the stroke's
+    edge); None with fewer than ``CORE_LEAST`` of them."""
+    values = grey[where & (grey < INK_BELOW)]
+    return float(np.percentile(values, 25)) if len(values) >= CORE_LEAST else None
+
+
+def pasted_difference(image, target, alpha):
+    """``ink_difference`` of a pasted region: the strike the pixels it darkened on the host's paper, the writing the host's ink no part
+    of the strike lies on (check 6 of 2026-11-17)."""
+    return ink_difference(image, (target >= 235) & (image < target), (target < INK_BELOW) & (alpha <= 0))
+
+
+def ink_difference(grey, strike, writing):
+    """The strike's core grey less the writing's (positive: the strike lighter), or None (check 6 of the plan of 2026-11-17, and the real
+    differences a pasted strike's ink is drawn from)."""
+    a, b = core_grey(grey, strike), core_grey(grey, writing)
+    return None if a is None or b is None else a-b
+
+
+def real_differences(images, masks):
+    """The strike-less-writing core grey differences of real regions (crops and the annotator's erased pixels): the strike the erased
+    pixels that are ink, the writing the crop's other ink."""
+    out = []
+    for grey, mask in zip(images, masks):
+        d = ink_difference(grey, mask.astype(bool), ~mask.astype(bool))
+        if d is not None:
+            out.append(d)
+    return out
 
 
 # ---- strokes ------------------------------------------------------------------------------------------------------------------
@@ -595,6 +629,40 @@ def warp(alpha, mapping, shape):
     return out
 
 
+def matched_level(clean, alpha, want):
+    """(ink grey, opacity gain) that give a strike drawn with ``alpha`` on ``clean`` (``draw_pair``) the core grey ``want`` where it lies
+    on paper, as ``core_grey`` measures it: its pixels are mostly partly opaque, so drawn in the grey wanted its core would come out
+    lighter.  The grey is found first; when even black is too light, the opacity is raised as well (at most ``GAIN`` times)."""
+    on = (alpha > 0) & (clean >= 235); a = alpha[on].astype(np.float64); c = clean[on].astype(np.float64)
+    def core(level, gain=1.):
+        b = np.minimum(1., a*gain); g = np.minimum(c, c*(1-b)+level*b); g = g[g < INK_BELOW]
+        return float(np.percentile(g, 25)) if len(g) >= CORE_LEAST else None
+    def search(f, lo, hi, darker_up):
+        for _ in range(20):
+            mid = (lo+hi)/2; got = f(mid)
+            if (got is not None and got <= want) == darker_up: hi = mid
+            else: lo = mid
+        return hi if darker_up else lo
+    if core(0.) is None:
+        return 0., 1.
+    if core(0.) <= want:
+        return search(core, 0., float(INK_BELOW-1), False), 1.
+    if core(0., GAIN) is not None and core(0., GAIN) > want:
+        return 0., GAIN
+    return 0., search(lambda g: core(0., g), 1., GAIN, True)
+
+
+def renormed(carried, source):
+    """A carried opacity brought back to the source's: scaled so that its core (the 75th percentile of its pixels at least ``CORE_ALPHA``
+    opaque: the darker quarter ``core_grey`` measures) is as opaque as the source's (resampling a thin stroke spreads and lightens it),
+    at most twice."""
+    a, b = carried[carried >= CORE_ALPHA], source[source >= CORE_ALPHA]
+    if not len(a) or not len(b):
+        return carried
+    ratio = float(np.percentile(b, 75))/max(1e-6, float(np.percentile(a, 75)))
+    return np.clip(carried*min(2., ratio), 0, 1).astype(np.float32) if ratio > 1 else carried
+
+
 def ruled(ink, height, dashes=True):
     """Whether a box holds a printed or ruled line: in a band of three rows, one run of ink across ``RULED`` of its columns and at least
     three body heights, or (dashed) ink across half its columns in ``DASHES`` runs or more; or a column band down all its rows."""
@@ -609,11 +677,14 @@ def ruled(ink, height, dashes=True):
     return bool(ink.shape[0] >= 2*height and ndimage.maximum_filter1d(ink, 3, axis=1).mean(0).max() >= .95)
 
 
-def put(unit, alpha, host, rng, plain=None):
+def put(unit, alpha, host, rng, plain=None, delta=None):
     """``alpha`` (the unit's opacity on its origin image) put on a host (``host_row`` of ``host['grey']`` plus its printed ``template``
     window): a dict as ``paste_strikes`` gives (image, target, alpha, remove, box, strike_share) with the map, the run's frame and the
     measures there; or (None, why).  ``plain``: another opacity of the unit (its strike as cut, not cleaned) put by the same map, in the
-    same box and ink (``plain_image``, ``plain_remove``): the control without cleaning."""
+    same box and ink (``plain_image``, ``plain_remove``): the control without cleaning.  ``delta``: the strike's ink is the core grey of
+    the host's writing in the box (``core_grey``) plus it (a real strike-less-writing difference, plan of 2026-11-17), its ink grey
+    found to give it that core (``matched_level``); without, the
+    host's ink a little varied.  The carried opacity is brought back to its own (``renormed``)."""
     from .paste_strikes import host_level, REMOVE_ALPHA, WRITING_BELOW
     from .restoration_pairs import draw_pair
     row = host['row']; grey = host['grey']
@@ -624,7 +695,7 @@ def put(unit, alpha, host, rng, plain=None):
     mapping = carry(unit['frame'], frame)
     if mapping[3] > MAX_SCALE:
         return None, 'scale'
-    full = warp(alpha, mapping, grey.shape)
+    full = renormed(warp(alpha, mapping, grey.shape), alpha)
     if (full >= INK_ALPHA).sum() < 6:
         return None, 'off_the_page'
     if unit.get('drawn'):                                                     # a drawn unit's pen is known: as drawn, scaled
@@ -676,14 +747,26 @@ def put(unit, alpha, host, rng, plain=None):
             sd = np.sqrt(np.maximum(np.linalg.eigvalsh(np.cov(np.stack([u, v]))), 1e-9))
             if sd[1]/sd[0] >= FIGURE[1]:
                 return None, 'drawn_line'
-    level = host_level(grey[row['ink'] & np.isin(row['labels'], keys)], rng)
+    gain, want = 1., None
+    if delta is None:
+        level = host_level(grey[row['ink'] & np.isin(row['labels'], keys)], rng)
+    else:
+        core = core_grey(clean, full[T:B, L:R] <= 0)        # the writing the strike leaves untouched (as check 6 takes it)
+        if core is None:
+            core = core_grey(grey, row['own'])
+        if core is None:
+            return None, 'no_writing_grey'
+        want = float(np.clip(core+delta, 0, INK_BELOW-1)); level, gain = matched_level(clean, full[T:B, L:R], want)
+        full = np.minimum(1., full*gain).astype(np.float32)
     image, target_ = draw_pair(clean, full[T:B, L:R], level)
     remove = (full[T:B, L:R] >= REMOVE_ALPHA) & (clean >= WRITING_BELOW)
     written = int((clean < INK_BELOW).sum())
     extra = {}
     if plain is not None:
-        cut = warp(plain, mapping, grey.shape)[T:B, L:R]
-        extra = {'plain_image': draw_pair(clean, cut, level)[0], 'plain_remove': (cut >= REMOVE_ALPHA) & (clean >= WRITING_BELOW)}
+        cut = renormed(warp(plain, mapping, grey.shape), plain)[T:B, L:R]; plain_level = level
+        if delta is not None:                        # the same difference, matched on its own opacity
+            plain_level, plain_gain = matched_level(clean, cut, want); cut = np.minimum(1., cut*plain_gain)
+        extra = {'plain_image': draw_pair(clean, cut, plain_level)[0], 'plain_remove': (cut >= REMOVE_ALPHA) & (clean >= WRITING_BELOW), 'plain_alpha': cut}
     return {**extra, 'image': image, 'target': target_, 'alpha': full[T:B, L:R], 'remove': remove, 'box': [L, T, R, B],
             'strike_share': float(remove.sum())/max(1, remove.sum()+written), 'scale': float(mapping[3]), 'stretch': float(mapping[4]),
             'level': level, 'frame': frame, 'measures': here, 'mapping': mapping}, None

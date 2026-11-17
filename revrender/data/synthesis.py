@@ -18,7 +18,6 @@ its host).  ``read-check``: check 4's shares.  Everything under OUT is student w
 """
 import argparse
 import base64
-import hashlib
 import html
 import io
 import json
@@ -336,7 +335,7 @@ def host_pool(catalogue, files, excluded, other, templates, page_lines, size=POO
     return pool, steps, dict(why)
 
 
-def put_unit(unit, pool, rng, full=None, plain=False):
+def put_unit(unit, pool, rng, full=None, plain=False, differences=None):
     """A unit put on up to ``TRIES`` hosts of the pool, drawn among those whose pen is like the unit's for their writing's height (the
     unit's width over its writing's body height, within ``one_stroke.PEN`` of theirs, and their writing at most ``one_stroke.MAX_SCALE``
     times as high: the checks ``one_stroke.put`` makes on the run it strikes) when there are ``TRIES`` such: (result with its host, or None; the reasons of the tries that failed)."""
@@ -349,7 +348,8 @@ def put_unit(unit, pool, rng, full=None, plain=False):
             return None, Counter({'writers_full': 1})
     for _ in range(TRIES):
         host = rng.choice(like); row = S.host_row(host['grey'], host['line'])
-        got, reason = S.put(unit, unit['arrays']['repaired'], {**host, 'row': row}, rng, unit['arrays']['before'] if plain else None)
+        delta = rng.choice(differences) if differences else None
+        got, reason = S.put(unit, unit['arrays']['repaired'], {**host, 'row': row}, rng, unit['arrays']['before'] if plain else None, delta)
         if got is not None:
             return {**got, 'host': host}, why
         why[reason] += 1
@@ -379,10 +379,13 @@ def paste(args):
     the same map, box and ink: its unit cleaned (OUT/S) and as cut (OUT/S0, the control without cleaning; D is drawn, the same in both).
     OUT/S and OUT/S0 hold their tiles as a restorer's data (gold_pixels.npy, targets.npy, records.json; the region's box is the tile's
     content, the host as it is its target); OUT/regions.json every region; OUT/scored.json/.npz ``SCORED`` of them (cleaned) as a native
-    set for eval.prefill."""
+    set for eval.prefill.  A strike's ink: the host writing's core grey in the box plus a strike-less-writing difference drawn from the
+    prefill set's training regions (``one_stroke.real_differences``; plan of 2026-11-17), the same in both."""
     other, excluded, catalogue, files, lines, human, bank, left = setup(args)
     templates = dict(np.load(args.templates))
     pool, host_steps, host_left = host_pool(catalogue, files, excluded, other, templates, lines, size=0)
+    arrays = np.load(args.set/'training_native.npz'); rows = json.loads((args.set/'training_native.json').read_text())
+    differences = S.real_differences([arrays[f'image_{k}'] for k in range(len(rows))], [arrays[f'mask_{k}'] > 0 for k in range(len(rows))])
     total = int(round(len(human)*USES/MIX['H'])); want = {'H': int(round(total*MIX['H'])), 'P': int(round(total*MIX['P']))}
     want['D'] = total-want['H']-want['P']; cap = max(1, int(WRITER_CAP*total))
     by_writer, made, why, kept, tried = Counter(), [], {s: Counter() for s in SOURCES}, Counter(), Counter()
@@ -400,7 +403,7 @@ def paste(args):
                     continue
                 tried[u['id']] += 1; progress = True
                 full = {w for w, n in by_writer.items() if n >= cap}
-                got, failed = put_unit(u, pool, random.Random(f'{SEED}:{u["id"]}:{tried[u["id"]]}'), full, plain=True)
+                got, failed = put_unit(u, pool, random.Random(f'{SEED}:{u["id"]}:{tried[u["id"]]}'), full, plain=True, differences=differences)
                 why[source].update(failed)
                 if got is None:
                     continue
@@ -435,7 +438,9 @@ def paste(args):
     regions = [{'id': r['id'], 'source': r['source'], 'unit': r['unit'], 'kind': r['kind'], 'tier': r['tier'], 'host_writer': r['got']['host']['writer'],
                 'host_page': r['got']['host']['page'], 'box_on_page': [r['got']['box'][0]+r['got']['host']['window'][0], r['got']['box'][1]+r['got']['host']['window'][1],
                 r['got']['box'][2]+r['got']['host']['window'][0], r['got']['box'][3]+r['got']['host']['window'][1]],
-                'strike_share': round(r['got']['strike_share'], 4), 'scale': round(r['got']['scale'], 3), 'stretch': round(r['got']['stretch'], 3)} for r in made]
+                'strike_share': round(r['got']['strike_share'], 4), 'scale': round(r['got']['scale'], 3), 'stretch': round(r['got']['stretch'], 3),
+                'ink_difference': S.pasted_difference(r['got']['image'], r['got']['target'], r['got']['alpha']),
+                'ink_difference_plain': S.pasted_difference(r['got']['plain_image'], r['got']['target'], r['got']['plain_alpha'])} for r in made]
     write_json(out/'regions.json', regions)
     uses = Counter(r['unit'] for r in made if r['source'] != 'D')
     summary = {'total_planned': total, 'wanted': want, 'made': dict(Counter(r['source'] for r in made)),
@@ -446,7 +451,8 @@ def paste(args):
                'uses_per_unit': {s: dict(Counter(n for u, n in uses.items() if u.startswith(s+':'))) for s in ('H', 'P')},
                'host_writers': len(by_writer), 'host_writer_max_share': round(max(by_writer.values())/max(1, len(made)), 4),
                'writer_cap': cap, 'failed_tries': {s: dict(c) for s, c in why.items()}, 'hosts': {'steps': host_steps, 'left_out': host_left},
-               'left_out': left, 'scored': len(chosen)}
+               'left_out': left, 'scored': len(chosen), 'real_differences': {'regions': len(differences),
+               'percentiles_5_25_50_75_95': [round(float(np.percentile(differences, q)), 1) for q in (5, 25, 50, 75, 95)]}}
     write_json(out/'summary.json', summary)
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [args.set/'training_native.npz', args.bank/'bank.npz', args.dataset,
                    args.catalogue, args.mapping, args.same_student, args.templates]}, **summary)
@@ -648,104 +654,6 @@ def read_check(pack, predictions, output):
     write_json(output, out); print(json.dumps(out), flush=True)
 
 
-# ---- the row rule against the annotator's polygons (plan of 2026-11-17, 行内墨迹归属_先考规则) -------------------------------------
-ROW_WRONG = (.80, .10)        # a region is wrong below this IoU, or with more than this share of what the rule took not the row's
-
-
-def row_half(writer):
-    """'debug' or 'exam' by the writer's hash (seed 42)."""
-    return 'debug' if int(hashlib.sha256(f'row-rule:{SEED}:{writer}'.encode()).hexdigest()[:8], 16) % 2 == 0 else 'exam'
-
-
-def adjusted(polygon):
-    """Whether the annotator moved a region's outline: five points or more, or not an upright rectangle."""
-    if len(polygon) != 4:
-        return True
-    xs, ys = sorted({x for x, _ in polygon}), sorted({y for _, y in polygon})
-    return not (len(xs) == 2 and len(ys) == 2)
-
-
-def row_check(args):
-    """The rule that takes a host line's own ink (``one_stroke.host_row``: what synthesis round 4 strikes) against the annotator's
-    polygons: per confirmed region off the test pages, on the window of its line's box (half its height more above and below) across
-    the polygon's columns, the ink the rule takes against the ink inside the polygon (precision, recall, IoU); the line's whole box as
-    the control.  One half of the writers (``row_half``) at a time."""
-    from .page_labels import polygon_mask
-    other = twins(args.same_student)
-    regions = [r for r in json.loads(args.dataset.read_text()) if r.get('split') != 'test' and r.get('pixels_confirmed')]
-    catalogue = read_catalogue(args.catalogue); files = pages.page_files(args.pages)
-    by_page = {}
-    for r in catalogue:
-        by_page.setdefault(r['image_id'], []).append(r)
-    rows, left = [], Counter()
-    for page_id in sorted({r['page'] for r in regions}):
-        mine = [r for r in regions if r['page'] == page_id and row_half(canonical(r['writer'], other)) == args.half]
-        if not mine:
-            continue
-        if page_id not in files: left['no_page'] += len(mine); continue
-        with Image.open(files[page_id]) as im: page = review_clean(np.asarray(im.convert('L')))
-        boxes = [crop_box(x['box_1000'], page.shape[1], page.shape[0]) for x in by_page.get(page_id, [])]
-        ink = page < INK_BELOW
-        for r in mine:
-            poly = np.array(r['region'], float); x0, y0 = poly.min(0); x1, y1 = poly.max(0)
-            over = [max(0, min(b[2], x1)-max(b[0], x0))*max(0, min(b[3], y1)-max(b[1], y0)) for b in boxes]
-            if not over or max(over) <= 0: left['no_line_box'] += 1; continue
-            l, t, rr, b = boxes[int(np.argmax(over))]; h = b-t
-            L, T, R, B = max(0, l-h), max(0, t-h), min(page.shape[1], rr+h), min(page.shape[0], b+h)
-            row = S.host_row(page[T:B, L:R], (l-L, t-T, rr-L, b-T))
-            taken = np.zeros(page.shape, bool)
-            if row is not None:
-                taken[T:B, L:R] = row['own']
-            wy0, wy1 = max(0, int(t-h/2)), min(page.shape[0], int(b+h/2)); wx0, wx1 = int(x0)+2, int(np.ceil(x1))-2
-            if wx1 <= wx0: left['too_narrow'] += 1; continue
-            inside = polygon_mask(r['region'], (page.shape[1], page.shape[0]))[wy0:wy1, wx0:wx1]
-            win = ink[wy0:wy1, wx0:wx1]; answer = win & inside
-            if not answer.any(): left['no_ink_in_polygon'] += 1; continue
-            control = np.zeros(win.shape, bool); control[max(0, t-wy0):b-wy0, :] = True
-            def scores(said):
-                said = said & win; hit = (said & answer).sum(); iou = hit/max(1, (said | answer).sum())
-                extra = (said & ~answer).sum()/max(1, said.sum())
-                return {'precision': float(hit/max(1, said.sum())), 'recall': float(hit/answer.sum()), 'iou': float(iou), 'extra': float(extra),
-                        'wrong': bool(iou < ROW_WRONG[0] or extra > ROW_WRONG[1])}
-            rule = scores(taken[wy0:wy1, wx0:wx1])
-            rows.append({'id': r['id'], 'writer': canonical(r['writer'], other), 'adjusted': adjusted(r['region']), 'rule': rule,
-                         'control': scores(control), 'window': [wx0, wy0, wx1, wy1], 'found_row': row is not None,
-                         '_arrays': (page[wy0:wy1, wx0:wx1], answer, taken[wy0:wy1, wx0:wx1] & win)})
-    def summary(sel, who):
-        if not sel:
-            return {'n': 0}
-        v = {k: np.array([x[who][k] for x in sel]) for k in ('precision', 'recall', 'iou')}
-        wrong = np.array([x[who]['wrong'] for x in sel], float); writers = sorted({x['writer'] for x in sel})
-        idx = {w: [i for i, x in enumerate(sel) if x['writer'] == w] for w in writers}; rng = np.random.default_rng(SEED); boot = []
-        for _ in range(1000):
-            pick = np.concatenate([idx[w] for w in rng.choice(writers, len(writers))]); boot.append(wrong[pick].mean())
-        return {'n': len(sel), 'writers': len(writers), 'wrong': round(float(wrong.mean()), 3),
-                'wrong_95': [round(float(np.percentile(boot, 2.5)), 3), round(float(np.percentile(boot, 97.5)), 3)],
-                **{k: [round(float(np.percentile(a, q)), 3) for q in (25, 50, 75)] for k, a in v.items()}}
-    result = {'half': args.half, 'regions': len(rows), 'writers': len({x['writer'] for x in rows}), 'left_out': dict(left),
-              'bars': {'wrong_at_most': .10, 'iou_median_at_least': .90},
-              **{group: {who: summary(sel, who) for who in ('rule', 'control')}
-                 for group, sel in (('all', rows), ('adjusted', [x for x in rows if x['adjusted']]), ('rectangle', [x for x in rows if not x['adjusted']]))}}
-    out = make_output_dir(args.output_dir)
-    write_json(out/'regions.json', [{k: v for k, v in x.items() if k != '_arrays'} for x in rows])
-    write_json(out/'summary.json', result)
-    wrong = [x for x in rows if x['rule']['wrong']]
-    cells = []
-    for x in wrong:
-        grey, answer, said = x['_arrays']
-        user = overlay(grey, answer.astype(np.float32), colour=(30, 160, 30))
-        rgb = np.stack([grey]*3, -1).copy(); rgb[said & ~answer] = (220, 30, 30); rgb[answer & ~said] = (30, 90, 230)
-        cells.append(f'<tr><td class="id">{html.escape(x["id"])}<br><small>IoU {x["rule"]["iou"]:.2f} 多拿 {x["rule"]["extra"]:.2f} '
-                     f'（整框：IoU {x["control"]["iou"]:.2f}）</small></td>' + ''.join(f'<td><img src="{png64(a, 3)}"></td>' for a in (grey, user, rgb)) + '</tr>')
-    (out/'wrong_page.html').write_text(f"""<!doctype html><html lang="zh"><meta charset="utf-8"><title>行内墨迹归属：分错的区域</title>
-<style>body{{font:14px sans-serif;margin:16px;background:#fff;color:#111}}table{{border-collapse:collapse}}td{{border:1px solid #ddd;padding:4px;vertical-align:middle}}
-td.id{{width:180px;word-break:break-all;font-size:11px}}img{{image-rendering:pixelated;max-width:360px;max-height:260px}}</style>
-<p>{args.half} 半分错的区域 {len(wrong)} / {len(rows)}。每行：窗口原图｜用户的范围（绿）｜规则的回答（红 = 多拿，蓝 = 漏拿，黑 = 拿对）。</p>
-<table>{''.join(cells)}</table>""")
-    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.dataset, args.catalogue, args.same_student)}, **result)
-    print(json.dumps(result, ensure_ascii=False), flush=True)
-
-
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='command', required=True)
     m = sub.add_parser('materials', description=materials.__doc__)
@@ -759,7 +667,11 @@ def main(argv=None):
     for name in ('set', 'bank', 'dataset', 'catalogue', 'mapping', 'same-student', 'templates', 'output-dir'):
         q.add_argument('--'+name, type=Path, required=True)
     q.add_argument('--pages', type=Path, action='append', required=True)
-    c = sub.add_parser('row-check', description=row_check.__doc__)
+    k = sub.add_parser('ink-check', description='check 6: the strike-less-writing ink of a pasted set against the real one (synthesis_checks.ink_check)')
+    for name in ('set', 'paste', 'output-dir'):
+        k.add_argument('--'+name, type=Path, required=True)
+    k.add_argument('--before', type=Path, help='the set pasted before the ink was matched'); k.add_argument('--pages', type=Path, action='append', required=True)
+    c = sub.add_parser('row-check', description="the row rule against the annotator's polygons (synthesis_checks.row_check)")
     for name in ('dataset', 'catalogue', 'same-student', 'output-dir'):
         c.add_argument('--'+name, type=Path, required=True)
     c.add_argument('--pages', type=Path, action='append', required=True); c.add_argument('--half', choices=('debug', 'exam'), required=True)
@@ -768,7 +680,11 @@ def main(argv=None):
         materials(a)
     elif a.command == 'paste':
         paste(a)
+    elif a.command == 'ink-check':
+        from .synthesis_checks import ink_check
+        ink_check(a)
     elif a.command == 'row-check':
+        from .synthesis_checks import row_check
         row_check(a)
     else:
         read_check(a.pack, a.predictions, a.output)
