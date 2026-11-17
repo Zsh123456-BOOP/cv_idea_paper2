@@ -249,7 +249,7 @@ def main(argv=None):
     processor = AutoProcessor.from_pretrained(str(args.model))
     processor.tokenizer.padding_side = 'right'
     if args.pack:
-        collate = Collate(processor, prompt(args.condition, {'boxes': []}))
+        collate = Collate(processor, prompt(args.condition, {'boxes': [], 'problem': ''}))      # each pack sample carries its own words
         shown = image_keys(args.condition), args.condition in MAPPED
         latex = args.answer == 'latex'
         train_set = PackSamples(args.pack, train_rows, *shown, tuple(args.counterfactual), args.condition, latex)
