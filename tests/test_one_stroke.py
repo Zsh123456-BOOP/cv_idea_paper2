@@ -45,15 +45,15 @@ def test_a_line_carried_to_a_host_strikes_its_writing_at_the_same_height_and_ang
     struck, strike = erased(origin, slice(36, 39), 24, 110)              # low on its writing (body 15-45)
     unit = O.units_of(struck, strike, 40)[0][0]
     writing = O.writing_of(struck, strike)
-    frame, _ = O.struck(writing, unit['repaired'] >= .3)
+    frame = O.struck(writing, unit['repaired'] >= .3)[0]
     unit.update(frame=frame, measures=O.measures(unit['repaired'], writing, frame))
-    host_grey = letters((120, 400), range(40, 330, 32), top=40, bottom=100, pen=6, bar=16)   # twice as tall, twice the pen
+    host_grey = letters((120, 400), range(40, 330, 19), top=40, bottom=76, pen=4, bar=10)    # a fifth taller, a thicker pen
     host = {'grey': host_grey, 'template': None, 'row': O.host_row(host_grey, (20, 30, 380, 110))}
     got, why = O.put(unit, unit['repaired'], host, random.Random(42))
     assert got is not None, why
     assert abs(got['measures']['height']-unit['measures']['height']) <= .15 and got['measures']['height'] > .6
     L, T, R, B = got['box']
     assert np.array_equal(got['target'], host_grey[T:B, L:R]) and (got['image'] <= got['target']).all()
-    assert 1.6 < got['scale'] < 2.4 and not (got['remove'] & (got['target'] < 235)).any()
+    assert 1.05 < got['scale'] < 1.3 and not (got['remove'] & (got['target'] < 235)).any()
     ys, xs = np.nonzero(got['alpha'] >= .5)
     assert abs(np.polyfit(xs, ys, 1)[0]) < .05                            # level writing: a level line

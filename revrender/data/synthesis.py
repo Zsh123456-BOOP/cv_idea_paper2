@@ -50,6 +50,10 @@ KIND_OF = {'line': 'line', 'wave': 'line', 'double': 'group', 'cross': 'group', 
 SHARE_CUTS = (.23, .35)       # light, middle, heavy by the strike's share of the ink (eval.prefill's tiers)
 HOLES = .3                    # a blob with more writing in its holes than this share of its pixels is left out (as on 11-16)
 FRAGMENTS = .4                # or with more of its pixels in specks
+PRESSED = .05                 # a unit with less of its pixels on writing at its origin is not a strike on writing (a figure's line)
+TALL = 1.2                    # a bank line's struck writing taller than this many times its line (paper 1's) is not a row of writing
+ROW = 3.                      # a catalogue line more than this many times as high as the region is not its row (the window keeps to the region)
+BIG = .25                     # a region whose box is more than this share of its page is not one revision (a whole answer)
 CHECK = {'fill_median': 1.10, 'fill_p95': 1.30, 'cover_median': .95, 'cover_below_0.8': .10, 'back_covered': .90, 'back_on_paper': .05,
          'read_over_control': .05, 'put': .80}
 
@@ -111,11 +115,16 @@ def placed_unit(unit, grey, writing, base):
     why = S.crowded(writing, found[1], frame) if base['source'] == 'P' else None    # the annotator's mask holds every stroke of H's
     if why:
         return why
+    here = S.measures(unit['repaired'], writing, frame)
+    if here['press'] < PRESSED:
+        return 'not_on_writing'                           # a line of a figure, a mark above the writing
+    if here['height'] is None or not 0 <= here['height'] <= 1:
+        return 'not_across_the_body'
     ys, xs = np.nonzero(unit['repaired'] >= INK_ALPHA); u, v = S.in_frame(ys, xs, frame)
     if max(np.ptp(u), np.ptp(v)) < S.TINY:
         return 'tiny'
     pen = S.pen_width(writing & np.isin(S.pieces(writing)[1], found[1]))
-    return {**base, 'kind': unit['kind'], 'frame': frame, 'writing_pen': pen, 'measures': S.measures(unit['repaired'], writing, frame), 'width': S.pen_width(unit['repaired'] >= INK_ALPHA),
+    return {**base, 'kind': unit['kind'], 'frame': frame, 'writing_pen': pen, 'measures': here, 'crosses_rows': bool(found[2]), 'width': S.pen_width(unit['repaired'] >= INK_ALPHA),
             'strokes': len(unit['segments']), 'clean': round(min([g['clean'] for g in unit['segments']] or [1.]), 3),
             **shape_of(unit, frame), 'arrays': {'origin': grey, 'writing': writing, 'repaired': unit['repaired'], 'before': unit['before'],
                                                  'reference': unit['reference'], 'ribbons': [g['ribbon'] for g in unit['segments']],
@@ -132,11 +141,15 @@ def human_units(set_dir, readable, files, lines, excluded):
         if readable.get(r['id']) is False: left['unreadable'] += 1; continue
         mask = arrays[f'mask_{k}'] > 0
         if mask.sum() < 12: left['too_few_pixels'] += 1; continue
+        l, t, rr, b = r['box']
+        with Image.open(files[r['page']]) as im: size = im.size
+        if (rr-l)*(b-t) > BIG*size[0]*size[1]: left['region_too_big'] += 1; continue
         if r['page'] not in opened:
             opened.clear()
             with Image.open(files[r['page']]) as im: opened[r['page']] = review_clean(np.asarray(im.convert('L')))
         page = opened[r['page']]; l, t, rr, b = r['box']; h = b-t
-        line = line_at(lines, r['page'], r['box']) or r['box']
+        line = line_at(lines, r['page'], r['box'])
+        if line is None or line[3]-line[1] > ROW*h: line = r['box']     # a catalogue "line" round a whole answer is no row
         L, T = max(0, min(l, line[0])-h), max(0, min(t, line[1])-h//2)
         R, B = min(page.shape[1], max(rr, line[2])+h), min(page.shape[0], max(b, line[3])+h//2)
         grey = page[T:B, L:R].copy(); grey[t-T:b-T, l-L:rr-L] = arrays[f'image_{k}']
@@ -193,6 +206,8 @@ def bank_units(bank_dir, files, excluded, other):
                     'regrown': own, 'segments': [g], 'width': g['width'], 'holes': 0.}
             base = {'id': f"P:{p['id']}#{n}", 'source': 'P', 'writer': canonical(p['writer'], other), 'page': p['image_id'], 'window': [L, T, R, B], 'level': int(level)}
             got = placed_unit(unit, grey, writing, base)
+            if not isinstance(got, str) and got['frame']['height'] > TALL*p['line_height']:
+                got = 'not_a_row_of_writing'                  # a figure's or table's line: what it lies on is taller than paper 1's line
             if not isinstance(got, str) and beside(got['frame'], (L, T), [b for i, b in marks[p['image_id']] if i != p['id']]):
                 got = 'another_strike'
             if isinstance(got, str): left[got] += 1
@@ -227,7 +242,7 @@ def drawn_unit(rng, n, human):
     elif style == 'cross':
         line([(u0, v0), (u1, v1)]); line([(u0, v1), (u1, v0)])
     elif style == 'zigzag':
-        k = rng.randint(3, 6); line([(x, (v0, v1)[i % 2]+rng.uniform(-.05, .05)) for i, x in enumerate(np.linspace(u0, u1, k+1))])
+        k = rng.randint(6, 10); line([(x, (v0, v1)[i % 2]+rng.uniform(-.05, .05)) for i, x in enumerate(np.linspace(u0, u1, k+1))])
     alpha = np.asarray(big.resize(size, Image.LANCZOS), np.float32)/255.
     if style == 'scribble':
         w, hh = max(4, int((u1-u0)*h)), max(4, int((v1-v0)*h))
@@ -235,15 +250,16 @@ def drawn_unit(rng, n, human):
         x0, y0 = int(round(anchor[0]+u0*h)), int(round(anchor[1]+v0*h)); alpha[y0:y0+a.shape[0], x0:x0+a.shape[1]] = a[:size[1]-y0, :size[0]-x0]
     frame = {'theta': 0., 'anchor': list(anchor), 'height': float(h), 'span': f['span']/f['height']*h, 'chars': f['chars']}
     there = S.warp(alpha, S.carry(frame, f), like['arrays']['origin'].shape)          # as if drawn at its H unit's place, on its writing
-    return {'id': f'D:{n}', 'source': 'D', 'writer': None, 'style': style, 'kind': kind, 'frame': frame,
+    return {'id': f'D:{n}', 'source': 'D', 'writer': None, 'style': style, 'kind': kind, 'frame': frame, 'crosses_rows': like['crosses_rows'],
             'measures': S.measures(there, like['arrays']['writing'], f),
-            'width': width, 'like': like['id'], 'strokes': 0, 'clean': 1., 'level': 0,
+            'width': width, 'drawn': True, 'like': like['id'], 'strokes': 0, 'clean': 1., 'level': 0,
             'arrays': {'origin': None, 'repaired': alpha, 'before': alpha, 'reference': None, 'ribbons': [], 'segments': []}}
 
 
-def host_pool(catalogue, files, excluded, other, templates):
+def host_pool(catalogue, files, excluded, other, templates, page_lines):
     """``POOL`` host lines (lines without a revision of allowed writers), drawn writer by writer (seed 42), whose writing
-    ``one_stroke.host_row`` finds: the clean page round each (its height above and below, as much to each side) and its template."""
+    ``one_stroke.host_row`` finds: the clean page round each (its height above and below, as much to each side), its template, the height
+    of its writing and the boxes of the page's lines with a revision (the catalogue's ``has_edit``) in the window."""
     lines = [r for r in catalogue if not r.get('has_edit') and canonical(r['group_uuid'], other) not in excluded
              and r['group_uuid'] not in excluded and r['image_id'] in files]
     by_writer = {}
@@ -268,18 +284,21 @@ def host_pool(catalogue, files, excluded, other, templates):
             continue
         keys = [k for c in row['chars'] for k in c[2]]
         template = templates.get(group_key(r['image_id'], (page.shape[1], page.shape[0])))
+        edited = [[e['px'][0]-L, e['px'][1]-T, e['px'][2]-L, e['px'][3]-T] for e in page_lines.get(r['image_id'], [])
+                  if e.get('has_edit') and e['px'][2] > L and e['px'][0] < R and e['px'][3] > T and e['px'][1] < B]
+        height = S.body(S.joined(row['found'], keys), row['theta'])[1]
         pool.append({'grey': grey, 'template': None if template is None else template[T:B, L:R].copy(), 'line': (l-L, t-T, rr-L, b-T),
                      'page': r['image_id'], 'writer': canonical(r['group_uuid'], other), 'window': [L, T, R, B],
-                     'pen_per_height': row['pen']/S.body(S.joined(row['found'], keys), row['theta'])[1]})
+                     'pen_per_height': row['pen']/height, 'height': height, 'edited': edited})
     return pool, len(lines), len(by_writer)
 
 
 def put_unit(unit, pool, rng):
     """A unit put on up to ``TRIES`` hosts of the pool, drawn among those whose pen is like the unit's for their writing's height (the
-    unit's width over its writing's body height, within ``one_stroke.PEN`` of theirs: the check ``one_stroke.put`` makes on the run it
-    strikes) when there are ``TRIES`` such: (result with its host, or None; the reasons of the tries that failed)."""
+    unit's width over its writing's body height, within ``one_stroke.PEN`` of theirs, and their writing at most ``one_stroke.MAX_SCALE``
+    times as high: the checks ``one_stroke.put`` makes on the run it strikes) when there are ``TRIES`` such: (result with its host, or None; the reasons of the tries that failed)."""
     why = Counter(); mine = unit['width']/unit['frame']['height']
-    like = [h for h in pool if S.PEN[0] <= mine/h['pen_per_height'] <= S.PEN[1]]
+    like = [h for h in pool if S.PEN[0] <= mine/h['pen_per_height'] <= S.PEN[1] and h['height'] <= S.MAX_SCALE*unit['frame']['height']]
     like = like if len(like) >= TRIES else pool
     for _ in range(TRIES):
         host = rng.choice(like); row = S.host_row(host['grey'], host['line'])
@@ -333,7 +352,7 @@ def overlay(grey, alpha, colour=(220, 30, 30), box=None):
     return np.asarray(out)
 
 
-def look_page(chosen, path):
+def look_page(chosen, path, key):
     """The page of the human check: per unit its origin, the repaired unit (its ribbons straightened, and put back in red on its
     origin), and put on its host (the region's box in blue), all three times; two boxes to tick (material, placement) kept in the
     browser, counted at the top and exportable."""
@@ -362,7 +381,7 @@ def look_page(chosen, path):
                     + ''.join(f'<td>{c}</td>' for c in cells)
                     + '<td class="tick"><label><input type="checkbox" data-k="material">素材有问题</label><br>'
                       '<label><input type="checkbox" data-k="placement">贴错了</label></td></tr>')
-    page = f"""<!doctype html><html lang="zh"><meta charset="utf-8"><title>合成素材检查第三轮</title>
+    page = f"""<!doctype html><html lang="zh"><meta charset="utf-8"><title>合成素材检查</title>
 <style>body{{font:14px sans-serif;margin:16px;background:#fff;color:#111}}table{{border-collapse:collapse;width:100%;table-layout:fixed}}
 td{{border:1px solid #ddd;padding:4px;vertical-align:middle;overflow:hidden}}td.id{{width:190px;word-break:break-all;font-size:11px}}td.tick{{width:110px}}
 img{{image-rendering:pixelated;max-width:100%;display:block;margin:2px 0}}#top{{position:sticky;top:0;background:#fff;padding:6px 0;border-bottom:1px solid #ccc;z-index:1}}
@@ -374,13 +393,13 @@ h2{{margin-top:28px}}</style>
         part = [r for r, m in zip(rows, chosen) if m['source'] == source]
         page += (f'<h2>来源 {source}（{len(part)} 条）</h2><table><tr><th class="id">素材</th><th>原处</th><th>补好的这一笔</th><th>贴到宿主上</th>'
                  f'<th class="tick">看出</th></tr>{"".join(part)}</table>')
-    page += """<script>const K='synth-materials-check-20261117-r3';let s={};try{s=JSON.parse(localStorage.getItem(K)||'{}')}catch(e){}
+    page += f"<script>const K='synth-materials-check-{key}';"+"""let s={};try{s=JSON.parse(localStorage.getItem(K)||'{}')}catch(e){}
 function count(){const c={};for(const tr of document.querySelectorAll('tr[data-id]')){const src=tr.dataset.id[0];c[src]=c[src]||{n:0,material:0,placement:0};c[src].n++;
 for(const b of tr.querySelectorAll('input'))if(b.checked)c[src][b.dataset.k]++}
 document.getElementById('count').textContent=Object.entries(c).map(([k,v])=>`${k}: 素材有问题 ${v.material}（${(100*v.material/v.n).toFixed(1)}%）、贴错了 ${v.placement}（${(100*v.placement/v.n).toFixed(1)}%）/ ${v.n}`).join('；')}
 for(const tr of document.querySelectorAll('tr[data-id]'))for(const b of tr.querySelectorAll('input')){b.checked=!!(s[tr.dataset.id]||{})[b.dataset.k];
 b.onchange=()=>{(s[tr.dataset.id]=s[tr.dataset.id]||{})[b.dataset.k]=b.checked;try{localStorage.setItem(K,JSON.stringify(s))}catch(e){}count()}}
-document.getElementById('export').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(s,null,1)],{type:'application/json'}));a.download='synth_materials_check_r3.json';a.click()};count()</script>"""
+document.getElementById('export').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(s,null,1)],{type:'application/json'}));a.download='synth_materials_check_'+K.slice(22)+'.json';a.click()};count()</script>"""
     path.write_text(page)
 
 
@@ -405,7 +424,7 @@ def materials(args):
     np.savez_compressed(out/'materials.npz', **store)
     write_json(out/'materials.json', [{k: v for k, v in m.items() if k != 'arrays'} for m in human+bank])
     templates = dict(np.load(args.templates))
-    pool, host_lines, host_writers = host_pool(catalogue, files, excluded, other, templates)
+    pool, host_lines, host_writers = host_pool(catalogue, files, excluded, other, templates, lines)
     chosen = [m for pool_ in (human, bank, drawn) for m in random.Random(SEED).sample(pool_, min(LOOK, len(pool_)))]
     pack_rows = []; (out/'reader'/'assets').mkdir(parents=True)
     checks = {s: {'fill': [], 'cover': [], 'covered': {}, 'paper': {}, 'put': 0, 'tried': 0, 'why': Counter(), 'tiers': Counter(),
@@ -435,7 +454,7 @@ def materials(args):
         Image.fromarray(np.pad(alone, 8, constant_values=255)).convert('RGB').save(out/'reader'/'assets'/name)
         pack_rows.append({'id': m['id'], 'line_id': m['id'], 'source': m['source'], 'kind': m['kind'], 'images': {'raw': f'assets/{name}'}})
     write_json(out/'reader'/'pack.json', {'schema': 'revrender-line-pack', 'seed': SEED, 'rows': pack_rows})
-    look_page(chosen, out/'check_page.html')
+    look_page(chosen, out/'check_page.html', out.name)
     median, p95 = lambda a: np.median(a), lambda a: np.percentile(a, 95)
     result = {}
     for s, c in checks.items():

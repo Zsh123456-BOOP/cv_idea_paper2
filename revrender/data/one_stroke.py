@@ -62,7 +62,9 @@ THIN = 5.             # ... and this many times longer than thick is another str
 SMEAR = .45           # struck writing filling this share of its body's box is a smear
 TINY = .5             # a unit less long or high than this many body heights is left out
 MATCH = .2            # a host's struck run is as wide as the origin's in body heights to this share
-PEN = (.7, 1.5)       # the carried stroke is this many times the host's pen wide
+PEN = (.7, 1.5)       # the carried stroke, as put, is this many times the host's pen wide
+MAX_SCALE = 1.3       # and is never enlarged more than this (a stroke on a small character grows blurred)
+FIGURE = (3., 8.)     # a piece of writing in the box this many body heights long and this many times longer than thick is a drawn line
 ACCEPT = {'under': .15, 'height': .15, 'press': .10, 'press_ratio': (.5, 2.)}
 PRINTED = .02         # a box with more of its ink on the page's printed template is printed
 RULED = .6            # or with a band of three rows inked in one run across this share of its columns (a printed line) ...
@@ -139,7 +141,8 @@ def in_frame(ys, xs, frame):
 
 
 def struck(writing, strike):
-    """The frame of the writing a strike (bool) lies on, and the keys of its pieces; None when it lies on none."""
+    """The frame of the writing a strike (bool) lies on, the keys of its pieces, and the pieces it touches off their row (it reaches
+    another row: a strike that did may do so on a host); None when it lies on none."""
     found, labels = pieces(writing)
     if not found:
         return None
@@ -169,7 +172,7 @@ def struck(writing, strike):
         top, height = body(joined(found, chosen), theta)
         row = [k for k in found if ((lambda v: ((v >= top-.25*height) & (v <= top+1.25*height)).mean())(across(*found[k], theta)[1])) >= .5]
         theta = tilt(found, row)
-    return frame_of(found, sorted(chosen), theta), sorted(chosen)
+    return frame_of(found, sorted(chosen), theta), sorted(chosen), touched-set(row)
 
 
 def crowded(writing, keys, frame):
@@ -518,7 +521,7 @@ def host_row(grey, line_box):
         theta = tilt(found, row)
     chars = characters(found, row, theta)
     pen = pen_width(ink & np.isin(labels, row))
-    return {'found': found, 'labels': labels, 'theta': theta, 'chars': chars, 'pen': pen, 'ink': ink}
+    return {'found': found, 'labels': labels, 'theta': theta, 'chars': chars, 'pen': pen, 'ink': ink, 'row': row}
 
 
 def target(row, frame, rng):
@@ -594,30 +597,56 @@ def put(unit, alpha, host, rng):
         return None, 'no_run_as_wide'
     frame, keys = chosen
     mapping = carry(unit['frame'], frame)
-    if not PEN[0] <= unit['width']*mapping[3]/row['pen'] <= PEN[1]:            # both by ``pen_width``
-        return None, 'pen'
+    if mapping[3] > MAX_SCALE:
+        return None, 'scale'
     full = warp(alpha, mapping, grey.shape)
     if (full >= INK_ALPHA).sum() < 6:
         return None, 'off_the_page'
+    if unit.get('drawn'):                                                     # a drawn unit's pen is known: as drawn, scaled
+        ratio = unit['width']*mapping[3]/row['pen']
+    else:                                                                     # both by ``pen_width``, on the stroke as put
+        ratio = pen_width(full >= INK_ALPHA)/row['pen']
+    if unit['kind'] == 'blob' and unit.get('writing_pen') and not unit.get('drawn'):   # a scribble's strokes run together: as thick as at its origin
+        ratio /= unit['width']/unit['writing_pen']
+    if not PEN[0] <= ratio <= PEN[1]:
+        return None, 'pen'
     here = measures(full, row['ink'], frame)
     ok, why = agrees(here, unit['measures'])
     if not ok:
         return None, why
     strike = full >= REMOVE_ALPHA
-    touched = np.isin(row['labels'], np.unique(row['labels'][ndimage.binary_dilation(strike, iterations=2) & row['ink']])) & row['ink']
+    labels, mine = row['labels'], np.array(sorted(row['row']))
+    others = np.isin(labels, [k for k in row['found'] if k not in row['row']])  # the writing of other rows
+    near = ndimage.binary_dilation(strike, iterations=2)
+    if not unit.get('crosses_rows') and (near & others).sum() >= SPECK:
+        return None, 'other_row'
+    touched = np.isin(labels, np.intersect1d(np.unique(labels[near & row['ink']]), mine)) & row['ink']
     ys, xs = np.nonzero(strike | touched)
-    margin = BOX_MARGIN*frame['height']; box = [xs.min()-margin, ys.min()-margin, xs.max()+1+margin, ys.max()+1+margin]
-    bw, bh = box[2]-box[0], box[3]-box[1]
-    box = [box[0]+rng.uniform(-1, 1)*BOX_JITTER*bw, box[1]+rng.uniform(-1, 1)*BOX_JITTER*bh,
-           box[2]+rng.uniform(-1, 1)*BOX_JITTER*bw, box[3]+rng.uniform(-1, 1)*BOX_JITTER*bh]
-    L, T = max(0, int(round(box[0]))), max(0, int(round(box[1]))); R, B = min(grey.shape[1], int(round(box[2]))), min(grey.shape[0], int(round(box[3])))
-    if R-L < 4 or B-T < 4:
-        return None, 'box'
+    base = [xs.min(), ys.min(), xs.max()+1, ys.max()+1]
+    margin = BOX_MARGIN*frame['height']; bw, bh = base[2]-base[0]+2*margin, base[3]-base[1]+2*margin
+    jitter = [rng.uniform(-1, 1)*BOX_JITTER*d for d in (bw, bh, bw, bh)]
+    boxes = [[base[0]-margin+jitter[0], base[1]-margin+jitter[1], base[2]+margin+jitter[2], base[3]+margin+jitter[3]],
+             [base[0]-margin+jitter[0], base[1]-margin, base[2]+margin+jitter[2], base[3]+margin], [base[0]-margin, base[1], base[2]+margin, base[3]]]
+    for box in boxes:                            # the box as a detector gives it, or less of it across, but no other row's ink in it
+        L, T = max(0, int(round(box[0]))), max(0, int(round(box[1]))); R, B = min(grey.shape[1], int(round(box[2]))), min(grey.shape[0], int(round(box[3])))
+        if R-L >= 4 and B-T >= 4 and (others[T:B, L:R]).sum() < SPECK:
+            break
+    else:
+        return None, 'other_row_in_box'
+    if any(min(R, e[2])-max(L, e[0]) > 0 and min(B, e[3])-max(T, e[1]) > 0 for e in host.get('edited', [])):
+        return None, 'revised_line_near'
     clean = grey[T:B, L:R]; ink = clean < INK_BELOW
     if host.get('template') is not None and (ink & host['template'][T:B, L:R]).sum() > PRINTED*max(1, ink.sum()):
         return None, 'printed'
     if ruled(ink, frame['height']):
         return None, 'ruled'
+    for k in np.unique(labels[T:B, L:R][ink & (labels[T:B, L:R] > 0)]):     # a hand-drawn table or figure line in the box
+        ky, kx = row['found'][k] if k in row['found'] else np.nonzero(labels == k)
+        u, v = across(ky, kx, frame['theta'])
+        if len(ky) > 6 and max(np.ptp(u), np.ptp(v)) >= FIGURE[0]*frame['height']:
+            sd = np.sqrt(np.maximum(np.linalg.eigvalsh(np.cov(np.stack([u, v]))), 1e-9))
+            if sd[1]/sd[0] >= FIGURE[1]:
+                return None, 'drawn_line'
     level = host_level(grey[row['ink'] & np.isin(row['labels'], keys)], rng)
     image, target_ = draw_pair(clean, full[T:B, L:R], level)
     remove = (full[T:B, L:R] >= REMOVE_ALPHA) & (clean >= WRITING_BELOW)
