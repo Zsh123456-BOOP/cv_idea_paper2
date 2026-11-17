@@ -572,7 +572,27 @@ with (C2/'readings_raw.jsonl').open('x', encoding='utf-8') as stream:
 print(json.dumps(out['verdicts'], ensure_ascii=False))
 PY
     mark ceiling2_score; fi
-touch "$C2/COMPLETE"; stamp 'ceiling2 part complete'; exit 0; fi
+touch "$C2/COMPLETE"
+# The user's answers of 2026-11-17 (paper2_answer_review_returned20261117, 7 regions): the pack again with them (line_set merge with both
+# corrections, then struck_pack folds and views, built by hand on CPU), the new ceiling's reading taught once more on it, split as table 6:
+# the old readings against the new answers (every readable region; those whose answer and pixels stayed), then the new readings.
+V2=${N}_revision_folds_human_masked20261117b_views; NEW=${CEILING}new
+if [ -e "$V2/pack.json" ] && ! done_ ceiling2_answers; then
+    MORE=(); [ "$CEILING" != C ] || MORE=(--steps 300)
+    OLDV=$V; V=$V2; done_ "ceiling2_$NEW" || c2_arm "$NEW" "$SEL_ARM" "${ANSWER[@]}" "${MORE[@]}"; V=$OLDV
+    [ -e "$C2/answers_subsets.json" ] || "$PY" - "$V" "$V2" "$C2/answers_subsets.json" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+old, new = ({r['id']: r for r in json.loads((Path(d)/'pack.json').read_text())['rows']} for d in sys.argv[1:3])
+same = lambda r, s: all(hashlib.sha256((Path(sys.argv[1])/r['images'][k]).read_bytes()).digest() == hashlib.sha256((Path(sys.argv[2])/s['images'][k]).read_bytes()).digest() for k in r['images'])
+kept = [k for k, r in new.items() if r['readable'] and old[k]['readable'] and r['target'] == old[k]['target'] and same(old[k], r)]
+json.dump({'unchanged': kept}, open(sys.argv[3], 'x')); print(len(kept), 'readable regions kept their answer and crops')
+PY
+    for only in all unchanged; do [ -e "$C2/scores_answers_$only.json" ] || "$PY" -m revrender.eval.transcription --pack "$V2" \
+        $([ "$only" = all ] || echo --only "$C2/answers_subsets.json:unchanged") --arm "$(arm_of "$CEILING")" --arm "$(arm_of "$NEW")" --reference "$CEILING" \
+        $([ "$only" = unchanged ] || echo --readings "$C2/readings_answers.jsonl") --output "$C2/scores_answers_$only.json" > "$C2/scores_answers_$only.log" 2>&1; done
+    mark ceiling2_answers; touch "$C2/ANSWERS_COMPLETE"; fi
+stamp 'ceiling2 part complete'; exit 0; fi
 
 test "$PART" = evidence; test -e "$R/DISTILLED_COMPLETE"
 HUMAN=$PACK; cards "${CARDS:-1}"
