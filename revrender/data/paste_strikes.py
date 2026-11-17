@@ -393,23 +393,9 @@ def compose(host, donors, rng, kind, style=None, bank=None, gold_share=0., label
             'remove': np.zeros(host.shape[:2], bool), 'style': None, 'labels': labels.copy()}
 
 
-# ---- a strike put on a host's own writing at the host's own size (synthesis plan of 2026-11-16) -------------------------------------
-SCALE_JITTER = (.85, 1.15)  # a material is scaled by the ratio of the two lines' heights times this
-BOX_MARGIN = .1             # a region's box: the strike and the writing it touches, this many host line heights round them ...
-BOX_JITTER = .1             # ... each side then moved by up to this share of the box's size, as a detection box is
+# ---- the ink of a host (``data.one_stroke.put``) ---------------------------------------------------------------------------------
 LEVEL_JITTER = 10           # the host's ink grey varied by up to this much
 HOST_INK = 200              # a host pixel this dark is writing
-PLACE_TRIES = 20
-
-
-SCALE_RANGE = (.5, 2.)      # and never by less or more than this
-
-
-def writing_height(ink):
-    """The height of a piece of writing: its ink rows from the 5th to the 95th percentile of its pixels (a neighbour's stray stroke or a
-    fraction's far part does not stretch it)."""
-    rows = np.nonzero(ink)[0]
-    return float(np.percentile(rows, 95)-np.percentile(rows, 5)+1) if len(rows) else 0.
 
 
 def host_level(grey, rng):
@@ -417,70 +403,3 @@ def host_level(grey, rng):
     values = np.sort(grey[grey < HOST_INK])
     level = float(np.median(values[:max(1, len(values)//3)])) if len(values) else 40.
     return float(np.clip(level+rng.uniform(-LEVEL_JITTER, LEVEL_JITTER), 0, 200))
-
-
-def on_writing(page, line_box, alpha, material, rng):
-    """A material (``alpha``: its opacity, float [h, w]; ``material``: its ``writing_height`` -- the height of the writing it struck --,
-    ``rel_y`` -- the height of its middle on that writing, 0 at its top and 1 at its bottom) put on the writing of a host line
-    (``line_box`` on the grey ``page``), scaled by the ratio of the two writings' heights (``SCALE_JITTER``; a line's box is often much
-    taller than its writing, by a fraction or a neighbour's stroke), its middle on a column of the host's ink with ink under at
-    least half its width, at its own height on that writing, in the host's ink (``draw_pair``'s darkening: deeper where it lies on
-    writing).  Returns a dict: ``image`` and ``target`` (the host as it is) cut at ``box`` -- the strike and the writing it touches with
-    ``BOX_MARGIN`` round them, each side moved by up to ``BOX_JITTER`` --, ``alpha`` (the strike's opacity there), ``remove`` (its pixels
-    at least ``REMOVE_ALPHA`` opaque that are not the host's writing), ``strike_share`` (the removed pixels over them and the writing in
-    the box), ``scale``; None when the host line has no writing wide enough."""
-    from scipy import ndimage
-    from .restoration_pairs import draw_pair
-    l, t, r, b = line_box; height = max(4, b-t)
-    written = writing_height(page[t:b, l:r] < HOST_INK)      # the height of the host's writing (its line box is often taller)
-    if not written:
-        return None
-    scale = float(np.clip(written/max(1, material['writing_height']), *SCALE_RANGE))*rng.uniform(*SCALE_JITTER)
-    image = Image.fromarray(np.rint(alpha*255).astype(np.uint8))
-    if rng.random() < .5:
-        image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-    w, h = max(2, round(image.width*scale)), max(2, round(image.height*scale))
-    a = np.asarray(image.resize((w, h), Image.LANCZOS), np.float32)/255.
-    ink = page[t:b, l:r] < HOST_INK
-    columns = ink.any(0)
-    if columns.sum() < 4 or w >= page.shape[1]:
-        return None
-    for _ in range(PLACE_TRIES):
-        cx = l+int(rng.choice(np.flatnonzero(columns)))
-        x0 = cx-w//2
-        span = columns[max(0, x0-l):max(0, x0-l+w)]
-        if len(span) and span.mean() >= .5:
-            break
-    else:
-        return None
-    rows = np.flatnonzero(ink[:, max(0, x0-l):max(0, x0-l+w)].any(1))
-    top, bottom = t+int(rows[0]), t+int(rows[-1])+1
-    cy = top+material.get('rel_y', .5)*(bottom-top)
-    y0 = int(round(cy-h/2))
-    full = np.zeros(page.shape, np.float32)
-    px0, py0, px1, py1 = max(0, x0), max(0, y0), min(page.shape[1], x0+w), min(page.shape[0], y0+h)
-    if px1 <= px0 or py1 <= py0:
-        return None
-    full[py0:py1, px0:px1] = a[py0-y0:py1-y0, px0-x0:px1-x0]
-    struck = full >= REMOVE_ALPHA
-    near = ndimage.binary_dilation(struck, iterations=2)
-    window = np.zeros(page.shape, bool); window[t:b, :] = True
-    writing = (page < HOST_INK) & window
-    labels, _ = ndimage.label(writing, np.ones((3, 3)))
-    touched = np.isin(labels, np.unique(labels[near & writing])) & writing
-    ys, xs = np.nonzero(struck | touched)
-    margin = BOX_MARGIN*height; box = [xs.min()-margin, ys.min()-margin, xs.max()+1+margin, ys.max()+1+margin]
-    bw, bh = box[2]-box[0], box[3]-box[1]
-    box = [box[0]+rng.uniform(-1, 1)*BOX_JITTER*bw, box[1]+rng.uniform(-1, 1)*BOX_JITTER*bh,
-           box[2]+rng.uniform(-1, 1)*BOX_JITTER*bw, box[3]+rng.uniform(-1, 1)*BOX_JITTER*bh]
-    L, T = max(0, int(round(box[0]))), max(0, int(round(box[1])))
-    R, B = min(page.shape[1], int(round(box[2]))), min(page.shape[0], int(round(box[3])))
-    if R-L < 4 or B-T < 4:
-        return None
-    clean = page[T:B, L:R]
-    level = host_level(page[t:b, l:r], rng)
-    struck_image, target = draw_pair(clean, full[T:B, L:R], level)
-    remove = (full[T:B, L:R] >= REMOVE_ALPHA) & (clean >= WRITING_BELOW)
-    written = int((clean < INK_BELOW).sum())
-    return {'image': struck_image, 'target': target, 'alpha': full[T:B, L:R], 'remove': remove, 'box': [L, T, R, B],
-            'strike_share': float(remove.sum())/max(1, remove.sum()+written), 'scale': float(scale), 'level': level}

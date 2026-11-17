@@ -185,19 +185,3 @@ def test_without_blots_only_struck_lines_are_drawn(tmp_path):
     host[:, np.arange(host.shape[1]) % 6 >= 2] = 255
     drawn = {S.compose(host, [line([40, 30])], random.Random(k), kind, bank=bank, gold_share=.5, blots=False)['style'] for k in range(40) for kind in ('paste', 'over', 'stack')}
     assert not drawn & set(S.BLOT_STYLES)
-
-
-def test_a_strike_on_a_hosts_writing_keeps_the_host_as_the_target_and_removes_only_paper_pixels():
-    import random
-    from revrender.data.paste_strikes import on_writing
-    page = np.full((120, 300), 255, np.uint8)
-    for x in range(40, 260, 7): page[40:80, x:x+4] = 30                     # the host's writing, 40 high
-    alpha = np.zeros((6, 60), np.float32); alpha[2:4] = 1                   # a struck line for writing 40 high
-    put = on_writing(page, (20, 30, 280, 90), alpha, {'writing_height': 40, 'rel_y': .5}, random.Random(42))
-    L, T, R, B = put['box']
-    assert np.array_equal(put['target'], page[T:B, L:R])
-    assert (put['image'] <= put['target']).all() and (put['image'] < put['target']).any()
-    assert not (put['remove'] & (put['target'] < 235)).any() and put['remove'].any()
-    ys = np.nonzero(put['alpha'] >= .5)[0]+T
-    assert 50 <= ys.mean() <= 70                                            # across the middle of the writing
-    assert 0 < put['strike_share'] < 1

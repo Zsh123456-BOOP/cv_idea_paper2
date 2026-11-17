@@ -139,13 +139,3 @@ def test_two_parallel_strikes_are_not_joined():
     strike = grey < 200; strike[:, 50:53] = False
     full, _ = B.completed(grey, strike, 3.)
     assert full[12:15, 50:53].all() and full[24:27, 50:53].all() and not full[16:23, 50:53].any()
-
-
-def test_a_bank_line_loses_the_bump_the_writing_left_on_it():
-    grey = np.full((30, 90), 255, np.uint8); grey[14:17, 5:85] = 40
-    grey[4:26, 44:47] = 20                                   # a letter's stroke left across the line
-    before, after, m = B.trimmed_line(grey, 40)
-    assert not m['broken'] and (after[4:10, 44:47] == 0).all() and (after[14:17, 44:47] == 1).all()
-    assert B.line_measures(after)['fill'] < B.line_measures(before)['fill']
-    dots = np.full((30, 90), 255, np.uint8); dots[14:17, 5:85:12] = 40
-    assert B.trimmed_line(dots, 40)[2]['broken']

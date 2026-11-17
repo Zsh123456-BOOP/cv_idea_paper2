@@ -217,9 +217,6 @@ LINE_SHARE = .1            # a straight part of a human strike holds at least th
 LINES = 6                  # and a strike has at most this many
 STUB = 4.                  # a piece off a line's band that touches it and holds at most this many widths squared is writing the eraser took
 HOLE_REACH = 1.            # a human strike's holes are looked for within this many of its widths
-TRIM = .5                 # a cleaned bank line keeps this many pixels beyond half its local median width from its centre
-WINDOW_WIDTHS = 3.         # the local median width is taken over this many widths along the line on each side
-MIN_COVER = .7             # a bank line with less of its centre covered by ink is broken (dots, pieces) and left out
 
 
 def opacity(grey, level, where=None):
@@ -279,14 +276,14 @@ def along_line(seeds, ink, theta, rho, half, reach):
     return filled
 
 
-def straight_parts(ys, xs, apart, least):
-    """Up to ``LINES`` lines (theta, rho: x cos theta + y sin theta = rho) through at least ``least`` of the points, strongest first (a Hough
+def straight_parts(ys, xs, apart, least, most=LINES):
+    """Up to ``most`` lines (theta, rho: x cos theta + y sin theta = rho) through at least ``least`` of the points, strongest first (a Hough
     transform at a degree and a pixel); a line within ``apart`` pixels and 6 degrees of a stronger one is the same line."""
     angles = np.deg2rad(np.arange(-90, 90)); rho = np.rint(np.outer(xs, np.cos(angles))+np.outer(ys, np.sin(angles))).astype(int)
     low = rho.min(); votes = np.zeros((rho.max()-low+1, len(angles)), int)
     np.add.at(votes, (rho-low, np.broadcast_to(np.arange(len(angles)), rho.shape)), 1)
     found = []
-    while len(found) < LINES:
+    while len(found) < most:
         r, a = np.unravel_index(np.argmax(votes), votes.shape)
         if votes[r, a] < least:
             break
@@ -354,35 +351,3 @@ def human_material(grey, strike):
     width = max(MIN_WIDTH, 2*float(np.median(ndimage.distance_transform_edt(strike)[strike]))) if strike.any() else MIN_WIDTH
     after, cover = completed(grey, strike, width)
     return before, opacity(grey, level, after), level, holes(grey, after, width), cover
-
-
-def trimmed_line(grey, level):
-    """(opacity before, opacity after, measures) of a bank line (``strike``'s piece): after, the bumps the writing it crossed left on it
-    cut off -- at each place along its axis, ink farther from its centre than half the local median width (over ``WINDOW_WIDTHS`` widths
-    each side) and ``TRIM`` is dropped -- and its darker crossings at its own grey (the opacity stops at 1).  ``measures['broken']``: less
-    than ``MIN_COVER`` of its length has ink (dots, pieces): left out."""
-    before = opacity(grey, level, grey < 255)
-    ys, xs = np.nonzero(before >= INK_ALPHA)
-    if len(ys) < 6:
-        return before, before, {'broken': True}
-    t, s, _ = axis_frame(np.stack([ys, xs], 1).astype(float))
-    bins = np.round(t-t.min()).astype(int); length = int(bins.max())+1
-    count = np.bincount(bins, minlength=length).astype(float)
-    centre = np.full(length, np.nan)
-    for b in np.flatnonzero(count):
-        centre[b] = np.median(s[bins == b])
-    have = ~np.isnan(centre)
-    centre = np.interp(np.arange(length), np.flatnonzero(have), centre[have])
-    width = float(np.median(count[count > 0])); half = max(2, int(round(WINDOW_WIDTHS*width)))
-    centre = ndimage.median_filter(centre, size=2*half+1, mode='nearest')
-    local = np.array([np.median(count[max(0, b-half):b+half+1][count[max(0, b-half):b+half+1] > 0]) for b in range(length)])
-    # every pixel of the piece (its faint edge too) is judged by where it lies along and across the line
-    py, px = np.nonzero(grey < 255)
-    mean = np.stack([ys, xs], 1).astype(float).mean(0)
-    _, vectors = np.linalg.eigh(np.cov(np.stack([ys, xs], 1).astype(float).T))
-    pt = (np.stack([py, px], 1)-mean) @ vectors[:, 1]; ps = (np.stack([py, px], 1)-mean) @ vectors[:, 0]
-    pb = np.clip(np.round(pt-t.min()).astype(int), 0, length-1)
-    keep = np.abs(ps-centre[pb]) <= local[pb]/2+TRIM
-    mask = np.zeros(grey.shape, bool); mask[py[keep], px[keep]] = True
-    after = opacity(grey, level, mask)
-    return before, after, {'broken': bool((count > 0).mean() < MIN_COVER), 'cover': round(float((count > 0).mean()), 3)}
