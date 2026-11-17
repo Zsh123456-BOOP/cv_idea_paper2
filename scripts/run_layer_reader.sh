@@ -473,10 +473,10 @@ if [ "$PART" = ceiling2 ]; then cards "${CARDS:-2}"
 C=$O/paper2_ceiling_reader20261116; C2=$O/paper2_ceiling2_reader20261117; HM=${N}_revision_folds_human_masked20261116b
 MERGED=${N}_line_dataset20261116b; V=${N}_revision_folds_human_masked20261117_views; mkdir -p "$C2"
 TABLE=/home/zsh/hme/code_roi725_v1/outputs; QUESTIONS=$TABLE/line_edit_question_answer_authority_20260814_v1/questions_with_answers.jsonl
-GROUPS=$TABLE/line_edit_response_index_20260814_v1/answer_groups.jsonl
+QGROUPS=$TABLE/line_edit_response_index_20260814_v1/answer_groups.jsonl
 if ! done_ ceiling2_pack; then
     [ -e "$V/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack views --pack "$HM" --dataset "$MERGED/regions.json" --pages "$DATA/pages" \
-        --pages "$O/paper2_full_review20261010/images" --hold-out test-page --questions "$QUESTIONS" --answer-groups "$GROUPS" --output-dir "$V" > "$C2/pack.log" 2>&1
+        --pages "$O/paper2_full_review20261010/images" --hold-out test-page --questions "$QUESTIONS" --answer-groups "$QGROUPS" --output-dir "$V" > "$C2/pack.log" 2>&1
     [ -e "$C2/answers.json" ] || "$PY" -m revrender.data.struck_pack answers --pack "$V" --output "$C2/answers.json" >> "$C2/pack.log" 2>&1
     [ -e "$C2/subsets.json" ] || "$PY" - "$V" "$C2/subsets.json" <<'PY'
 import json, sys
