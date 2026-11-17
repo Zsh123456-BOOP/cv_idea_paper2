@@ -179,6 +179,18 @@ def cycle(loader):
         yield from loader
 
 
+def answer_loss(model, batch):
+    """The mean cross-entropy over the answer tokens, as transformers computes it (the logits at each position against the next token,
+    -100 left out), from the logits of the positions from the one before the first answer token on only: the whole sequence's logits over
+    the whole vocabulary do not fit on a card beside three images and a question."""
+    import torch
+    labels = batch['labels']
+    first = int((labels != -100).int().argmax(1).min())                 # the earliest answer token of the batch
+    keep = labels.shape[1]-first+1
+    logits = model(**{k: v for k, v in batch.items() if k != 'labels'}, logits_to_keep=keep).logits
+    return torch.nn.functional.cross_entropy(logits[:, :-1].float().flatten(0, 1), labels[:, labels.shape[1]-keep+1:].flatten(), ignore_index=-100)
+
+
 def evaluate(model, loader, device):
     import torch
     model.eval()
@@ -188,7 +200,7 @@ def evaluate(model, loader, device):
             batch = {k: v.to(device) for k, v in batch.items()}
             batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
             tokens = int((batch['labels'] != -100).sum())
-            total += float(model(**batch).loss)*tokens
+            total += float(answer_loss(model, batch))*tokens
             count += tokens
     model.train()
     return total/max(1, count)
@@ -290,7 +302,7 @@ def main(argv=None):
         for _ in range(args.accumulate):
             batch = {k: v.to('cuda') for k, v in next(iterator).items()}
             batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
-            loss = model(**batch).loss
+            loss = answer_loss(model, batch)
             (loss/args.accumulate).backward()
             total += float(loss)
         torch.nn.utils.clip_grad_norm_(params, 1.)

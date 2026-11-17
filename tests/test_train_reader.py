@@ -70,3 +70,18 @@ def test_only_the_answer_carries_the_loss():
     for b, answer in enumerate(('<transcription>x = 3 + 4</transcription><|im_end|>\n', '<transcription>[空]</transcription><|im_end|>\n')):
         kept = batch['input_ids'][b][batch['labels'][b] != -100]
         assert processor.tokenizer.decode(kept) == answer
+
+
+def test_the_answer_loss_is_the_loss_transformers_computes_over_the_whole_sequence():
+    torch = pytest.importorskip('torch')
+    from transformers.loss.loss_utils import ForCausalLMLoss
+    from revrender.train_reader import answer_loss
+    torch.manual_seed(0)
+    full = torch.randn(2, 9, 11)
+
+    class Model:                       # the logits of the last ``logits_to_keep`` positions, as the model gives them
+        def __call__(self, input_ids, logits_to_keep):
+            return type('Out', (), {'logits': full[:, -logits_to_keep:]})()
+    labels = torch.tensor([[-100]*5+[3, 4, 5, -100], [-100]*4+[1, 2, -100, -100, -100]])      # answers, then right padding
+    expected = ForCausalLMLoss(full, labels, vocab_size=11)
+    assert torch.allclose(answer_loss(Model(), {'input_ids': labels, 'labels': labels}), expected)
