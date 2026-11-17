@@ -36,6 +36,25 @@ def test_a_request_has_one_image_and_the_reading_is_what_is_inside_the_tags():
     assert R.reading_of('<think>reply as <transcription>...</transcription></think><answer><transcription>y=2</transcription></answer>') == 'y=2'
 
 
+def test_several_images_go_in_order_and_vllm_stops_a_loop_where_the_hf_reader_does():
+    content = R.messages([Image.new('RGB', (8, 4), c) for c in ('white', 'black', 'red')], 'x')[1]['content']
+    assert [c['type'] for c in content] == ['image_url']*3+['text'] and len({c['image_url']['url'] for c in content[:3]}) == 3
+    from revrender.models.vlm_tokens import looped
+    def hf(tokens, stop, limit):      # the hf reader's loop: a token at a time, stop at a stop token or at the first loop
+        written = []
+        for t in tokens:
+            written.append(t)
+            if t in stop:
+                break
+            cut = looped(written, limit)
+            if cut:
+                return written[:-cut], True
+        return written, False
+    for tokens in ([1, 2, 3]+[7, 8, 9]*6+[4, 0], [5]*20, [1, 2, 0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3], list(range(30))):
+        assert R.stopped(tokens, {0}, 4) == hf(tokens, {0}, 4)
+    assert R.stopped([1, 2, 3]+[7, 8, 9]*6+[4, 0], {0}, 4) == ([1, 2, 3, 7, 8, 9], True)
+
+
 PACK = [
     {'id': '0', 'line_id': 'a:L1', 'image_id': 'a_3_1', 'kind': 'pair', 'text_before': 'x=3,y=5', 'text_after': 'x=7,y=5', 'ink_kind': 'strike_rewrite'},
     {'id': '1', 'line_id': 'a:L2', 'image_id': 'a_3_1', 'kind': 'pair', 'text_before': 'y=2', 'text_after': '', 'no_rewrite': True, 'ink_kind': 'whole_line'},

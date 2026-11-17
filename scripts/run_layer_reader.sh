@@ -79,6 +79,11 @@
 #  in the words (only if 95% of the regions have one); B2 that and the line as a third image; B12 both, only if B1 and B2 each stand;
 #  C the reading chosen, 300 steps a fold.  The ceiling's readings (U0) are not read again.  The rules, written before the readings, are
 #  the plan's section two; ceiling2_rules.json holds every verdict and the arms' scores, readings_raw.jsonl every reading and its raw output.
+# PART=ceiling3 (the plan of 2026-11-17, work/literature_revision_reader20261113/人工像素上限第三轮_方案与判定规则_2026-11-17.md; cards 1, 2
+#  and 3, the user's word, each job on the one with the most room): on the pack with the user's answers, D1 the ceiling (D0, the second
+#  round's B2 taught again on that pack, not read again) with the question in its words as well; N8 the untaught 8B and N32 the untaught
+#  32B (FP8, two cards) reading the ceiling's three images and words, both with vLLM and the same decoding.  The rules, written before the
+#  readings, are the plan's section three: ceiling3_rules.json holds the verdicts and the arms' scores, readings_raw.jsonl every reading.
 # Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
 # are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
@@ -91,7 +96,7 @@ PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
 SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; ceiling) echo CEILING_FAILED ;; ceiling2) echo CEILING2_FAILED ;; prefill) echo PREFILL_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; ceiling) echo CEILING_FAILED ;; ceiling2) echo CEILING2_FAILED ;; ceiling3) echo CEILING3_FAILED ;; prefill) echo PREFILL_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
 CF=${N}_revision_folds_counterfactual
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
@@ -593,6 +598,88 @@ PY
         $([ "$only" = unchanged ] || echo --readings "$C2/readings_answers.jsonl") --output "$C2/scores_answers_$only.json" > "$C2/scores_answers_$only.log" 2>&1; done
     mark ceiling2_answers; touch "$C2/ANSWERS_COMPLETE"; fi
 stamp 'ceiling2 part complete'; exit 0; fi
+
+if [ "$PART" = ceiling3 ]; then cards "${CARDS:-1 2 3}"
+C2=$O/paper2_ceiling2_reader20261117; C3=$O/paper2_ceiling3_reader20261117; V=${N}_revision_folds_human_masked20261117b_views
+M32=/home/zsh/hme/models/Qwen3-VL-32B-Instruct-FP8; mkdir -p "$C3"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+"$PY" - "$V" "$C3/subsets.json" <<'PY'
+import json, os, sys
+rows = json.load(open(sys.argv[1]+'/pack.json'))['rows']; can = [r for r in rows if r['readable']]
+assert (len(rows), len(can)) == (610, 2*257), (len(rows), len(can))      # the regions and the readable ones of the pack
+if not os.path.exists(sys.argv[2]):
+    json.dump({'fraction': [r['id'] for r in can if '/' in r['target']], 'single': [r['id'] for r in can if len(r['target']) == 1]}, open(sys.argv[2], 'x'))
+PY
+two_cards() {   # FUNCTION ARGS...: run FUNCTION "CARD,CARD" NUMA ARGS... in the background on the two cards of ours with the most room of those
+                # with room and no job of ours; card 3 only while nobody else is on it
+    local pair c free
+    until pair=$(for c in "${ALL_CARDS[@]}"; do free=$(nvidia-smi -i "$c" --query-gpu=memory.free --format=csv,noheader,nounits)
+                     [ "$(ours_on "$c")" -eq 0 ] && [ "$free" -ge 22000 ] || continue
+                     if [ "$c" = "$CARD3" ] && card_users "$c" | grep -qvx "$ME"; then continue; fi; echo "$free $c"; done | sort -rn | head -2 | awk '{print $2}' | paste -sd,) \
+          && [ "$(tr ',' '\n' <<< "$pair" | grep -c .)" = 2 ]; do sleep 30; done
+    ( case "$pair" in *"$CARD3"*) export ALLOW_GPU3=1 ;; esac; "$1" "$pair" "$(numa_of "${pair%%,*}")" "${@:2}" ) & PLACED_PIDS+=($! $!); PLACED_CARDS+=("${pair%%,*}" "${pair##*,}")
+}
+untaught() {   # OUT MODEL TP [more of recognize_lines]: the untaught model on the ceiling's images and words, vLLM, loops stopped
+    local out="$1" model="$2" tp="$3"; shift 3
+    [ -e "$out/complete.json" ] || job "$CARD_" "$NUMA_" "$out" -- "$PY" -m revrender.recognize_lines --pack "$V" --model "$model" --backend vllm \
+        --conditions context_revision --tp "$tp" --gpu-memory .85 --loop-limit 4 "$@" --output-dir "$out"
+}
+c3_fold() {   # FOLD: D1, the fold's reader of the ceiling's recipe with the question in its words, then the fold it never saw
+    local k="$1" reader="${N}_revision_reader_ceiling3_D1_f$1" PACK="$V"
+    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" context_problem "$k" --answer latex)
+    [ -e "$C3/D1_f$k/complete.json" ] || job "$CARD_" "$NUMA_" "$C3/D1_f$k" -- $(read_with "$C3/D1_f$k" context_problem "$reader" --fold "$k" --loop-limit 4)
+}
+if ! done_ ceiling3_smoke; then     # eight regions each: the 8B and the 32B read three images with vLLM
+    alone on_card untaught "$C3/smoke_N8" "$MODEL" 1 --limit 8; wait
+    two_cards on_card untaught "$C3/smoke_N32" "$M32" 2 --limit 8; wait
+    for d in smoke_N8 smoke_N32; do "$PY" -c "import json, sys; m = json.load(open(sys.argv[1]+'/run_manifest.json')); assert m['conditions']['context_revision']['image'] == ['raw', 'erased', 'context'] and m['conditions']['context_revision']['rows'] == 8; texts = [json.loads(l)['text'] for l in open(sys.argv[1]+'/predictions.jsonl')]; assert len(texts) == 8 and len(set(texts)) > 2, texts" "$C3/$d"; done
+    mark ceiling3_smoke; fi
+if ! done_ ceiling3_read; then
+    [ -e "$C3/N32/complete.json" ] || { two_cards on_card untaught "$C3/N32" "$M32" 2; wait; }
+    [ -e "$C3/N8/complete.json" ] || alone on_card untaught "$C3/N8" "$MODEL" 1
+    for k in 0 1 2 3 4; do [ -e "$C3/D1_f$k/complete.json" ] || alone on_card c3_fold "$k"; done; wait
+    for d in N32 N8 D1_f0 D1_f1 D1_f2 D1_f3 D1_f4; do test -e "$C3/$d/complete.json"; done
+    mark ceiling3_read; fi
+five3() { local d="$1" a="$2" k s=; for k in 0 1 2 3 4; do s+="${s:+,}$d/${a}_f$k"; done; echo "$s"; }
+ARMS=(--arm "D0=$(five3 "$C2" B2new)" --arm "D1=$(five3 "$C3" D1)" --arm "N8=$C3/N8" --arm "N32=$C3/N32")
+if ! done_ ceiling3_score; then
+    [ -e "$C3/scores_all.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" "${ARMS[@]}" --reference D0 --readings "$C3/readings.jsonl" \
+        --output "$C3/scores_all.json" > "$C3/scores_all.log" 2>&1
+    [ -e "$C3/scores_untaught.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" --arm "N8=$C3/N8" --arm "N32=$C3/N32" --reference N8 \
+        --output "$C3/scores_untaught.json" > "$C3/scores_untaught.log" 2>&1
+    for only in fraction single; do [ -e "$C3/scores_$only.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" --only "$C3/subsets.json:$only" \
+        "${ARMS[@]}" --reference D0 --output "$C3/scores_$only.json" > "$C3/scores_$only.log" 2>&1; done
+    [ -e "$C3/ceiling3_rules.json" ] || "$PY" - "$C2" "$C3" <<'PY'
+import json, sys
+from pathlib import Path
+C2, C3 = map(Path, sys.argv[1:3]); load = lambda n: json.loads((C3/f'{n}.json').read_text())['arms']
+every, untaught, fraction, single = load('scores_all'), load('scores_untaught'), load('scores_fraction'), load('scores_single')
+against = lambda scores, arm: {m: scores[arm]['against_reference'][m] for m in ('ar', 'exact', 'ned')}
+d1, n32, n32_d0 = against(every, 'D1'), against(untaught, 'N32'), against(every, 'N32')
+low = lambda d: d['exact']['interval'][0]
+v1 = 'stands' if low(d1) > 0 and d1['ar']['difference'] >= -.02 else 'not'
+v2 = 'stronger' if low(n32) > 0 else 'worse' if n32['exact']['interval'][1] < 0 else 'cannot_tell'
+v3 = 'beats_D0' if low(n32_d0) > 0 else 'reported_only'
+ceiling = ('D1 and N32 both beat D0; the plan does not order them' if v1 == 'stands' and v3 == 'beats_D0' else
+           'N32 (untaught)' if v3 == 'beats_D0' else 'D1' if v1 == 'stands' else 'D0')
+out = {'verdicts': {'1_D1_question (D1 - D0)': v1, '2_N32_base (N32 - N8)': v2, '3_N32_against_ceiling (N32 - D0)': v3, 'ceiling': ceiling},
+       'differences': {'D1 - D0': d1, 'N32 - N8': n32, 'N32 - D0': n32_d0, 'N8 - D0': against(every, 'N8')},
+       'arms': {a: {'ar': every[a]['ar'], 'exact': every[a]['exact'], 'cer': every[a]['cer'], 'ned': every[a]['ned'], 'inserted': every[a]['inserted'],
+                    'exact_by_length': every[a]['exact_by_length'], 'left_wrong': every[a]['left_wrong'], 'refusal': every[a]['refusal'],
+                    'fraction_exact': fraction[a]['exact'], 'fraction_regions': fraction[a]['readable'],
+                    'single_exact': single[a]['exact'], 'single_refused': single[a]['left_wrong']['refused'], 'single_regions': single[a]['readable']}
+                for a in ('D0', 'D1', 'N8', 'N32')}}
+(C3/'ceiling3_rules.json').write_text(json.dumps(out, ensure_ascii=False, indent=1))
+folders = {'D0': [C2/f'B2new_f{k}' for k in range(5)], 'D1': [C3/f'D1_f{k}' for k in range(5)], 'N8': [C3/'N8'], 'N32': [C3/'N32']}
+read = {a: {g['id']: g for f in fs for g in map(json.loads, open(f/'predictions.jsonl', encoding='utf-8'))} for a, fs in folders.items()}
+with (C3/'readings_raw.jsonl').open('x', encoding='utf-8') as stream:
+    for row in map(json.loads, open(C3/'readings.jsonl', encoding='utf-8')):
+        stream.write(json.dumps({**row, **{f'{a}_raw': read[a][row['region']]['raw'] for a in read if row['region'] in read[a]},
+                                 **{f'{a}_finish': read[a][row['region']]['finish_reason'] for a in read if row['region'] in read[a]}}, ensure_ascii=False)+'\n')
+print(json.dumps(out['verdicts'], ensure_ascii=False))
+PY
+    mark ceiling3_score; fi
+touch "$C3/COMPLETE"; stamp 'ceiling3 part complete'; exit 0; fi
 
 test "$PART" = evidence; test -e "$R/DISTILLED_COMPLETE"
 HUMAN=$PACK; cards "${CARDS:-1}"

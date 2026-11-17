@@ -1,4 +1,4 @@
-"""Read the lines of a ``data.line_pack`` pack with one VLM under several conditions, one image per request.
+"""Read the lines of a ``data.line_pack`` pack with one VLM under several conditions, the images of a condition in each request.
 
     python -m revrender.recognize_lines --pack PACK --model MODEL_DIR [--conditions NAME ...] [--backend vllm|hf] [--adapter DIR] [--tp N] --output-dir OUT
 
@@ -19,8 +19,9 @@ formulas, □ for what cannot be read, no solving or correcting -- and what a co
   boxed_marked     the same, the strike drawn red and said to be the strike
   from_pack        the words (and the system prompt) each row of the pack carries: ``prompt``, ``system`` (eval.revision_judgment)
 
-Conditions of one revision (a pack of ``data.struck_pack folds``: a row is a struck region; ``--backend hf``): the struck text is asked
-for, or ``[读不出]`` when it cannot be read.
+Conditions of one revision (a pack of ``data.struck_pack folds``: a row is a struck region; the mapped ones ``--backend hf``): the struck
+text is asked for, or ``[读不出]`` when it cannot be read.  With vLLM a condition of several images sends them all, and ``--loop-limit``
+cuts the greedy reading where the hf reader would have stopped it (``stopped``).
 
   raw_revision     the scan
   erased_revision  the crop with the strike erased (said to be erased, perhaps not cleanly)
@@ -148,11 +149,28 @@ def prompt(condition, row):
 
 
 def messages(image, text, system=SYSTEM):
-    buffer = io.BytesIO()
-    image.save(buffer, format='PNG')
-    url = 'data:image/png;base64,'+base64.b64encode(buffer.getvalue()).decode()
+    """A chat request of one image or several (in order, before the words)."""
+    def url(one):
+        buffer = io.BytesIO()
+        one.save(buffer, format='PNG')
+        return 'data:image/png;base64,'+base64.b64encode(buffer.getvalue()).decode()
+    shown = image if isinstance(image, (list, tuple)) else [image]
     return [{'role': 'system', 'content': system},
-            {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': url}}, {'type': 'text', 'text': text}]}]
+            {'role': 'user', 'content': [*({'type': 'image_url', 'image_url': {'url': url(one)}} for one in shown), {'type': 'text', 'text': text}]}]
+
+
+def stopped(tokens, stop, loop_limit):
+    """A greedy decode cut where the hf reader's loop check (``models.vlm_tokens.looped``) stops it: the tokens up to the first point
+    that ends in one block written ``loop_limit`` times, the block kept once, and whether it was cut.  The decode being greedy, the tokens
+    before that point are the ones the hf loop would have written."""
+    from .models.vlm_tokens import looped
+    for n in range(1, len(tokens)+1):
+        if tokens[n-1] in stop:
+            return tokens[:n], False
+        cut = looped(tokens[:n], loop_limit)
+        if cut:
+            return tokens[:n-cut], True
+    return tokens, False
 
 
 def reading_of(raw):
@@ -191,7 +209,7 @@ def main(argv=None):
     p.add_argument('--gpu-memory', type=float, default=.90, help='vllm: share of each card the engine may take (lower it when others hold memory there)')
     p.add_argument('--batch-size', type=int, default=64, help='requests per progress checkpoint (hf: lines per forward pass, keep it small)')
     p.add_argument('--max-new-tokens', type=int, default=256)
-    p.add_argument('--loop-limit', type=int, default=0, help='hf: stop a reading that ends in one block written this many times, keeping the block once (0: never)')
+    p.add_argument('--loop-limit', type=int, default=0, help='stop a reading that ends in one block written this many times, keeping the block once (0: never)')
     p.add_argument('--max-model-len', type=int, default=4096, help='vllm: context length (whole-question images need more)')
     p.add_argument('--cell-threshold', type=float, default=.25, help='token rules: share of a token cell under the band that hides it')
     p.add_argument('--ink-threshold', type=float, default=.05, help='token rules: share of a token cell on masked ink that hides it')
@@ -201,7 +219,7 @@ def main(argv=None):
     p.add_argument('--output-dir', type=Path, required=True)
     args = p.parse_args(argv)
     require(len(set(args.conditions)) == len(args.conditions), 'duplicate condition')
-    require(args.backend == 'hf' or not (TOKEN_RULES | REVISION) & set(args.conditions), 'token and revision conditions need --backend hf')
+    require(args.backend == 'hf' or not (TOKEN_RULES | MAPPED) & set(args.conditions), 'token and mapped conditions need --backend hf')
     require(bool(args.layer_map) == bool(MAPPED & set(args.conditions)) and (not args.layer_map or set(args.conditions) <= MAPPED), 'mapped conditions, and only they, read with --layer-map')
     require(args.backend == 'hf' or not args.adapter, '--adapter needs --backend hf')
     require(args.backend == 'vllm' or 'from_pack' not in args.conditions, 'from_pack needs --backend vllm')
@@ -218,8 +236,9 @@ def main(argv=None):
     else:
         from vllm import LLM, SamplingParams
         model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=args.max_model_len, max_num_seqs=16, gpu_memory_utilization=args.gpu_memory,
-                    limit_mm_per_prompt={'image': 1}, tensor_parallel_size=args.tp, trust_remote_code=args.trust_remote_code, disable_log_stats=True)
+                    limit_mm_per_prompt={'image': max(len(image_keys(c)) for c in args.conditions)}, tensor_parallel_size=args.tp, trust_remote_code=args.trust_remote_code, disable_log_stats=True)
         sampling = SamplingParams(temperature=0, max_tokens=args.max_new_tokens, seed=SEED)
+        tokenizer = model.get_tokenizer(); special = set(tokenizer.all_special_ids)
     write_manifest(out, config=to_jsonable(args), inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'),
                                                            **{str(w): digest(w) for w in sorted(args.model.glob('*.safetensors'))},
                                                            **({str(w): digest(w) for w in sorted(args.adapter.glob('*.safetensors'))} if args.adapter else {}),
@@ -242,9 +261,13 @@ def main(argv=None):
                 results = reader.read(requests, SYSTEM, args.max_new_tokens, maps=[opened(row, 'map') for _, row in batch] if args.layer_map else None,      # of each job's first image
                                       loop_limit=args.loop_limit)
             else:
-                generated = model.chat([messages(shown[0], prompt(c, row), row.get('system', SYSTEM) if c == 'from_pack' else SYSTEM)
+                generated = model.chat([messages(shown, prompt(c, row), row.get('system', SYSTEM) if c == 'from_pack' else SYSTEM)
                                         for (c, row), shown in zip(batch, images)], sampling, use_tqdm=False)
-                results = [{'text': g.outputs[0].text, 'tokens': len(g.outputs[0].token_ids), 'finish': g.outputs[0].finish_reason} for g in generated]
+                results = []
+                for g in generated:
+                    kept, cut = stopped(list(g.outputs[0].token_ids), special, args.loop_limit) if args.loop_limit else (g.outputs[0].token_ids, False)
+                    results.append({'text': tokenizer.decode(kept, skip_special_tokens=True) if cut else g.outputs[0].text, 'tokens': len(kept),
+                                    'finish': 'loop' if cut else g.outputs[0].finish_reason})
             require(len(results) == len(batch), 'missing generation results')
             for (condition, row), result in zip(batch, results):
                 stream.write(json.dumps({'condition': condition, 'id': row['id'], 'line_id': row['line_id'], 'model': name, 'text': reading_of(result['text']), **({'confidence': result['confidence']} if 'confidence' in result else {}),
