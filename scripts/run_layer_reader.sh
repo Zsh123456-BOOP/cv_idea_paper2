@@ -71,8 +71,9 @@
 #  spelling of 876943d, the code table 4 was scored with); the ceiling is the reader taught anew whichever way it moves; it is marked
 #  worse after teaching when, on the regions nothing changed, its AR or exact difference from the old readings lies wholly below 0;
 #  taught beats untaught when the lower end of its exact interval against R0 is above 0; differences under 2 AR are not read.
-# PART=ceiling2 (the plan of 2026-11-17, work/literature_revision_reader20261113/人工像素上限第二轮_方案与判定规则_2026-11-17.md; card 2
-#  only, the user's word): the ceiling's teaching and input changed, the scores not.  The pack of the ceiling again with each region's
+# PART=ceiling2 (the plan of 2026-11-17, work/literature_revision_reader20261113/人工像素上限第二轮_方案与判定规则_2026-11-17.md; each
+#  job on the card of the four with the most room, the user's word): the ceiling's teaching and input changed, the scores not.  The pack
+#  of the ceiling again with each region's
 #  line (struck_pack views) and its question; struck_pack answers: the LaTeX answers come back to the targets.  Then, each a reader per
 #  fold with the ceiling's recipe on the pack, read with loops stopped: A the pair taught its answers in LaTeX; B1 that and the question
 #  in the words (only if 95% of the regions have one); B2 that and the line as a third image; B12 both, only if B1 and B2 each stand;
@@ -101,10 +102,13 @@ mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/$(failure)"' ERR
 
 CARDS_ALL=("${ALL_CARDS[@]}"); cards "${CARDS:-1}"
-alone() {   # FUNCTION ARGS...: run FUNCTION CARD NUMA ARGS... in the background on a card of ours with room and no other job of ours (the 8B fills a card)
-    local card c
-    until card=$(for c in "${ALL_CARDS[@]}"; do [ "$(ours_on "$c")" -eq 0 ] && [ "$(nvidia-smi -i "$c" --query-gpu=memory.free --format=csv,noheader,nounits)" -ge 22000 ] && { echo "$c"; break; }; done; true) && [ -n "$card" ]; do sleep 30; done
-    ( "$1" "$card" "$(numa_of "$card")" "${@:2}" ) & PLACED_PIDS+=($!); PLACED_CARDS+=("$card")
+alone() {   # FUNCTION ARGS...: run FUNCTION CARD NUMA ARGS... in the background on the card of ours with the most room of those with room and no
+            # other job of ours (the 8B fills a card); card 3 only while nobody else is on it
+    local card c free best
+    until card=$(best=0; for c in "${ALL_CARDS[@]}"; do free=$(nvidia-smi -i "$c" --query-gpu=memory.free --format=csv,noheader,nounits)
+                     [ "$(ours_on "$c")" -eq 0 ] && [ "$free" -ge 22000 ] && [ "$free" -gt "$best" ] || continue
+                     if [ "$c" = "$CARD3" ] && card_users "$c" | grep -qvx "$ME"; then continue; fi; best=$free; echo "$c"; done | tail -1) && [ -n "$card" ]; do sleep 30; done
+    ( [ "$card" != "$CARD3" ] || export ALLOW_GPU3=1; "$1" "$card" "$(numa_of "$card")" "${@:2}" ) & PLACED_PIDS+=($!); PLACED_CARDS+=("$card")
 }
 job() {   # CARD NUMA OUT -- COMMAND...: one GPU job
     local card="$1" numa="$2" out="$3"; shift 4
@@ -469,7 +473,7 @@ if ! done_ ceiling_score; then
     mark ceiling_score; fi
 touch "$C/COMPLETE"; stamp 'ceiling part complete'; exit 0; fi
 
-if [ "$PART" = ceiling2 ]; then cards "${CARDS:-2}"
+if [ "$PART" = ceiling2 ]; then cards "${CARDS:-0 1 2 3}"
 C=$O/paper2_ceiling_reader20261116; C2=$O/paper2_ceiling2_reader20261117; HM=${N}_revision_folds_human_masked20261116b
 MERGED=${N}_line_dataset20261116b; V=${N}_revision_folds_human_masked20261117_views; mkdir -p "$C2"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True      # three images and the question come close to a card that another user shares
