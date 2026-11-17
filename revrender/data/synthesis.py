@@ -39,6 +39,7 @@ from .clean_pages import review_clean
 from .handwriting import group_key
 from .lines import crop_box, read_catalogue
 from .prior_annotations import twins, writer_splits
+from .restoration_pairs import tiles
 from .strike_bank import INK_ALPHA, ink_level, line_measures, opacity
 
 SOURCES = ('H', 'P', 'D')
@@ -275,8 +276,8 @@ def clean_line(page, box, others):
     return None
 
 
-def host_pool(catalogue, files, excluded, other, templates, page_lines):
-    """``POOL`` host lines drawn writer by writer (seed 42) from the clean ones: lines a person looked at one by one and found without a
+def host_pool(catalogue, files, excluded, other, templates, page_lines, size=POOL):
+    """``size`` host lines (all with 0) drawn writer by writer (seed 42) from the clean ones: lines a person looked at one by one and found without a
     revision (the catalogue's ``label_origin`` ``human_individual_review``, ``has_edit`` false), of text or an equation, of allowed
     writers, whose box is clean (``clean_line``) and whose writing ``one_stroke.host_row`` finds.  Each: the clean page round it (its
     height above and below, as much to each side), its template, the height of its writing and the boxes of the page's lines with a
@@ -310,7 +311,7 @@ def host_pool(catalogue, files, excluded, other, templates, page_lines):
     order = [by_writer[w][i] for i in range(max(map(len, by_writer.values()))) for w in writers if i < len(by_writer[w])]
     pool, opened = [], {}
     for r in order:
-        if len(pool) >= POOL:
+        if size and len(pool) >= size:
             break
         if r['image_id'] not in opened:
             if len(opened) > 32: opened.clear()
@@ -335,20 +336,121 @@ def host_pool(catalogue, files, excluded, other, templates, page_lines):
     return pool, steps, dict(why)
 
 
-def put_unit(unit, pool, rng):
+def put_unit(unit, pool, rng, full=None, plain=False):
     """A unit put on up to ``TRIES`` hosts of the pool, drawn among those whose pen is like the unit's for their writing's height (the
     unit's width over its writing's body height, within ``one_stroke.PEN`` of theirs, and their writing at most ``one_stroke.MAX_SCALE``
     times as high: the checks ``one_stroke.put`` makes on the run it strikes) when there are ``TRIES`` such: (result with its host, or None; the reasons of the tries that failed)."""
     why = Counter(); mine = unit['width']/unit['frame']['height']
     like = [h for h in pool if S.PEN[0] <= mine/h['pen_per_height'] <= S.PEN[1] and h['height'] <= S.MAX_SCALE*unit['frame']['height']]
     like = like if len(like) >= TRIES else pool
+    if full is not None:                                     # writers already at their cap are not drawn
+        like = [h for h in like if h['writer'] not in full] or [h for h in pool if h['writer'] not in full]
+        if not like:
+            return None, Counter({'writers_full': 1})
     for _ in range(TRIES):
         host = rng.choice(like); row = S.host_row(host['grey'], host['line'])
-        got, reason = S.put(unit, unit['arrays']['repaired'], {**host, 'row': row}, rng)
+        got, reason = S.put(unit, unit['arrays']['repaired'], {**host, 'row': row}, rng, unit['arrays']['before'] if plain else None)
         if got is not None:
             return {**got, 'host': host}, why
         why[reason] += 1
     return None, why
+
+
+# ---- the synthetic regions for training (plan of 2026-11-16, sections five and six; 2026-11-17 version two) ----------------------
+USES = 12                     # a material is put at most this many times
+MIX = {'H': .5, 'P': .3, 'D': .2}
+TIER_MIX = {'light': .25, 'middle': .35, 'heavy': .40}
+WRITER_CAP = .01              # a host writer holds at most this share of the regions
+ATTEMPTS = 3*USES             # a material is tried at most this many times (each up to TRIES hosts)
+SCORED = 1000                 # synthetic regions (seed 42) in the native set the real-only model is scored on
+
+
+def native_set(chosen, path):
+    """Regions as a native set (``data.prefill_set``'s format: rows, ``image_<k>``, ``mask_<k>`` the pixels to remove) for eval.prefill."""
+    write_json(path.with_suffix('.json'), [{'id': r['id'], 'group_uuid': r['group_uuid']} for r, _, _ in chosen])
+    np.savez_compressed(path.with_suffix('.npz'), **{f'{key}_{k}': a for k, (_, image, mask) in enumerate(chosen)
+                                                       for key, a in (('image', image), ('mask', mask.astype(np.uint8)))})
+
+
+def paste(args):
+    """The synthetic regions: H's units each put up to ``USES`` times, the total that many times H's count over its share (``MIX``), P
+    and D their shares of it (P short: H fills, if it can), each source's regions by ``TIER_MIX`` of the strike's share of the ink as far
+    as the materials allow; hosts from every clean host line (``host_pool``), no writer above ``WRITER_CAP``.  Each region put twice by
+    the same map, box and ink: its unit cleaned (OUT/S) and as cut (OUT/S0, the control without cleaning; D is drawn, the same in both).
+    OUT/S and OUT/S0 hold their tiles as a restorer's data (gold_pixels.npy, targets.npy, records.json; the region's box is the tile's
+    content, the host as it is its target); OUT/regions.json every region; OUT/scored.json/.npz ``SCORED`` of them (cleaned) as a native
+    set for eval.prefill."""
+    other, excluded, catalogue, files, lines, human, bank, left = setup(args)
+    templates = dict(np.load(args.templates))
+    pool, host_steps, host_left = host_pool(catalogue, files, excluded, other, templates, lines, size=0)
+    total = int(round(len(human)*USES/MIX['H'])); want = {'H': int(round(total*MIX['H'])), 'P': int(round(total*MIX['P']))}
+    want['D'] = total-want['H']-want['P']; cap = max(1, int(WRITER_CAP*total))
+    by_writer, made, why, kept, tried = Counter(), [], {s: Counter() for s in SOURCES}, Counter(), Counter()
+    def run(source, units, quota):
+        """Put units of a source until its count (and, when ``quota``, each tier's) is met or no unit is left to try."""
+        order = list(units)
+        random.Random(f'{SEED}:{source}').shuffle(order)
+        have = Counter(t for r in made if r['source'] == source for t in [r['tier']])
+        while sum(have.values()) < want[source]:
+            progress = False
+            for u in order:
+                if sum(have.values()) >= want[source]:
+                    break
+                if kept[u['id']] >= (1 if source == 'D' else USES) or tried[u['id']] >= ATTEMPTS:
+                    continue
+                tried[u['id']] += 1; progress = True
+                full = {w for w, n in by_writer.items() if n >= cap}
+                got, failed = put_unit(u, pool, random.Random(f'{SEED}:{u["id"]}:{tried[u["id"]]}'), full, plain=True)
+                why[source].update(failed)
+                if got is None:
+                    continue
+                t = tier(got['strike_share'])
+                if quota and have[t] >= int(round(want[source]*TIER_MIX[t])):
+                    why[source]['tier_full'] += 1; continue
+                kept[u['id']] += 1; have[t] += 1; by_writer[got['host']['writer']] += 1
+                made.append({'id': f"{source}{len(made):05d}", 'source': source, 'unit': u['id'], 'kind': u['kind'], 'tier': t, 'got': got})
+            if not progress:
+                break
+    rng = random.Random(SEED); drawn = [drawn_unit(rng, n, human) for n in range(3*want['D'])]   # each drawn unit is put once
+    for quota in (True, False):                      # the tiers' shares first, then whatever the materials give
+        run('H', human, quota); run('P', bank, quota); run('D', drawn, quota)
+    short = want['P']-sum(r['source'] == 'P' for r in made)
+    if short > 0:                                    # P short: H fills as far as its uses allow
+        want['H'] += short; run('H', human, False)
+    out = make_output_dir(args.output_dir)
+    for arm, image_key in (('S', 'image'), ('S0', 'plain_image')):
+        data, targets, rows = [], [], []
+        for r in made:
+            g = r['got']
+            for n, (tile, target, _) in enumerate(tiles(g[image_key], None, None, g['target'])):
+                data.append(tile); targets.append(target)
+                rows.append({'id': f"{r['id']}~{n}", 'group_uuid': g['host']['writer'], 'split': 'train', 'source': f"synthetic_{r['source']}",
+                             'clean': bool((tile == target).all())})
+        (out/arm).mkdir()
+        np.save(out/arm/'gold_pixels.npy', np.stack(data)); np.save(out/arm/'targets.npy', np.stack(targets)); write_json(out/arm/'records.json', rows)
+        write_manifest(out/arm, config={'paste': str(out), 'arm': arm}, files={p.name: digest(p) for p in (out/arm).glob('*.npy')},
+                       tiles=len(rows), regions=len(made))
+    chosen = random.Random(SEED).sample(made, min(SCORED, len(made)))
+    native_set([({'id': r['id'], 'group_uuid': r['got']['host']['writer']}, r['got']['image'], r['got']['remove']) for r in chosen], out/'scored')
+    regions = [{'id': r['id'], 'source': r['source'], 'unit': r['unit'], 'kind': r['kind'], 'tier': r['tier'], 'host_writer': r['got']['host']['writer'],
+                'host_page': r['got']['host']['page'], 'box_on_page': [r['got']['box'][0]+r['got']['host']['window'][0], r['got']['box'][1]+r['got']['host']['window'][1],
+                r['got']['box'][2]+r['got']['host']['window'][0], r['got']['box'][3]+r['got']['host']['window'][1]],
+                'strike_share': round(r['got']['strike_share'], 4), 'scale': round(r['got']['scale'], 3), 'stretch': round(r['got']['stretch'], 3)} for r in made]
+    write_json(out/'regions.json', regions)
+    uses = Counter(r['unit'] for r in made if r['source'] != 'D')
+    summary = {'total_planned': total, 'wanted': want, 'made': dict(Counter(r['source'] for r in made)),
+               'tiers': {s: dict(Counter(r['tier'] for r in made if r['source'] == s)) for s in SOURCES},
+               'kinds': {s: dict(Counter(r['kind'] for r in made if r['source'] == s)) for s in SOURCES},
+               'units_used': {s: len({r['unit'] for r in made if r['source'] == s}) for s in SOURCES},
+               'units_available': {'H': len(human), 'P': len(bank), 'D_drawn': len(drawn)},
+               'uses_per_unit': {s: dict(Counter(n for u, n in uses.items() if u.startswith(s+':'))) for s in ('H', 'P')},
+               'host_writers': len(by_writer), 'host_writer_max_share': round(max(by_writer.values())/max(1, len(made)), 4),
+               'writer_cap': cap, 'failed_tries': {s: dict(c) for s, c in why.items()}, 'hosts': {'steps': host_steps, 'left_out': host_left},
+               'left_out': left, 'scored': len(chosen)}
+    write_json(out/'summary.json', summary)
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in [args.set/'training_native.npz', args.bank/'bank.npz', args.dataset,
+                   args.catalogue, args.mapping, args.same_student, args.templates]}, **summary)
+    print(json.dumps(summary, ensure_ascii=False), flush=True)
 
 
 # ---- the checks ------------------------------------------------------------------------------------------------------------------
@@ -445,8 +547,9 @@ document.getElementById('export').onclick=()=>{const a=document.createElement('a
     path.write_text(page)
 
 
-def materials(args):
-    """See the module."""
+def setup(args):
+    """What ``materials`` and ``paste`` share: the writers' twins and exclusions, the catalogue with its lines' boxes on their pages,
+    the page files, and the H and P units with why the rest were left out."""
     other = twins(args.same_student); excluded = excluded_writers(args.set, args.mapping, args.same_student)
     readable = {r['id']: r.get('readable') for r in json.loads(args.dataset.read_text())}
     catalogue = read_catalogue(args.catalogue); files = pages.page_files(args.pages)
@@ -458,6 +561,12 @@ def materials(args):
         for r in rows: r['px'] = crop_box(r['box_1000'], *sizes[page])
     human, human_left = human_units(args.set, readable, files, lines, excluded)
     bank, bank_left = bank_units(args.bank, files, excluded, other)
+    return other, excluded, catalogue, files, lines, human, bank, {'H': human_left, 'P': bank_left}
+
+
+def materials(args):
+    """See the module."""
+    other, excluded, catalogue, files, lines, human, bank, left = setup(args); human_left, bank_left = left['H'], left['P']
     rng = random.Random(SEED); drawn = [drawn_unit(rng, n, human) for n in range(LOOK)]
     out = make_output_dir(args.output_dir)
     store = {}
@@ -646,6 +755,10 @@ def main(argv=None):
     r = sub.add_parser('read-check', description=read_check.__doc__)
     for name in ('pack', 'predictions', 'output'):
         r.add_argument('--'+name, type=Path, required=True)
+    q = sub.add_parser('paste', description=paste.__doc__)
+    for name in ('set', 'bank', 'dataset', 'catalogue', 'mapping', 'same-student', 'templates', 'output-dir'):
+        q.add_argument('--'+name, type=Path, required=True)
+    q.add_argument('--pages', type=Path, action='append', required=True)
     c = sub.add_parser('row-check', description=row_check.__doc__)
     for name in ('dataset', 'catalogue', 'same-student', 'output-dir'):
         c.add_argument('--'+name, type=Path, required=True)
@@ -653,6 +766,8 @@ def main(argv=None):
     a = p.parse_args(argv)
     if a.command == 'materials':
         materials(a)
+    elif a.command == 'paste':
+        paste(a)
     elif a.command == 'row-check':
         row_check(a)
     else:

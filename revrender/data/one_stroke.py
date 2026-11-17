@@ -71,6 +71,8 @@ MAX_SCALE = 1.3       # and is never enlarged more than this (a stroke on a smal
 OFF_ROW = .02         # a region's box holds at most this share of its ink off the struck row (another row, writing no line box holds)
 FIGURE = (3., 8.)     # a piece of writing in the box this many body heights long and this many times longer than thick is a drawn line
 ACCEPT = {'under': .15, 'height': .15, 'press': .10, 'press_ratio': (.5, 2.)}
+PRESSED = .05         # a strike as put lies at least this share of its pixels on writing
+SURROUND = .5         # printed, ruled and drawn lines are looked for this many body heights round the box too
 PRINTED = .02         # a box with more of its ink on the page's printed template is printed
 RULED = .6            # or with a band of three rows inked in one run across this share of its columns (a printed line) ...
 DASHES = 8            # ... or across half of them in this many runs (a dashed one)
@@ -593,7 +595,7 @@ def warp(alpha, mapping, shape):
     return out
 
 
-def ruled(ink, height):
+def ruled(ink, height, dashes=True):
     """Whether a box holds a printed or ruled line: in a band of three rows, one run of ink across ``RULED`` of its columns and at least
     three body heights, or (dashed) ink across half its columns in ``DASHES`` runs or more; or a column band down all its rows."""
     if ink.shape[0] < 3 or ink.shape[1] < 3:
@@ -602,15 +604,16 @@ def ruled(ink, height):
     for row in band:
         edges = np.flatnonzero(np.diff(np.concatenate([[0], row.astype(int), [0]])))
         runs = edges[1::2]-edges[::2]
-        if len(runs) and (runs.max() >= max(RULED*len(row), 3*height) or (row.mean() >= .5 and len(runs) >= DASHES and len(row) >= 4*height)):
+        if len(runs) and (runs.max() >= max(RULED*len(row), 3*height) or (dashes and row.mean() >= .5 and len(runs) >= DASHES and len(row) >= 4*height)):
             return True
     return bool(ink.shape[0] >= 2*height and ndimage.maximum_filter1d(ink, 3, axis=1).mean(0).max() >= .95)
 
 
-def put(unit, alpha, host, rng):
+def put(unit, alpha, host, rng, plain=None):
     """``alpha`` (the unit's opacity on its origin image) put on a host (``host_row`` of ``host['grey']`` plus its printed ``template``
     window): a dict as ``paste_strikes`` gives (image, target, alpha, remove, box, strike_share) with the map, the run's frame and the
-    measures there; or (None, why)."""
+    measures there; or (None, why).  ``plain``: another opacity of the unit (its strike as cut, not cleaned) put by the same map, in the
+    same box and ink (``plain_image``, ``plain_remove``): the control without cleaning."""
     from .paste_strikes import host_level, REMOVE_ALPHA, WRITING_BELOW
     from .restoration_pairs import draw_pair
     row = host['row']; grey = host['grey']
@@ -636,6 +639,8 @@ def put(unit, alpha, host, rng):
     ok, why = agrees(here, unit['measures'])
     if not ok:
         return None, why
+    if here['press'] < PRESSED:                                               # on next to no writing
+        return None, 'press'
     strike = full >= REMOVE_ALPHA
     labels, mine = row['labels'], np.array(sorted(row['row']))
     others = np.isin(labels, list(row['found'])) & ~row['own']               # the writing of other rows (what the row's own ink is not)
@@ -658,11 +663,13 @@ def put(unit, alpha, host, rng):
     if any(min(R, e[2])-max(L, e[0]) > 0 and min(B, e[3])-max(T, e[1]) > 0 for e in host.get('edited', [])):
         return None, 'revised_line_near'
     clean = grey[T:B, L:R]; ink = clean < INK_BELOW
-    if host.get('template') is not None and (ink & host['template'][T:B, L:R]).sum() > PRINTED*max(1, ink.sum()):
+    m = int(round(SURROUND*frame['height'])); T2, B2, L2, R2 = max(0, T-m), min(grey.shape[0], B+m), max(0, L-m), min(grey.shape[1], R+m)
+    near_ink = grey[T2:B2, L2:R2] < INK_BELOW
+    if host.get('template') is not None and (near_ink & host['template'][T2:B2, L2:R2]).sum() > PRINTED*max(1, near_ink.sum()):
         return None, 'printed'
-    if ruled(ink, frame['height']):
+    if ruled(ink, frame['height']) or ruled(near_ink, frame['height'], dashes=False):
         return None, 'ruled'
-    for k in np.unique(labels[T:B, L:R][ink & (labels[T:B, L:R] > 0)]):     # a hand-drawn table or figure line in the box
+    for k in np.unique(labels[T2:B2, L2:R2][near_ink & (labels[T2:B2, L2:R2] > 0)]):   # a hand-drawn table or figure line in or by the box
         ky, kx = row['found'][k] if k in row['found'] else np.nonzero(labels == k)
         u, v = across(ky, kx, frame['theta'])
         if len(ky) > 6 and max(np.ptp(u), np.ptp(v)) >= FIGURE[0]*frame['height']:
@@ -673,6 +680,10 @@ def put(unit, alpha, host, rng):
     image, target_ = draw_pair(clean, full[T:B, L:R], level)
     remove = (full[T:B, L:R] >= REMOVE_ALPHA) & (clean >= WRITING_BELOW)
     written = int((clean < INK_BELOW).sum())
-    return {'image': image, 'target': target_, 'alpha': full[T:B, L:R], 'remove': remove, 'box': [L, T, R, B],
+    extra = {}
+    if plain is not None:
+        cut = warp(plain, mapping, grey.shape)[T:B, L:R]
+        extra = {'plain_image': draw_pair(clean, cut, level)[0], 'plain_remove': (cut >= REMOVE_ALPHA) & (clean >= WRITING_BELOW)}
+    return {**extra, 'image': image, 'target': target_, 'alpha': full[T:B, L:R], 'remove': remove, 'box': [L, T, R, B],
             'strike_share': float(remove.sum())/max(1, remove.sum()+written), 'scale': float(mapping[3]), 'stretch': float(mapping[4]),
             'level': level, 'frame': frame, 'measures': here, 'mapping': mapping}, None

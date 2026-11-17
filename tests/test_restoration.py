@@ -79,6 +79,20 @@ def test_unpaired_domains_have_independent_order_but_reproducible_batches():
         assert not np.array_equal(x,y)
 
 
+def test_extra_tiles_take_about_their_share_of_a_batch_with_weight_one():
+    from revrender.baselines.restoration import Experiment
+    from types import SimpleNamespace
+    e=Experiment.__new__(Experiment);e.args=SimpleNamespace(batch_size=8,extra_share=.5)
+    e.train=np.arange(50);e.x=np.zeros((50,4,4),np.uint8);e.y=e.x.copy();e.w=np.zeros((50,4,4),np.uint8);e.s=np.full(50,.5,np.float32)
+    e.rng=np.random.default_rng(42);e.extra_rng=np.random.default_rng(7)
+    e.ex=(np.full((30,4,4),255,np.uint8),np.full((30,4,4),255,np.uint8),np.arange(30))
+    taken=[]
+    for _ in range(200):
+        x,y,w,s=e.batch(weights=True);mine=x[:,0,0]==1.;taken.append(mine.mean())
+        assert (w[mine]==1).all() and (w[~mine]==0).all() and (s[mine]==1).all() and (s[~mine]==.5).all()
+    assert .45<np.mean(taken)<.55
+
+
 def test_two_weight_candidates_select_validation_best_and_count_one_plateau(tmp_path):
     from revrender.baselines.restoration import Experiment
     from types import SimpleNamespace

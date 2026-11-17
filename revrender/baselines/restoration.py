@@ -94,6 +94,7 @@ def inside(im,pred,gold,inner):
 
 class Experiment:
     w=None          # per-pixel loss weights of the data (weights.npy)
+    ex=None         # --extra tiles: (images, targets, training indices)
 
     def __init__(self,args):
         self.args=args;self.out=make_output_dir(args.output_dir)
@@ -114,6 +115,14 @@ class Experiment:
         self.stale=0;self.stop=False;self.last_step=0
         self.unpaired_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(1)[0])
         self.augment_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(2)[1])   # its own stream: the batches drawn stay the same
+        # --extra (synthesis plan of 2026-11-16, section six): each sample of a batch is one of these with --extra-share's chance, its
+        # weights 1; the steps stay the data's own (its passes), so a run with and without them takes as many steps.
+        if getattr(args,'extra',None):
+            ex_rows=json.loads((args.extra/'records.json').read_text())
+            require(not {r['group_uuid'] for r in ex_rows}&{r['group_uuid'] for r in self.native_rows},'human validation writer among the extra hosts')
+            self.ex=(np.load(args.extra/(args.arm+'.npy'),mmap_mode='r'),np.load(args.extra/'targets.npy',mmap_mode='r'),
+                     np.array([i for i,r in enumerate(ex_rows) if r['split']=='train']))
+            self.extra_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(3)[2])
         self.candidate_improved=False
         self.source=verified_source(upstream_of(args.upstream,args.model))
         inputs=[
@@ -121,6 +130,7 @@ class Experiment:
             args.human_validation,args.human_validation.with_suffix('.npz'),upstream_of(args.upstream,args.model)/'source_manifest.json']
         if args.protocol:inputs.append(args.protocol)
         if args.init:inputs+=[p for p in sorted(args.init.iterdir()) if p.is_file()]
+        if getattr(args,'extra',None):inputs+=[args.extra/'run_manifest.json',args.extra/'records.json']
         require(set(r['split'] for r in self.rows)<= {'train','val'},'test row in training bundle')
         require(not {r['group_uuid'] for r in self.rows if r['split']=='train'} &
                 {r['group_uuid'] for r in self.rows if r['split']=='val'},'synthetic validation writer leaked')
@@ -136,10 +146,17 @@ class Experiment:
         ids=self.sample()
         targets=self.unpaired_rng.choice(self.train,self.args.batch_size,replace=False) if unpaired else ids
         x,y=self.x[ids].astype(np.float32)/255,self.y[targets].astype(np.float32)/255
+        w=self.w[ids].astype(np.float32) if self.w is not None and weights else np.ones_like(x);s=self.s[ids].copy() if weights else None
+        if self.ex is not None:
+            require(not unpaired,'--extra with unpaired targets')
+            pick=self.extra_rng.random(len(ids))<self.args.extra_share;n=int(pick.sum())
+            if n:
+                ex=np.sort(self.extra_rng.choice(self.ex[2],n,replace=False))
+                x[pick]=self.ex[0][ex].astype(np.float32)/255;y[pick]=self.ex[1][ex].astype(np.float32)/255;w[pick]=1.
+                if s is not None:s[pick]=1.
         if not weights:return x,y
-        w=self.w[ids].astype(np.float32) if self.w is not None else np.ones_like(x)
         if getattr(self.args,'augment',False):x,y,w=augmented(x,y,w,self.augment_rng)
-        return x,y,w,self.s[ids]
+        return x,y,w,s
 
     def log(self,record):
         record={**record,'elapsed_seconds':round(time.monotonic()-self.start,2)}
@@ -218,6 +235,8 @@ def main(argv=None):
     p.add_argument('--augment',action='store_true',help='each weighted training tile scaled 0.8-1.25, turned 5 degrees either way, ink gamma 0.8-1.25')
     p.add_argument('--select',choices=['f1','edits','blocks'],default='f1',
                    help="keep a version when the human validation's removal F1 rises, or its pixels (edits) or blocks to fix fall")
+    p.add_argument('--extra',type=Path,help='more training tiles (synthetic): each sample drawn from them with --extra-share chance; steps unchanged')
+    p.add_argument('--extra-share',type=float,default=.5)
     p.add_argument('--init',type=Path,help="fine-tune from this checkpoint directory (the protocol's [finetune] budget)")
     p.add_argument('--budget',help="a budget section of the protocol (passes over the data, evaluations, learning-rate scale): "
                    "default [finetune] with --init, the model's own [training] budget without")

@@ -106,7 +106,8 @@ def switch(args):
     require(not args.output.exists(), 'output exists')
     scores = json.loads(args.scores.read_text())
     a = {r['id']: r for r in scores[args.current]['sets'][args.set]['regions']}; b = {r['id']: r for r in scores[args.candidate]['sets'][args.set]['regions']}
-    ids = sorted(set(a) & set(b)); writers = sorted({a[i]['writer'] for i in ids}); by = {w: [i for i in ids if a[i]['writer'] == w] for w in writers}
+    seen = {r['group_uuid'] for r in json.loads(args.without_writers_of.read_text())} if getattr(args, 'without_writers_of', None) else set()
+    ids = sorted(i for i in set(a) & set(b) if a[i]['writer'] not in seen); writers = sorted({a[i]['writer'] for i in ids}); by = {w: [i for i in ids if a[i]['writer'] == w] for w in writers}
     key = args.measure; margin = BLOCK_MARGIN if key == 'blocks' else .01
     diff = lambda chosen: float(np.mean([b[i][key]-a[i][key] for i in chosen]))
     rng = np.random.default_rng(SEED); draws = [diff([i for w in rng.choice(writers, len(writers)) for i in by[w]]) for _ in range(1000)]
@@ -114,6 +115,7 @@ def switch(args):
     erased = lambda s: sum(s[i]['writing_erased'] for i in ids)/max(1, sum(s[i]['writing'] for i in ids))
     rise = erased(b)-erased(a); d = diff(ids)
     result = {'set': args.set, 'current': args.current, 'candidate': args.candidate, 'regions': len(ids), 'writers': len(writers), 'measure': key,
+              'without_writers_of': str(args.without_writers_of) if getattr(args, 'without_writers_of', None) else None,
               'difference': d, 'interval': interval, 'writing_erased_rise': rise,
               'replace': bool(d < 0 and interval[1] < margin and rise <= .02),
               'rule': f'replace when the paired {key} fall (mean < 0, writer-resampled 95% upper end < {margin}) and writing erased rises by at most 2 points'}
@@ -185,6 +187,7 @@ def main(argv=None):
     for key in ('scores', 'output'): w.add_argument('--'+key, type=Path, required=True)
     for key in ('set', 'current', 'candidate'): w.add_argument('--'+key, required=True)
     w.add_argument('--measure', choices=('blocks', 'to_fix'), default='blocks')
+    w.add_argument('--without-writers-of', type=Path, help="records (group_uuid) whose writers' regions are left out (a model saw them)")
     t = sub.add_parser('tiers')
     for key in ('scores', 'output'): t.add_argument('--'+key, type=Path, required=True)
     t.add_argument('--set', required=True); t.add_argument('--train-set'); t.add_argument('--readings', type=Path)
