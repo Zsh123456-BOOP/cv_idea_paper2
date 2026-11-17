@@ -472,6 +472,7 @@ touch "$C/COMPLETE"; stamp 'ceiling part complete'; exit 0; fi
 if [ "$PART" = ceiling2 ]; then cards "${CARDS:-2}"
 C=$O/paper2_ceiling_reader20261116; C2=$O/paper2_ceiling2_reader20261117; HM=${N}_revision_folds_human_masked20261116b
 MERGED=${N}_line_dataset20261116b; V=${N}_revision_folds_human_masked20261117_views; mkdir -p "$C2"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True      # three images and the question come close to a card that another user shares
 TABLE=/home/zsh/hme/code_roi725_v1/outputs; QUESTIONS=$TABLE/line_edit_question_answer_authority_20260814_v1/questions_with_answers.jsonl
 QGROUPS=$TABLE/line_edit_response_index_20260814_v1/answer_groups.jsonl
 if ! done_ ceiling2_pack; then
