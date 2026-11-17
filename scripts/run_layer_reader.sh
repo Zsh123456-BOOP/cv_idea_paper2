@@ -543,7 +543,7 @@ done_ ceiling2_C || c2_arm C "$SEL_ARM" "${ANSWER[@]}" --steps 300
 score scores_C "$SEL" C
 STEPS=$(verdict "$C2/scores_C.json" C steps); [ "$STEPS" = more ] && CEILING=C || CEILING=$SEL
 if ! done_ ceiling2_score; then
-    ARMS=(U0 A $([ "$PROBLEMS" = yes ] && echo B1) B2 $([ -e "$R/ceiling2_B12.done" ] && echo B12) C)
+    ARMS=(U0 A $([ "$PROBLEMS" != yes ] || echo B1) B2 $([ ! -e "$R/ceiling2_B12.done" ] || echo B12) C)
     [ -e "$C2/scores_all.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" $(for a in "${ARMS[@]}"; do echo --arm "$(arm_of "$a")"; done) --reference U0 \
         --readings "$C2/readings.jsonl" --output "$C2/scores_all.json" > "$C2/scores_all.log" 2>&1
     for only in fraction single; do [ -e "$C2/scores_$only.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" --only "$C2/subsets.json:$only" \
