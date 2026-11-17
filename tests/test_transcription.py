@@ -134,3 +134,21 @@ def test_a_reading_caught_in_a_loop_is_cut_to_one_block():
     assert looped([9, 8] + [1, 2, 3]*4, 4) == 9 and looped([9, 8] + [1, 2, 3]*3, 4) == 0          # four writings of a block of three: keep one
     assert looped([7]*11, 4) == 0 and looped([7]*12, 4) == 9                                       # a short stutter is left alone
     assert looped([1, 2, 3, 4, 5, 6]*2, 4) == 0
+
+
+def test_a_latex_answer_is_tidied_and_comes_back_to_the_flattened_target():
+    from revrender.eval.coverage import prepare
+    for text in ('$$= 3 - \\frac {1}{3} + 2 \\sqrt { 2 }$$', '$\\therefore$$\\angle$ABC', '$1 \\times x$', 'x 0 3\ny 2 0', '=$(4x^{2}-12xy)+1',
+                 '$$\\left\\{ \\begin{array} { l } { A B = D C } \\\\ { B P = DQ } \\end{array} \\right.$$', '\\frac{?}{3}'):
+        got = struck_pack.latex_answer(text)
+        assert prepare(got) == prepare(text).replace('?', '') and got.count('$') % 2 == 0
+    assert struck_pack.latex_answer('$$= 3 - \\frac {1}{3}$$') == '$=3-\\frac{1}{3}$'
+    assert struck_pack.latex_answer('$1 \\times x$') == '$1\\times x$' and struck_pack.latex_answer('x 0 3\ny 2 0') == 'x03\ny20'
+    assert struck_pack.latex_answer('$\\therefore$$\\angle$') == '$\\therefore\\angle$'
+
+
+def test_the_question_is_said_after_the_instructions_and_only_where_asked():
+    from revrender.recognize_lines import PROBLEM, prompt
+    row = {'boxes': [], 'problem': '如图，在△ABC中'}
+    assert prompt('problem_revision', row) == prompt('pair_revision', row)+'\n'+PROBLEM.format(problem='如图，在△ABC中')
+    assert prompt('context_problem_revision', row) == prompt('context_revision', row)+'\n'+PROBLEM.format(problem='如图，在△ABC中')

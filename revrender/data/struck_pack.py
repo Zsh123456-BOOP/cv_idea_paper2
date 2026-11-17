@@ -3,7 +3,8 @@
     python -m revrender.data.struck_pack folds --dataset regions.json --pages DIR [...] --hold-out NAME [...] --output-dir OUT
     python -m revrender.data.struck_pack fold-sets --dataset regions.json --pages DIR [...] --hold-out NAME [...] --output-dir OUT
     python -m revrender.data.struck_pack separated --pack FOLDS_PACK --sets SETS --separator RUN x5 --upstream UP --output-dir OUT
-    python -m revrender.data.struck_pack views --pack SEPARATED_PACK --sets SETS --dataset regions.json --pages DIR [...] --hold-out NAME [...] --output-dir OUT
+    python -m revrender.data.struck_pack views --pack PACK --dataset regions.json --pages DIR [...] --hold-out NAME [...] [--questions Q --answer-groups G] --output-dir OUT
+    python -m revrender.data.struck_pack answers --pack PACK --output OUT.json
     python -m revrender.data.struck_pack counterfactual --pack SEPARATED_PACK --human FOLDS_PACK --output-dir OUT
 
 ``folds``: the regions of the merged dataset (``data.struck_dataset``) whose pixels and struck text are both confirmed, as one pack for
@@ -24,9 +25,12 @@ versions are chosen) and ``heldout_native.*`` fold K's own, each row with its OC
 teachers (``data.pseudo_regions``) must keep apart for this fold: fold K's writers, the ``val`` writers and the held-out ones, and every
 page the dataset labels.  ``separated``: the folds pack again, but ``erased`` and ``map`` now come from those separators, each
 restoring only the regions of the fold it never trained on: ``erased`` the restored crop, ``map`` the share of each ink pixel's
-darkness it took away (0 none, white all).  ``views``: a separated pack again with ``context``, the line the region stands in
+darkness it took away (0 none, white all).  ``views``: a pack again (folds or separated) with ``context``, the line the region stands in
 (``CONTEXT`` region heights to each side, half a height above and below) with the erased crop laid back in and a blue box round the
-region.
+region; ``--questions`` and ``--answer-groups`` (the question table and the pages of each question) put on each row the
+``problem`` its page answers (``eval.revision_judgment.plain`` of the question's statement), for a reader asked with the question.
+``answers``: whether ``latex_answer`` of every readable row's text comes back to its ``target`` in the spelling of
+``eval.coverage.prepare`` (a reader taught on the LaTeX answers, ``train_reader --answer latex``, is scored as before).
 
 ``counterfactual``: a separated pack again with each region's evidence taken apart by the annotator's own strike pixels (the folds
 pack's ``map``), for a reader taught what a change of the evidence should change (``train_reader --counterfactual``) and tested on it
@@ -38,6 +42,7 @@ import argparse
 import hashlib
 import json
 import random
+import re
 import shutil
 from pathlib import Path
 
@@ -267,24 +272,69 @@ def in_context(page, erased, window):
     return band
 
 
+def questions_of(args):
+    """{page: the plain statement of the question it answers} from the question table and the pages of each question."""
+    from ..eval.revision_judgment import plain
+    statement = {q['question_global_id']: q['problem_statement_markdown'] for q in map(json.loads, args.questions.read_text(encoding='utf-8').splitlines())}
+    return {page: plain(statement.get(g['question_global_id'])) for g in map(json.loads, args.answer_groups.read_text(encoding='utf-8').splitlines()) for page in g['image_ids']}
+
+
 def views_pack(args):
-    chosen, files, _, _ = chosen_regions(args); place = {r['id']: (r['source'], r['page']) for r in chosen}
-    windows = {n['id']: n['window'] for k in range(FOLDS) for n in json.loads((args.sets/f'fold_{k}/heldout_native.json').read_text())}
+    chosen, files, _, _ = chosen_regions(args); place = {r['id']: (r['source'], r['page']) for r in chosen}; by_id = {r['id']: r for r in chosen}
     source = json.loads((args.pack/'pack.json').read_text())['rows']
-    require({r['id'] for r in source} == set(windows) == set(place), 'the pack, the sets and the dataset hold different regions')
+    require({r['id'] for r in source} == set(place), 'the pack and the dataset hold different regions')
+    require(bool(args.questions) == bool(args.answer_groups), '--questions and --answer-groups go together')
+    problems = questions_of(args) if args.questions else None
     out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []
     for key in sorted(set(place.values())):
         with Image.open(files[key]) as page:
             for row in (r for r in source if place[r['id']] == key):
+                r = by_id[row['id']]; bl, bt, br, bb = r['box']
                 opened = {name: np.asarray(Image.open(args.pack/row['images'][name]).convert('L')) for name in ('raw', 'erased', 'map')}
-                made = {**{name: Image.fromarray(array) for name, array in opened.items()}, 'context': in_context(page, opened['erased'], windows[row['id']])}
+                at = window(r['region'] or [[bl, bt], [br, bt], [br, bb], [bl, bb]], page.size)
+                made = {**{name: Image.fromarray(array) for name, array in opened.items()}, 'context': in_context(page, opened['erased'], at)}
                 images = {name: f'crops/{len(rows):05d}_{name}.png' for name in made}
                 for name, image in made.items(): image.save(out/images[name])
-                rows.append({**row, 'images': images})
+                rows.append({**row, 'images': images, **({'problem': problems.get(r['page'], '')} if problems is not None else {})})
     write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
-    write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'dataset': str(args.dataset), 'context': CONTEXT},
-                   inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'), str(args.dataset): digest(args.dataset)}, regions=len(rows))
-    print(json.dumps({'regions': len(rows)}), flush=True)
+    inputs = {str(p): digest(p) for p in (args.pack/'pack.json', args.dataset, args.questions, args.answer_groups) if p}
+    summary = {'regions': len(rows), **({'with_problem': sum(bool(r['problem']) for r in rows)} if problems is not None else {})}
+    write_manifest(out, config={'pack': str(args.pack), 'dataset': str(args.dataset), 'context': CONTEXT, 'questions': str(args.questions)}, inputs=inputs, **summary)
+    print(json.dumps(summary), flush=True)
+
+
+def tidy(line):
+    """A line of an annotated answer with its whitespace dropped, but for one space where it parts a command from a letter
+    (``\\times x``) and after a LaTeX line break (``\\\\``, whose following ``{`` must not read as ``\\{``)."""
+    parts, out = re.split(r'(\s+)', line.strip()), ''
+    for k, part in enumerate(parts):
+        if not part.isspace():
+            out += part
+        elif (re.search(r'\\[a-zA-Z]+$', out) and re.match(r'[a-zA-Z]', parts[k+1] if k+1 < len(parts) else '')) or out.endswith('\\\\'):
+            out += ' '
+    return out
+
+
+def latex_answer(text):
+    """The annotated text as a reader is taught to give it in LaTeX (``train_reader --answer latex``): ``?`` dropped (the scores drop it
+    from the label), a display ``$$...$$`` made inline and two inline formulas side by side made one, whitespace tidied line by line
+    (``tidy``), the line breaks kept, a formula left open closed at the end."""
+    s = text.replace('?', '').strip()
+    if s.startswith('$$') and s.endswith('$$') and len(s) > 4 and '$' not in s[2:-2]:
+        s = '$'+s[2:-2]+'$'
+    s = '\n'.join(tidy(line) for line in s.replace('$$', '').split('\n'))
+    return s+'$' if s.count('$') % 2 else s
+
+
+def answers_check(args):
+    from ..eval.coverage import prepare
+    rows = [r for r in json.loads((args.pack/'pack.json').read_text())['rows'] if r['readable']]
+    differ = [{'id': r['id'], 'target': r['target'], 'latex': latex_answer(r['text'])} for r in rows if prepare(latex_answer(r['text'])) != r['target']]
+    result = {'readable': len(rows), 'same': len(rows)-len(differ), 'differ': len(differ), 'changed_by_tidying': sum(latex_answer(r['text']) != r['text'].strip() for r in rows),
+              'differing': differ, 'pack': str(args.pack/'pack.json'), 'pack_sha256': digest(args.pack/'pack.json')}
+    require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, result)
+    print(json.dumps({k: v for k, v in result.items() if k != 'differing'}), flush=True)
+    require(not differ, f'{len(differ)} LaTeX answers do not come back to their targets: {args.output}')
 
 
 def library_pack(args):
@@ -328,7 +378,9 @@ def main(argv=None):
     for name in ('folds', 'fold-sets', 'views'):
         f = sub.add_parser(name)
         if name == 'views':
-            for key in ('pack', 'sets'): f.add_argument('--'+key, type=Path, required=True)
+            f.add_argument('--pack', type=Path, required=True)
+            f.add_argument('--questions', type=Path, help='the question table (JSON lines with question_global_id, problem_statement_markdown)')
+            f.add_argument('--answer-groups', type=Path, help='the pages of each question (JSON lines with question_global_id, image_ids)')
         f.add_argument('--dataset', type=Path, required=True, help='regions.json of data.struck_dataset'); f.add_argument('--pages', type=Path, action='append', required=True)
         f.add_argument('--hold-out', action='append', default=[], help='part of the name of an export whose regions, and their writers, stay out (the test page)')
         f.add_argument('--folds-from', type=Path, help='a folds pack whose folds and val marks the writers keep (else they are drawn anew)')
@@ -343,11 +395,13 @@ def main(argv=None):
     for key in ('library', 'output-dir'): b.add_argument('--'+key, type=Path, required=True)
     b.add_argument('--dataset', type=Path, help='regions.json of a merged dataset: the regions it labels carry their targets')
     b.add_argument('--holdout-share', type=float, help="mark the labelled regions of the writers data.prefill_set holds out at this share")
+    a = sub.add_parser('answers')
+    a.add_argument('--pack', type=Path, required=True); a.add_argument('--output', type=Path, required=True)
     c = sub.add_parser('counterfactual')
     for key in ('pack', 'human', 'output-dir'): c.add_argument('--'+key, type=Path, required=True)
     args = p.parse_args(argv)
     {'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack, 'views': views_pack, 'counterfactual': counterfactual_pack,
-     'library': library_pack}[args.command](args)
+     'library': library_pack, 'answers': answers_check}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -20,6 +20,9 @@ read afterwards, ``recognize_lines --fold K``), the rows marked ``val`` among th
 ``--layer-map``: the row's layer map goes in beside the scan through a projection of its own (``models.vlm_tokens``), taught at
 ``--map-lr`` and saved as OUT/layer_map.pt.  ``--keep-best`` keeps the adapter of the lowest validation loss instead of the last.
 
+``--answer latex`` teaches a readable row of a folds pack its text in LaTeX (``data.struck_pack.latex_answer``, the spelling the words
+ask for) in place of its ``target`` (the scores' flattened spelling; the two agree once ``eval.coverage.prepare`` has been applied).
+
 ``--counterfactual S W`` (a pack of ``data.struck_pack counterfactual``) teaches what a change of the evidence should change: a
 training sample of a readable region is shown, with probability S, with its strike taken off the scan (the reading stays the same:
 the strike is not the writing) and, with probability W, with the struck writing taken off instead (the reading becomes
@@ -98,35 +101,42 @@ class PackSamples:
     ``counterfactual`` (strike off, writing off): the probabilities a readable row is shown with one of those interventions
     (``INTERVENED``: which image stands in for which) and what it is then taught to give."""
 
-    def __init__(self, root, rows, keys=('raw',), mapped=False, counterfactual=(0., 0.)):
+    def __init__(self, root, rows, keys=('raw',), mapped=False, counterfactual=(0., 0.), condition=None, latex=False):
         self.root, self.rows, self.keys, self.mapped, self.counterfactual = root, rows, keys, mapped, counterfactual
+        self.condition, self.latex = condition, latex
 
     def __len__(self):
         return len(self.rows)
 
+    def answer(self, row):
+        if self.latex and row['readable']:
+            from .data.struck_pack import latex_answer
+            return latex_answer(row['text'])
+        return row.get('target', row['text'])
+
     def __getitem__(self, i):
-        row = self.rows[i]; text = row.get('target', row['text']); swap = {}
+        row = self.rows[i]; text = self.answer(row); swap = {}
         draw = random.random() if row.get('readable', True) and sum(self.counterfactual) else 1.
         if draw < self.counterfactual[0]:
             swap = INTERVENED['strike_off']
         elif draw < sum(self.counterfactual):
             swap, text = INTERVENED['writing_off'], UNREADABLE
         opened = lambda key: Image.open(self.root/row['images'][swap.get(key, key)]).convert('RGB')
-        return [opened(key) for key in self.keys], text, opened('map') if self.mapped else None
+        return [opened(key) for key in self.keys], text, opened('map') if self.mapped else None, prompt(self.condition, row) if self.condition else None
 
 
 class Collate:
-    """A batch for the model: the chat with the answer, the loss only on the answer."""
+    """A batch for the model: the chat with the answer, the loss only on the answer; the words are a sample's own when it carries them."""
 
     def __init__(self, processor, words):
         self.processor, self.words = processor, words
         self.start = processor.tokenizer.convert_tokens_to_ids('<|im_start|>')
 
     def __call__(self, batch):
-        batch = [item if len(item) == 3 else ([item[0]], item[1], None) for item in batch]      # (images, text, layer map)
+        batch = [item if len(item) == 4 else ([item[0]], item[1], None, None) for item in batch]      # (images, text, layer map, words)
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': SYSTEM}]},
-                          {'role': 'user', 'content': [*({'type': 'image', 'image': image} for image in images), {'type': 'text', 'text': self.words}]},
-                          {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _ in batch]
+                          {'role': 'user', 'content': [*({'type': 'image', 'image': image} for image in images), {'type': 'text', 'text': words or self.words}]},
+                          {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _, words in batch]
         out = self.processor.apply_chat_template(conversations, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
         out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw')}
         if batch[0][2] is not None:
@@ -193,6 +203,7 @@ def main(argv=None):
     p.add_argument('--layer-map', action='store_true', help='with a mapped condition: teach the projection of the layer map')
     p.add_argument('--map-lr', type=float, default=2e-5, help='the learning rate of the layer-map projection: Adam moves each of a patch\'s '
                    '1,536 weights by about this a step, so a patch with strike in it shifts by this times its strike pixels (1e-3 wrecked the image in two steps)')
+    p.add_argument('--answer', choices=('target', 'latex'), default='target', help="with --pack: teach the row's target, or its text in LaTeX (data.struck_pack.latex_answer)")
     p.add_argument('--keep-best', action='store_true', help='keep the adapter of the lowest validation loss, not the last')
     p.add_argument('--counterfactual', type=float, nargs=2, default=(0., 0.), metavar=('STRIKE_OFF', 'WRITING_OFF'),
                    help='with --pack: the probabilities a readable training row is shown with its strike, or its struck writing, taken off')
@@ -240,7 +251,9 @@ def main(argv=None):
     if args.pack:
         collate = Collate(processor, prompt(args.condition, {'boxes': []}))
         shown = image_keys(args.condition), args.condition in MAPPED
-        train_set, val_set = PackSamples(args.pack, train_rows, *shown, tuple(args.counterfactual)), PackSamples(args.pack, val_rows, *shown)
+        latex = args.answer == 'latex'
+        train_set = PackSamples(args.pack, train_rows, *shown, tuple(args.counterfactual), args.condition, latex)
+        val_set = PackSamples(args.pack, val_rows, *shown, condition=args.condition, latex=latex)
     else:
         crops = Crops(args.pages, read_rows(args.corpus))
         collate = Collate(processor, prompt('raw_final' if args.words == 'final' else 'raw_neutral', {'boxes': []}))

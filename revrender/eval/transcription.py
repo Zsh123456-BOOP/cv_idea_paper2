@@ -23,6 +23,7 @@ the regions the annotator could not read, the share on which they differ.  ``--g
 off the images (``recognize_lines --intervention writing_off``): the share of its readings that refuse, as they all should.  ``--only
 FILE:KEY``: only the regions listed under KEY in a JSON file (``data.line_set unchanged``).  Each arm's readable regions also by what
 is left wrong (refused, 1, 2, 3 or more edits) and its exact share by the label's length (1-2, 3-9, 10 and more characters);
+``inserted``: the characters the readings of the readable regions add (what a reader copies from outside the region shows here);
 ``--readings OUT.jsonl``: a row per region (writer, fold, label, each arm's reading) -- student text, it stays out of Git.
 """
 import argparse
@@ -167,7 +168,8 @@ def main(argv=None):
     scored = {name: {k: counts(rows[k]['text'], text) for k, text in readings.items() if readable[k]} for name, readings in arms.items()}
     rng = np.random.default_rng(SEED); result = {}
     for name in arms:
-        result[name] = {'regions': len(arms[name]), 'readable': len(scored[name]), **rates(list(scored[name].values())), 'refusal': refusal(arms[name], readable),
+        result[name] = {'regions': len(arms[name]), 'readable': len(scored[name]), **rates(list(scored[name].values())),
+                        'inserted': sum(c['i'] for c in scored[name].values()), 'refusal': refusal(arms[name], readable),
                         **left_wrong(arms[name], scored[name])}
         if name != args.reference:
             result[name]['against_reference'] = paired(scored[args.reference], scored[name], writers, rng)

@@ -71,6 +71,13 @@
 #  spelling of 876943d, the code table 4 was scored with); the ceiling is the reader taught anew whichever way it moves; it is marked
 #  worse after teaching when, on the regions nothing changed, its AR or exact difference from the old readings lies wholly below 0;
 #  taught beats untaught when the lower end of its exact interval against R0 is above 0; differences under 2 AR are not read.
+# PART=ceiling2 (the plan of 2026-11-17, work/literature_revision_reader20261113/人工像素上限第二轮_方案与判定规则_2026-11-17.md; card 2
+#  only, the user's word): the ceiling's teaching and input changed, the scores not.  The pack of the ceiling again with each region's
+#  line (struck_pack views) and its question; struck_pack answers: the LaTeX answers come back to the targets.  Then, each a reader per
+#  fold with the ceiling's recipe on the pack, read with loops stopped: A the pair taught its answers in LaTeX; B1 that and the question
+#  in the words (only if 95% of the regions have one); B2 that and the line as a third image; B12 both, only if B1 and B2 each stand;
+#  C the reading chosen, 300 steps a fold.  The ceiling's readings (U0) are not read again.  The rules, written before the readings, are
+#  the plan's section two; ceiling2_rules.json holds every verdict and the arms' scores, readings_raw.jsonl every reading and its raw output.
 # Unattended; a step whose marker is in $R is skipped.  CARDS and SEP_CARDS (default "1": the user's word of 2026-11-13, card 1 only)
 # are the cards, by index, a reader job and a separator's training may go to; a reader job has a card to itself.
 set -Eeuo pipefail
@@ -83,7 +90,7 @@ PILOT=$O/paper2_struck_reader_pilot20261108; ARMS=(raw erased pair mapped)
 PART=${PART:-human}; SETS=${N}_revision_fold_sets; SEP=${N}_revision_folds_separator; UP=$O/paper2_restoration_sources20261008; TAG=
 VIEWS=${N}_revision_folds_views
 SETS2=${N}_revision_fold_sets_apart; DISTILLED=${N}_revision_folds_distilled; SEL1=${N}_v4_versions_synthetic; LIB=${N}_full_review_prefill_soft
-failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; ceiling) echo CEILING_FAILED ;; prefill) echo PREFILL_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
+failure() { case "$PART" in human) echo FAILED ;; separator) echo SEPARATOR_FAILED ;; views) echo VIEWS_FAILED ;; distilled) echo DISTILLED_FAILED ;; masked) echo MASKED_FAILED ;; ceiling) echo CEILING_FAILED ;; ceiling2) echo CEILING2_FAILED ;; prefill) echo PREFILL_FAILED ;; *) echo EVIDENCE_FAILED ;; esac; }
 CF=${N}_revision_folds_counterfactual
 cards() { local i; PICK=(); for i in $1; do PICK+=("${CARDS_ALL[$i]}"); done; ALL_CARDS=("${PICK[@]}"); }
 mkdir -p "$R"
@@ -194,7 +201,7 @@ touch "$R/SEPARATOR_COMPLETE"; stamp 'separator part complete'; exit 0; fi
 
 if [ "$PART" = views ]; then test -e "$R/SEPARATOR_COMPLETE"
 if ! done_ views_pack; then
-    [ -e "$VIEWS/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack views --pack "$SEP" --sets "$SETS" --dataset "$DATA/regions.json" --pages "$DATA/pages" \
+    [ -e "$VIEWS/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack views --pack "$SEP" --dataset "$DATA/regions.json" --pages "$DATA/pages" \
         --pages "$O/paper2_full_review20261010/images" --hold-out test-page --output-dir "$VIEWS" > "$R/views_pack.log" 2>&1
     mark views_pack; fi
 PACK=$VIEWS; TAG=views_; NEW=(context pair_mapped)
@@ -461,6 +468,106 @@ if ! done_ ceiling_score; then
     [ -e "$C/lines" ] || "$PY" -m revrender.eval.line_reading --pack "$LP" --regions "$U@pair_revision" --lines "$R0/read_lines" --output-dir "$C/lines" > "$C/lines.log" 2>&1
     mark ceiling_score; fi
 touch "$C/COMPLETE"; stamp 'ceiling part complete'; exit 0; fi
+
+if [ "$PART" = ceiling2 ]; then cards "${CARDS:-2}"
+C=$O/paper2_ceiling_reader20261116; C2=$O/paper2_ceiling2_reader20261117; HM=${N}_revision_folds_human_masked20261116b
+MERGED=${N}_line_dataset20261116b; V=${N}_revision_folds_human_masked20261117_views; mkdir -p "$C2"
+TABLE=/home/zsh/hme/code_roi725_v1/outputs; QUESTIONS=$TABLE/line_edit_question_answer_authority_20260814_v1/questions_with_answers.jsonl
+GROUPS=$TABLE/line_edit_response_index_20260814_v1/answer_groups.jsonl
+if ! done_ ceiling2_pack; then
+    [ -e "$V/run_manifest.json" ] || "$PY" -m revrender.data.struck_pack views --pack "$HM" --dataset "$MERGED/regions.json" --pages "$DATA/pages" \
+        --pages "$O/paper2_full_review20261010/images" --hold-out test-page --questions "$QUESTIONS" --answer-groups "$GROUPS" --output-dir "$V" > "$C2/pack.log" 2>&1
+    [ -e "$C2/answers.json" ] || "$PY" -m revrender.data.struck_pack answers --pack "$V" --output "$C2/answers.json" >> "$C2/pack.log" 2>&1
+    [ -e "$C2/subsets.json" ] || "$PY" - "$V" "$C2/subsets.json" <<'PY'
+import json, sys
+rows = [r for r in json.load(open(sys.argv[1]+'/pack.json'))['rows'] if r['readable']]
+json.dump({'fraction': [r['id'] for r in rows if '/' in r['target']], 'single': [r['id'] for r in rows if len(r['target']) == 1]}, open(sys.argv[2], 'x'))
+PY
+    mark ceiling2_pack; fi
+PROBLEMS=$("$PY" -c 'import json,sys; m=json.load(open(sys.argv[1])); print("yes" if m["with_problem"] >= .95*m["regions"] else "no")' "$V/run_manifest.json")
+c2_fold() {   # FOLD NAME ARM [more of train_reader]: the fold's reader NAME on the views pack, then the fold it never saw, loops stopped
+    local k="$1" name="$2" arm="$3"; shift 3; local reader="${N}_revision_reader_ceiling2_${name}_f$k" PACK="$V"
+    [ -e "$reader/complete.json" ] || job "$CARD_" "$NUMA_" "$reader" -- $(teach "$reader" "$arm" "$k" "$@")
+    [ -e "$C2/${name}_f$k/complete.json" ] || job "$CARD_" "$NUMA_" "$C2/${name}_f$k" -- $(read_with "$C2/${name}_f$k" "$arm" "$reader" --fold "$k" --loop-limit 4)
+}
+c2_arm() {   # NAME ARM [more of train_reader]: five folds, one after another
+    local k; for k in 0 1 2 3 4; do alone on_card c2_fold "$k" "$@"; wait; test -e "$C2/$1_f$k/complete.json"; done; mark "ceiling2_$1"
+}
+five() { local a="$1" k s=; for k in 0 1 2 3 4; do s+="${s:+,}$C2/${a}_f$k"; done; echo "$s"; }
+U0="$C/pair_f0,$C/pair_f1,$C/pair_f2,$C/pair_f3,$C/pair_f4"
+arm_of() { case "$1" in U0) echo "U0=$U0" ;; *) echo "$1=$(five "$1")" ;; esac; }
+score() {   # OUT REFERENCE ARM...: eval.transcription of the arms against the reference
+    local out="$1" ref="$2" a; shift 2; [ -e "$C2/$out.json" ] && return
+    "$PY" -m revrender.eval.transcription --pack "$V" $(for a in "$ref" "$@"; do echo --arm "$(arm_of "$a")"; done) --reference "$ref" --output "$C2/$out.json" > "$C2/$out.log" 2>&1
+}
+verdict() {   # SCORES ARM RULE: teach (rule 1), context (rule 2), steps (rule 4)
+    "$PY" - "$@" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))['arms'][sys.argv[2]]['against_reference']; lo, hi = a['exact']['interval']; rule = sys.argv[3]
+print({'teach': 'better' if lo > 0 else 'worse' if hi < 0 else 'cannot_tell', 'context': 'stands' if lo > 0 and a['ar']['difference'] >= -.02 else 'not',
+       'steps': 'more' if lo > 0 else 'same'}[rule])
+PY
+}
+if ! done_ ceiling2_smoke; then
+    smoke_job() {   # CARD NUMA: two steps of the question's reader with LaTeX answers, eight regions read, the question in its words
+        local PACK="$V"
+        job "$1" "$2" "$C2/smoke_reader" -- $(teach "$C2/smoke_reader" context_problem 0 --steps 2 --eval-every 1 --warmup 1 --answer latex)
+        job "$1" "$2" "$C2/smoke_read" -- $(read_with "$C2/smoke_read" context_problem "$C2/smoke_reader" --fold 0 --limit 8 --loop-limit 4)
+        "$PY" -c "import json, sys; m = json.load(open(sys.argv[1])); assert '【题目】' in m['conditions']['context_problem_revision']['example_prompt']; texts = {json.loads(l)['text'] for l in open(sys.argv[2])}; assert len(texts) > 2, texts" \
+            "$C2/smoke_read/run_manifest.json" "$C2/smoke_read/predictions.jsonl"
+    }
+    alone smoke_job; wait; test -e "$C2/smoke_read/complete.json"; mark ceiling2_smoke; fi
+done_ ceiling2_A || c2_arm A pair --answer latex
+score scores_A U0 A
+TEACH=$(verdict "$C2/scores_A.json" A teach)
+if [ "$TEACH" = worse ]; then BASE=U0; ANSWER=(); else BASE=A; ANSWER=(--answer latex); fi
+[ "$PROBLEMS" = yes ] && { done_ ceiling2_B1 || c2_arm B1 problem "${ANSWER[@]}"; }
+done_ ceiling2_B2 || c2_arm B2 context "${ANSWER[@]}"
+CONTEXTS=(B2); [ "$PROBLEMS" = yes ] && CONTEXTS=(B1 B2)
+score scores_B "$BASE" "${CONTEXTS[@]}"
+V1=$([ "$PROBLEMS" = yes ] && verdict "$C2/scores_B.json" B1 context || echo not_run); V2=$(verdict "$C2/scores_B.json" B2 context)
+if [ "$V1" = stands ] && [ "$V2" = stands ]; then
+    done_ ceiling2_B12 || c2_arm B12 context_problem "${ANSWER[@]}"
+    score scores_B12 "$BASE" B1 B2 B12
+    SEL=$("$PY" -c 'import json,sys; a=json.load(open(sys.argv[1]))["arms"]; print("B12" if a["B12"]["exact"] >= max(a["B1"]["exact"], a["B2"]["exact"]) else max(("B1","B2"), key=lambda n: a[n]["exact"]))' "$C2/scores_B12.json")
+elif [ "$V1" = stands ]; then SEL=B1
+elif [ "$V2" = stands ]; then SEL=B2
+else SEL=$BASE; fi
+case "$SEL" in U0|A) SEL_ARM=pair ;; B1) SEL_ARM=problem ;; B2) SEL_ARM=context ;; B12) SEL_ARM=context_problem ;; esac
+done_ ceiling2_C || c2_arm C "$SEL_ARM" "${ANSWER[@]}" --steps 300
+score scores_C "$SEL" C
+STEPS=$(verdict "$C2/scores_C.json" C steps); [ "$STEPS" = more ] && CEILING=C || CEILING=$SEL
+if ! done_ ceiling2_score; then
+    ARMS=(U0 A $([ "$PROBLEMS" = yes ] && echo B1) B2 $([ -e "$R/ceiling2_B12.done" ] && echo B12) C)
+    [ -e "$C2/scores_all.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" $(for a in "${ARMS[@]}"; do echo --arm "$(arm_of "$a")"; done) --reference U0 \
+        --readings "$C2/readings.jsonl" --output "$C2/scores_all.json" > "$C2/scores_all.log" 2>&1
+    for only in fraction single; do [ -e "$C2/scores_$only.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" --only "$C2/subsets.json:$only" \
+        $(for a in "${ARMS[@]}"; do echo --arm "$(arm_of "$a")"; done) --reference U0 --output "$C2/scores_$only.json" > "$C2/scores_$only.log" 2>&1; done
+    [ -e "$C2/ceiling2_rules.json" ] || "$PY" - "$C2" "$TEACH" "$V1" "$V2" "$SEL" "$STEPS" "$CEILING" "$U0" "${ARMS[@]}" <<'PY'
+import json, sys
+from pathlib import Path
+C2 = Path(sys.argv[1]); teach, v1, v2, sel, steps, ceiling, u0 = sys.argv[2:9]; arms = sys.argv[9:]
+load = lambda n: json.loads((C2/f'{n}.json').read_text()) if (C2/f'{n}.json').exists() else None
+every, fraction, single = load('scores_all')['arms'], load('scores_fraction')['arms'], load('scores_single')['arms']
+pair = lambda scores, arm: {m: scores['arms'][arm]['against_reference'][m] for m in ('ar', 'exact', 'ned')} if scores and arm in scores['arms'] else None
+out = {'verdicts': {'1_teach_latex (A - U0)': teach, '2_B1_question (B1 - base)': v1, '2_B2_line (B2 - base)': v2, '3_chosen_with_context': sel,
+                    '4_steps_300 (C - chosen at 100)': steps, '5_new_ceiling': ceiling},
+       'differences': {'A - U0': pair(load('scores_A'), 'A'), 'B1 - base': pair(load('scores_B'), 'B1'), 'B2 - base': pair(load('scores_B'), 'B2'),
+                       'B12 - base': pair(load('scores_B12'), 'B12'), 'C - chosen': pair(load('scores_C'), 'C'), **{f'{a} - U0': every[a].get('against_reference') for a in arms if a != 'U0'}},
+       'arms': {a: {'ar': every[a]['ar'], 'exact': every[a]['exact'], 'cer': every[a]['cer'], 'ned': every[a]['ned'], 'inserted': every[a]['inserted'],
+                    'exact_by_length': every[a]['exact_by_length'], 'left_wrong': every[a]['left_wrong'], 'refusal': every[a]['refusal'],
+                    'fraction_exact': fraction[a]['exact'], 'fraction_regions': fraction[a]['readable'],
+                    'single_refused': single[a]['left_wrong']['refused'], 'single_regions': single[a]['readable']} for a in arms}}
+(C2/'ceiling2_rules.json').write_text(json.dumps(out, ensure_ascii=False, indent=1))
+folders = {a: (u0 if a == 'U0' else ','.join(str(C2/f'{a}_f{k}') for k in range(5))).split(',') for a in arms}
+read = {a: {g['id']: g for f in fs for g in map(json.loads, open(Path(f)/'predictions.jsonl', encoding='utf-8'))} for a, fs in folders.items()}
+with (C2/'readings_raw.jsonl').open('x', encoding='utf-8') as stream:
+    for row in map(json.loads, open(C2/'readings.jsonl', encoding='utf-8')):
+        stream.write(json.dumps({**row, **{f'{a}_raw': read[a][row['region']]['raw'] for a in arms if row['region'] in read[a]}}, ensure_ascii=False)+'\n')
+print(json.dumps(out['verdicts'], ensure_ascii=False))
+PY
+    mark ceiling2_score; fi
+touch "$C2/COMPLETE"; stamp 'ceiling2 part complete'; exit 0; fi
 
 test "$PART" = evidence; test -e "$R/DISTILLED_COMPLETE"
 HUMAN=$PACK; cards "${CARDS:-1}"

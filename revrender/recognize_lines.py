@@ -29,6 +29,9 @@ for, or ``[读不出]`` when it cannot be read.
                    (``models.vlm_tokens.patch_embed_with_layer_map``, the weights of ``--layer-map``)
   pair_mapped_revision  the pair, and the layer map into the scan's patch embedding as well
   context_revision      the pair and, as a third image, the line the region stands in, the region boxed in blue (``images.context``)
+  problem_revision      the pair, and the statement of the question the page answers (the row's ``problem``) in the words, to tell
+                        letters and signs apart by, not to copy
+  context_problem_revision  the pair, the line and the question
 
 Conditions of a whole line (a pack of ``data.line_set pack``: a row is a line, its struck regions erased in ``before`` and taken out in
 ``after``; a row without the condition's image is not read under it):
@@ -81,6 +84,7 @@ ILLEGIBLE = f'被划掉的内容完全认不出时，只输出 {UNREADABLE}。'
 CLEANED = '图中原来被划线划掉的内容，划线已经被去掉（可能没有去干净，也可能擦掉了一部分字迹）。转写这部分原来写的内容。'
 PAIR = '第一张是原图；第二张是去掉划线后的参考图，参考图可能有错，以原图为准。'
 CONTEXT = '第三张是这一处所在的那一行，蓝色框标出的就是这一处（框里是去掉划线后的样子）。只转写蓝色框里原来被划掉的内容，框外的内容不要输出，也不要照抄框外写的字。'
+PROBLEM = '这道题的题目如下，只用来帮你辨认字母和符号；只转写图里被划掉的内容，不要照抄题目。\n【题目】{problem}'
 DIFFERENCE = ('两张图是同一行手写作答。第一张比第二张多出一段或几段内容，其余部分相同。只转写第一张里有、第二张里没有的内容，两张都有的不要输出。'
               f'公式写在 $ $ 之间。多出的内容完全认不出时，只输出 {UNREADABLE}。')
 CONDITIONS = {
@@ -102,6 +106,8 @@ CONDITIONS = {
     'mapped_revision': ('raw', (STRUCK, ILLEGIBLE), 'map'),
     'pair_mapped_revision': (('raw', 'erased'), (PAIR, STRUCK, ILLEGIBLE), 'map'),
     'context_revision': (('raw', 'erased', 'context'), (PAIR, CONTEXT, STRUCK, ILLEGIBLE), None),
+    'problem_revision': (('raw', 'erased'), (PAIR, STRUCK, ILLEGIBLE, 'problem'), None),
+    'context_problem_revision': (('raw', 'erased', 'context'), (PAIR, CONTEXT, STRUCK, ILLEGIBLE, 'problem'), None),
     'before_line': ('before', (), None),
     'after_line': ('after', (), None),
     'difference_line': (('before', 'after'), (DIFFERENCE,), None),
@@ -137,7 +143,8 @@ def prompt(condition, row):
     _, parts, _ = CONDITIONS[condition]
     if parts is None:
         return row['prompt']
-    return '\n'.join([SKELETON, *(hint_text(row['boxes']) if part == 'hint' else part for part in parts)])
+    said = {'hint': lambda: hint_text(row['boxes']), 'problem': lambda: PROBLEM.format(problem=row['problem'])}
+    return '\n'.join([SKELETON, *(said[part]() if part in said else part for part in parts)])
 
 
 def messages(image, text, system=SYSTEM):
