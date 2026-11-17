@@ -75,6 +75,12 @@ def test_merge_orders_regions_and_keeps_the_fold(tmp_path):
              '--fixes', str(tmp_path/'fixes.json'), '--output-dir', str(tmp_path/'fixed')])
     fixed = {r['id']: r for r in json.loads((tmp_path/'fixed'/'regions.json').read_text())}
     assert fixed['q#b']['text'] == 'y3' and fixed['q#b']['strike_pixels'] == 4 and fixed['q#b']['reading_fix']['text'] == 'y'
+    later = {'schema': LS.FIXES, 'fixes': [{**fixes['fixes'][0], 'original_text': 'y3', 'text': 'y4', 'pixels_changed': False}]}
+    (tmp_path/'later.json').write_text(json.dumps(later))
+    LS.main(['merge', '--dataset', str(tmp_path/'regions.json'), '--folds', str(tmp_path/'folds'), '--review', str(tmp_path/'export.json'),
+             '--fixes', str(tmp_path/'fixes.json'), '--fixes', str(tmp_path/'later.json'), '--output-dir', str(tmp_path/'later')])
+    again = {r['id']: r for r in json.loads((tmp_path/'later'/'regions.json').read_text())}
+    assert again['q#b']['text'] == 'y4' and again['q#b']['strike_pixels'] == 4 and again['q#b']['reading_fix']['text'] == 'y'   # the first values kept
     stale = {**fixes, 'fixes': [{**fixes['fixes'][0], 'original_text': 'not y'}]}; (tmp_path/'stale.json').write_text(json.dumps(stale))
     with pytest.raises(Exception, match='another text'):
         LS.main(['merge', '--dataset', str(tmp_path/'regions.json'), '--folds', str(tmp_path/'folds'), '--review', str(tmp_path/'export.json'),

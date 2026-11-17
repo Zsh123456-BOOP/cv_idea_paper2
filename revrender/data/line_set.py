@@ -1,6 +1,6 @@
 """The struck regions by the line they stand in: the annotator's line review merged into the dataset, and each line's two images.
 
-    python -m revrender.data.line_set merge --dataset regions.json --folds FOLDS_PACK --review EXPORT.json [--fixes FIXES.json] --output-dir OUT
+    python -m revrender.data.line_set merge --dataset regions.json --folds FOLDS_PACK --review EXPORT.json [--fixes FIXES.json ...] --output-dir OUT
     python -m revrender.data.line_set unchanged --old regions.json --new MERGED/regions.json --output OUT.json
     python -m revrender.data.line_set pack --dataset OUT/regions.json --lines OUT/lines.json --pages DIR [...] --output-dir PACK
 
@@ -12,8 +12,8 @@ mark of its writer in the folds pack (``data.struck_pack folds``) the page was b
 question.  OUT/lines.json: a row per line (page, writer, fold, val, the line's polygon, its regions from left to right by the centre of
 their polygons' boxes, whether the one region is the whole line).  ``--fixes``: the corrections made on the page that checks the line
 readings (``paper2-line-reading-fix-v1``), laid over that: a region's text and readable mark, and its strike pixels (runs over its box)
-where they were painted again; each correction must start from what the region holds, and the values it replaces are kept under
-``reading_fix``.
+where they were painted again; each correction must start from what the region holds, and the values the first one replaces are kept
+under ``reading_fix``.  ``--fixes`` again: a later export of such a page, laid over the earlier in the order given.
 
 ``pack``: a line pack (``data.line_pack`` schema) of the lines with a struck text to read, a row per line, and beside it, in
 PACK/regions, the pack of every region of those lines as ``data.struck_pack folds`` cuts it (the scan, the erased crop and the layer
@@ -75,10 +75,10 @@ def merge(args):
                     'fold': folds[row['writer']][0], 'val': folds[row['writer']][1]})
         counts['deleted'] += e['deleted']; counts['text_changed'] += bool(not e['added'] and e['corrected'])
         counts['region_changed'] += bool(not e['added'] and e['region_changed']); counts['pixels_changed'] += bool(not e['added'] and e['pixels_changed'])
-    for fix in json.loads(args.fixes.read_text())['fixes'] if args.fixes else []:
+    for fix in [f for path in args.fixes or [] for f in json.loads(path.read_text())['fixes']]:
         require(fix['region'] in index, f"{fix['region']}: not in the dataset"); row = rows[index[fix['region']]]
         require((row['text'], row['readable']) == (fix['original_text'], fix['original_readable']), f"{fix['region']}: the correction starts from another text")
-        row['reading_fix'] = {'text': row['text'], 'readable': row['readable'], 'box': row['box'], 'runs': row['runs']}
+        row.setdefault('reading_fix', {'text': row['text'], 'readable': row['readable'], 'box': row['box'], 'runs': row['runs']})
         row.update({'text': fix['text'], 'readable': fix['readable']}); counts['fix_text'] += fix['text_changed']
         counts['fix_unreadable'] += bool(fix['original_readable'] and not fix['readable'])
         if fix['pixels_changed']:
@@ -98,7 +98,7 @@ def merge(args):
     out = make_output_dir(args.output_dir); write_json(out/'regions.json', rows); write_json(out/'lines.json', lines)
     summary = {'regions': len(rows), 'in_review': len(review['regions']), **counts, 'lines': len(lines), 'whole_lines': sum(l['whole_line'] for l in lines)}
     write_manifest(out, config={k: str(v) for k, v in vars(args).items() if k != 'command'},
-                   inputs={str(p): digest(p) for p in (args.dataset, args.review, args.folds/'pack.json', *([args.fixes] if args.fixes else []))}, **summary)
+                   inputs={str(p): digest(p) for p in (args.dataset, args.review, args.folds/'pack.json', *(args.fixes or []))}, **summary)
     print(json.dumps(summary), flush=True)
 
 
@@ -204,7 +204,7 @@ def main(argv=None):
     m = sub.add_parser('merge')
     for key in ('dataset', 'folds', 'review', 'output-dir'):
         m.add_argument('--'+key, type=Path, required=True)
-    m.add_argument('--fixes', type=Path, help='the corrections of the page that checks the line readings (paper2-line-reading-fix-v1)')
+    m.add_argument('--fixes', type=Path, action='append', help='the corrections of the page that checks the line readings (paper2-line-reading-fix-v1); again for a later export')
     k = sub.add_parser('pack')
     for key in ('dataset', 'lines', 'output-dir'):
         k.add_argument('--'+key, type=Path, required=True)
