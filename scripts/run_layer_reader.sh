@@ -619,9 +619,12 @@ two_cards() {   # FUNCTION ARGS...: run FUNCTION "CARD,CARD" NUMA ARGS... in the
           && [ "$(tr ',' '\n' <<< "$pair" | grep -c .)" = 2 ]; do sleep 30; done
     ( case "$pair" in *"$CARD3"*) export ALLOW_GPU3=1 ;; esac; "$1" "$pair" "$(numa_of "${pair%%,*}")" "${@:2}" ) & PLACED_PIDS+=($! $!); PLACED_CARDS+=("${pair%%,*}" "${pair##*,}")
 }
-untaught() {   # OUT MODEL TP [more of recognize_lines]: the untaught model on the ceiling's images and words, vLLM, loops stopped
-    local out="$1" model="$2" tp="$3"; shift 3
-    [ -e "$out/complete.json" ] || job "$CARD_" "$NUMA_" "$out" -- "$PY" -m revrender.recognize_lines --pack "$V" --model "$model" --backend vllm \
+untaught() {   # OUT MODEL TP [more of recognize_lines]: the untaught model on the ceiling's images and words, vLLM (which takes the cards by
+               # index, not uuid), loops stopped
+    local out="$1" model="$2" tp="$3" u index; shift 3
+    index=$(for u in ${CARD_//,/ }; do nvidia-smi --query-gpu=index,uuid --format=csv,noheader | awk -F', ' -v u="$u" '$2==u{print $1}'; done | paste -sd,)
+    [ -e "$out/complete.json" ] || job "$CARD_" "$NUMA_" "$out" -- env CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$index" \
+        "$PY" -m revrender.recognize_lines --pack "$V" --model "$model" --backend vllm \
         --conditions context_revision --tp "$tp" --gpu-memory .85 --loop-limit 4 "$@" --output-dir "$out"
 }
 c3_fold() {   # FOLD: D1, the fold's reader of the ceiling's recipe with the question in its words, then the fold it never saw
