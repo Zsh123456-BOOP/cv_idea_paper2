@@ -122,21 +122,57 @@ td.id{{width:180px;word-break:break-all;font-size:11px}}img{{image-rendering:pix
 INK_CHECK = {50: 3, 25: 5, 75: 5, 5: 10, 95: 10}   # check 6: a synthetic set's difference percentile within this of the real one's
 
 
-def tile_differences(paste_dir, arm):
-    """Per source, the strike-less-writing core grey difference of each region of a pasted set (``one_stroke.ink_difference`` on its
-    tiles): the strike the pixels the paste darkened on the host's paper (target at least 235), the writing the host's ink it left as
-    it was."""
-    rows = json.loads((paste_dir/arm/'records.json').read_text())
+SEEN = 20                     # a strike pixel is seen when the paste made it this much darker than the host (or than paper)
+SEEN_LEAST = 30               # a region's strike is seen with at least this many such pixels and half its pixels
+UNSEEN_AT_MOST = .01          # check 6 (added 2026-11-17): at most this share of the regions with their strike not seen
+
+
+def crops(paste_dir, arm):
+    """(region, image, target) of each region of a pasted set, its crop put back together from its 256 tiles
+    (``restoration_pairs.canvas_tiles``: centred on white when shorter, stride 192)."""
+    from .restoration_pairs import SIZE
+    rows = json.loads((paste_dir/arm/'records.json').read_text()); regions = {r['id']: r for r in json.loads((paste_dir/'regions.json').read_text())}
     x = np.load(paste_dir/arm/'gold_pixels.npy', mmap_mode='r'); y = np.load(paste_dir/arm/'targets.npy', mmap_mode='r')
     by_region = {}
     for i, r in enumerate(rows):
-        by_region.setdefault(r['id'].split('~')[0], (r['source'].split('_')[-1], []))[1].append(i)
+        by_region.setdefault(r['id'].split('~')[0], []).append(i)
+    at = lambda n: sorted(set(list(range(0, n-SIZE+1, 192))+[n-SIZE]))
+    for rid, idx in by_region.items():
+        L, T, R, B = regions[rid]['box_on_page']; h, w = B-T, R-L; ph, pw = max(SIZE, h), max(SIZE, w); oy, ox = (ph-h)//2, (pw-w)//2
+        image, target = np.full((ph, pw), 255, np.uint8), np.full((ph, pw), 255, np.uint8)
+        for i, (ty, tx) in zip(idx, [(a, b) for a in at(ph) for b in at(pw)]):
+            image[ty:ty+SIZE, tx:tx+SIZE] = x[i]; target[ty:ty+SIZE, tx:tx+SIZE] = y[i]
+        yield regions[rid], image[oy:oy+h, ox:ox+w], target[oy:oy+h, ox:ox+w]
+
+
+def seen(image, reference, strike, within=None):
+    """Whether a strike shows: at least ``SEEN_LEAST`` pixels (of ``within``, all without), and as many as half the strike's, ``SEEN``
+    darker than ``reference``."""
+    dark = image.astype(int) < reference.astype(int)-SEEN
+    dark = int((dark if within is None else dark & within).sum())
+    return dark >= SEEN_LEAST and dark >= strike.sum()/2
+
+
+def unseen(paste_dir, arm):
+    """The regions of a pasted set whose strike does not show (``seen``: the crop's pixels the paste made darker than the host, against
+    the host's paper pixels it darkened at all, a little more than ``remove``), by source, kind and tier."""
+    out = {}
+    for region, image, target in crops(paste_dir, arm):
+        strike = (target >= 235) & (image < target)
+        miss = not seen(image, target, strike)
+        for key in (region['source'], f"{region['source']}_{region['kind']}", f"{region['source']}_{region['tier']}", 'all'):
+            out.setdefault(key, [0, 0]); out[key][0] += 1; out[key][1] += miss
+    return {k: {'regions': v[0], 'not_seen': v[1], 'share': round(v[1]/max(1, v[0]), 4)} for k, v in sorted(out.items())}
+
+
+def tile_differences(paste_dir, arm):
+    """Per source, the strike-less-writing core grey difference of each region of a pasted set kept without opacity (the set pasted
+    before the ink was matched): the strike the host's paper pixels the paste darkened, the writing the host's ink it left as it was."""
     out = {s: [] for s in SOURCES}
-    for source, idx in by_region.values():
-        image = np.concatenate([np.asarray(x[i]) for i in idx], 1); target = np.concatenate([np.asarray(y[i]) for i in idx], 1)
+    for region, image, target in crops(paste_dir, arm):
         d = S.ink_difference(image, (target >= 235) & (image < target), (target < INK_BELOW) & (image == target))
         if d is not None:
-            out[source].append(d)
+            out[region['source']].append(d)
     return out
 
 
@@ -156,27 +192,31 @@ def ink_check(args):
     regions = json.loads((args.paste/'regions.json').read_text())
     for arm, key in (('S', 'ink_difference'), ('S0', 'ink_difference_plain')):
         per = {s: [r[key] for r in regions if r['source'] == s and r[key] is not None] for s in SOURCES}
-        result[f'new_{arm}'] = {'all': judged([v for s in SOURCES for v in per[s]]), **{s: judged(per[s]) for s in SOURCES}}
+        result[f'new_{arm}'] = {'all': judged([v for s in SOURCES for v in per[s]]), **{s: judged(per[s]) for s in SOURCES},
+                                'measured': sum(r[key] is not None for r in regions), 'not_measured': sum(r[key] is None for r in regions),
+                                'not_measured_why': f'fewer than {S.CORE_LEAST} ink pixels of the strike on paper or of the writing it leaves untouched'}
+        result[f'unseen_{arm}'] = unseen(args.paste, arm)
+    real_seen = [seen(arrays[f'image_{k}'], np.full(arrays[f'image_{k}'].shape, 255, np.uint8), arrays[f'mask_{k}'] > 0, arrays[f'mask_{k}'] > 0)
+                 for k in range(len(rows))]
+    result['unseen_real'] = {'regions': len(real_seen), 'not_seen': int(len(real_seen)-sum(real_seen)),
+                             'share': round(1-sum(real_seen)/max(1, len(real_seen)), 4), 'reference': 'paper (255): the annotator erased pixels'}
+    result['unseen_bar'] = UNSEEN_AT_MOST
+    if args.before:
+        result['unseen_before_S'] = unseen(args.before, 'S'); result['unseen_before_S0'] = unseen(args.before, 'S0')
     if args.before:                     # the set before has no opacity kept: its writing is the host's ink the paste left as it was
         for arm in ('S', 'S0'):
             per = tile_differences(args.before, arm)
             result[f'before_{arm}'] = {'all': judged([v for s in SOURCES for v in per[s]]), **{s: judged(per[s]) for s in SOURCES},
                                        'writing': 'host ink left unchanged (tiles; no opacity kept)'}
-    result['pass'] = bool(result['new_S']['all']['pass'] and result['new_S0']['all']['pass'])
+    result['pass'] = bool(result['new_S']['all']['pass'] and result['new_S0']['all']['pass'] and result['unseen_S']['all']['share'] <= UNSEEN_AT_MOST)
     out = make_output_dir(args.output_dir); write_json(out/'ink_check.json', result)
-    chosen = random.Random(SEED).sample(regions, min(100, len(regions)))
-    rows_ = json.loads((args.paste/'S'/'records.json').read_text()); x = np.load(args.paste/'S'/'gold_pixels.npy', mmap_mode='r')
-    first = {}
-    for i, r in enumerate(rows_):
-        first.setdefault(r['id'].split('~')[0], i)
+    chosen = {r['id'] for r in random.Random(SEED).sample(regions, min(100, len(regions)))}
+    pasted = {r['id']: image for r, image, _ in crops(args.paste, 'S') if r['id'] in chosen}
     files = pages.page_files(args.pages); cells = []
-    for r in chosen:
+    for r in (x for x in regions if x['id'] in chosen):
         with Image.open(files[r['host_page']]) as im: page = review_clean(np.asarray(im.convert('L')))
-        L, T, R, B = r['box_on_page']; h, w = B-T, R-L; tile = np.asarray(x[first[r['id']]])
-        oy, ox = (max(256, h)-h)//2, (max(256, w)-w)//2
-        if h <= 256 and w <= 256:
-            page = page.copy(); page[T:B, L:R] = tile[oy:oy+h, ox:ox+w]
-        m = max(h, 20); y0, y1, x0, x1 = max(0, T-m), min(page.shape[0], B+m), max(0, L-m), min(page.shape[1], R+m)
+        L, T, R, B = r['box_on_page']; page = page.copy(); page[T:B, L:R] = pasted[r['id']]
+        m = max(B-T, 20); y0, y1, x0, x1 = max(0, T-m), min(page.shape[0], B+m), max(0, L-m), min(page.shape[1], R+m)
         view = page[y0:y1, x0:x1]
         cells.append(f'<tr><td class="id">{html.escape(r["id"])} {r["source"]} {r["kind"]} {r["tier"]}</td><td><img src="{png64(view, 3)}"></td>'
                      f'<td><img src="{png64(overlay(view, None, box=(L-x0, T-y0, R-x0, B-y0)), 3)}"></td></tr>')
