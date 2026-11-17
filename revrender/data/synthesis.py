@@ -181,7 +181,9 @@ def bank_units(bank_dir, files, excluded, other):
         page = opened[p['image_id']]; l, t, r, b = p['box']; m = p['line_height']
         L, T, R, B = max(0, l-m), max(0, t-m), min(page.shape[1], r+m), min(page.shape[0], b+m)
         grey = page[T:B, L:R]; piece = np.zeros(grey.shape, bool); piece[t-T:b-T, l-L:r-L] = arrays[p['id']] < 255
-        own = S.regrown(grey, piece); level = ink_level(grey, own); line = own & ~S.crossed(grey, own)
+        own = S.regrown(grey, piece)
+        if own.sum() < 6: left['no_ink_on_page'] += 1; continue
+        level = ink_level(grey, own); line = own & ~S.crossed(grey, own)
         segments, why = S.ribbon(grey, own, line, level)
         left.update(f'stroke_{w}' for w in why)
         if not segments: left['no_unit'] += 1; continue
