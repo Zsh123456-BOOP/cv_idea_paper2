@@ -80,6 +80,10 @@ table = {'model': 'R (real only), the version scored on the held-out writers bef
 json.dump(table, open(sys.argv[3], 'x'), indent=1); print(json.dumps(table))
 PY
         mark synthetic_table; fi
+    if ! done_ synthetic_table_final; then   # R's final step too (planning session 2026-11-17), beside the version scored before
+        bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$R/synthetic_scores_final" -- "$PY" -m revrender.eval.prefill score --model "R_final=$(final $RUN_R)" \
+            --set "synthetic=$PASTE/scored.json" --upstream "$UP" --output-dir "$R/synthetic_scores_final" > "$R/synthetic_scores_final.log" 2>&1
+        mark synthetic_table_final; fi
     arm() {   # NAME DATA BUDGET EXTRA
         RESTORER_MEMORY=10000 RESTORER_ARGS="--select blocks --extra $4" finetune_restorer NAFNet "$CARD" "$NUMA" - "$2" "${N}_synth_model_$1" "$3" > "$R/train_$1.log" 2>&1
         test -e "${N}_synth_model_$1/selection.json"
