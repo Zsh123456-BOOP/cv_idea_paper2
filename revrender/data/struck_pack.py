@@ -93,6 +93,31 @@ def layered(page, row):
     return Image.fromarray(scan), Image.fromarray(erased), Image.fromarray((255*strike[t:b, l:r]).astype(np.uint8))
 
 
+SPLIT_REGIONS, SPLIT_READABLE = 61, 50   # plan of 2026-11-18 (方法阶段第一轮): about a tenth of the 610 regions, at least 50 readable
+
+
+def split_order(writer):
+    return hashlib.sha256(f'{writer}:{SEED}'.encode()).hexdigest()
+
+
+def method_split(args):
+    """One split of a pack's writers into training and validation, kept for the rounds after it (plan of 2026-11-18, section one): the
+    writers in the order of ``split_order`` go to validation until it holds ``SPLIT_REGIONS`` regions, and on until ``SPLIT_READABLE``
+    of them are readable; the rest train.  OUT holds writer UUIDs only (configs/method_split.json)."""
+    rows = json.loads((args.pack/'pack.json').read_text())['rows']; writers = sorted({r['writer'] for r in rows}, key=split_order)
+    side = lambda chosen: [r for r in rows if r['writer'] in chosen]; val = []
+    for writer in writers:
+        held = side(val)
+        if len(held) >= SPLIT_REGIONS and sum(r['readable'] for r in held) >= SPLIT_READABLE: break
+        val.append(writer)
+    count = lambda sel: {'writers': len({r['writer'] for r in sel}), 'regions': len(sel), 'readable': sum(r['readable'] for r in sel)}
+    result = {'rule': f'writers ordered by sha256("<writer>:{SEED}"), to validation until it holds {SPLIT_REGIONS} regions and {SPLIT_READABLE} readable; the rest train',
+              'pack': str(args.pack), 'pack_sha256': digest(args.pack/'pack.json'), 'validation': sorted(val), 'training': sorted(set(writers)-set(val)),
+              'counts': {'validation': count(side(set(val))), 'training': count(side(set(writers)-set(val)))}}
+    require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, result)
+    print(json.dumps(result['counts']), flush=True)
+
+
 def chosen_regions(args):
     """(the regions to teach and read, each with its target, fold and val mark; {(source, page): file}; the held-out writers; the counts
     of the regions left out and why)."""
@@ -108,7 +133,11 @@ def chosen_regions(args):
         if reason: skipped[reason] += 1
         else: chosen.append({**r, 'target': target if r['readable'] else UNREADABLE})
     require(chosen, 'no region to teach or read')
-    if args.holdout_share:   # two folds: 0 the prefill set's held-out writers (data.prefill_set.held_out), 1 the rest
+    if args.split:   # two folds: 0 the validation writers of a method split (configs/method_split.json), 1 the training ones
+        split = json.loads(args.split.read_text()); known = set(split['validation']) | set(split['training'])
+        require({r['writer'] for r in chosen} <= known, f'writers not in {args.split}')
+        fold, val = {w: 0 if w in split['validation'] else 1 for w in known}, lambda w: False
+    elif args.holdout_share:   # two folds: 0 the prefill set's held-out writers (data.prefill_set.held_out), 1 the rest
         from .prefill_set import held_out
         fold, val = {w: 0 if held_out(w, args.holdout_share) else 1 for w in {r['writer'] for r in chosen}}, validation_writer
     elif args.folds_from:   # the folds and val marks of an earlier pack, writer by writer (a region added keeps its writer's)
@@ -385,6 +414,7 @@ def main(argv=None):
         f.add_argument('--hold-out', action='append', default=[], help='part of the name of an export whose regions, and their writers, stay out (the test page)')
         f.add_argument('--folds-from', type=Path, help='a folds pack whose folds and val marks the writers keep (else they are drawn anew)')
         f.add_argument('--holdout-share', type=float, help="two folds: 0 the writers data.prefill_set holds out at this share, 1 the rest")
+        f.add_argument('--split', type=Path, help='two folds: 0 the validation writers of this method split (``split``), 1 the training ones')
         f.add_argument('--erased-by', type=Path, help="folds: a restorer run whose strike makes the erased crop and the map (the annotator's pixels otherwise)")
         f.add_argument('--erased-step', help='the step directory of --erased-by'); f.add_argument('--upstream', type=Path, help='the restorers\' sources, with --erased-by')
         f.add_argument('--output-dir', type=Path, required=True)
@@ -395,13 +425,15 @@ def main(argv=None):
     for key in ('library', 'output-dir'): b.add_argument('--'+key, type=Path, required=True)
     b.add_argument('--dataset', type=Path, help='regions.json of a merged dataset: the regions it labels carry their targets')
     b.add_argument('--holdout-share', type=float, help="mark the labelled regions of the writers data.prefill_set holds out at this share")
+    m = sub.add_parser('split')
+    m.add_argument('--pack', type=Path, required=True); m.add_argument('--output', type=Path, required=True)
     a = sub.add_parser('answers')
     a.add_argument('--pack', type=Path, required=True); a.add_argument('--output', type=Path, required=True)
     c = sub.add_parser('counterfactual')
     for key in ('pack', 'human', 'output-dir'): c.add_argument('--'+key, type=Path, required=True)
     args = p.parse_args(argv)
     {'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack, 'views': views_pack, 'counterfactual': counterfactual_pack,
-     'library': library_pack, 'answers': answers_check}[args.command](args)
+     'library': library_pack, 'answers': answers_check, 'split': method_split}[args.command](args)
 
 
 if __name__ == '__main__':
