@@ -6,6 +6,14 @@
     python -m revrender.data.struck_pack views --pack PACK --dataset regions.json --pages DIR [...] --hold-out NAME [...] [--questions Q --answer-groups G] --output-dir OUT
     python -m revrender.data.struck_pack answers --pack PACK --output OUT.json
     python -m revrender.data.struck_pack counterfactual --pack SEPARATED_PACK --human FOLDS_PACK --output-dir OUT
+    python -m revrender.data.struck_pack split --pack PACK --output configs/method_split.json
+    python -m revrender.data.struck_pack scores --pack SEPARATED_PACK --sets SETS --fold 0 --output OUT.json
+
+``split`` (``method_split``): one 9:1 split of the writers, kept for the method stage; ``--split FILE`` makes ``folds``, ``fold-sets`` and
+``views`` take its two folds (0 its validation writers, 1 its training ones), and ``fold-sets`` then holds the readers' windows
+themselves (white outside the polygon, the polygon as ``inner_<k>``): fold_0 and fold_1 both train on fold 1 and stop by fold 0, each
+restoring its own fold.  ``separated --separator none`` leaves a fold unerased (the scan as its erased crop); ``scores`` gives the pixel
+scores of a separated pack's windows of one fold (``window_scores``).
 
 ``folds``: the regions of the merged dataset (``data.struck_dataset``) whose pixels and struck text are both confirmed, as one pack for
 a cross-validation over writers.  The regions of the exports named by ``--hold-out`` (the test page) and every other region of their
@@ -189,6 +197,16 @@ def folds_pack(args):
     print(json.dumps(summary), flush=True)
 
 
+def windowed(page, r):
+    """(scan, strike mask, window, polygon) of a region's OCR window as the readers see it (``layered``: white outside the polygon), the
+    polygon in the window's coordinates."""
+    from .pixel_masks import region_pixels
+    bl, bt, br, bb = r['box']; scan, _, strike = layered(page, r)
+    at = window(r['region'] or [[bl, bt], [br, bt], [br, bb], [bl, bb]], page.size)
+    inner = pasted(np.zeros((at[3]-at[1], at[2]-at[0]), bool), region_pixels(r['region'], r['box']), r['box'], at[:2])
+    return np.asarray(scan), (np.asarray(strike) > 0).astype(np.uint8), list(at), inner.astype(np.uint8)
+
+
 def fold_sets(args):
     chosen, files, held, _ = chosen_regions(args); cut = {}
     labelled = sorted({r['page'] for r in json.loads(args.dataset.read_text())})
@@ -196,17 +214,21 @@ def fold_sets(args):
         with Image.open(files[key]) as page:
             for r in (r for r in chosen if (r['source'], r['page']) == key):
                 bl, bt, br, bb = r['box']
-                cut[r['id']] = (*reviewed_crop(page, {'box': r['box'], 'runs': r['runs'], 'region': r['region']}),
+                cut[r['id']] = windowed(page, r) if args.split else (*reviewed_crop(page, {'box': r['box'], 'runs': r['runs'], 'region': r['region']}),
                                 list(window(r['region'] or [[bl, bt], [br, bt], [br, bb], [bl, bb]], page.size)))
-    out = make_output_dir(args.output_dir); summary = []
-    for k in range(FOLDS):
-        sides = {'training_native': [r for r in chosen if r['fold'] != k and not r['val']], 'validation_native': [r for r in chosen if r['fold'] != k and r['val']],
-                 'heldout_native': [r for r in chosen if r['fold'] == k]}
+    out = make_output_dir(args.output_dir); summary = []; parts = ('image', 'mask', None, 'inner') if args.split else ('image', 'mask')
+    for k in range(2 if args.split else FOLDS):
+        # a method split: always train on its training writers (fold 1) and stop by its validation writers (fold 0); fold K's regions restored
+        sides = ({'training_native': [r for r in chosen if r['fold'] == 1], 'validation_native': [r for r in chosen if r['fold'] == 0],
+                  'heldout_native': [r for r in chosen if r['fold'] == k]} if args.split else
+                 {'training_native': [r for r in chosen if r['fold'] != k and not r['val']], 'validation_native': [r for r in chosen if r['fold'] != k and r['val']],
+                  'heldout_native': [r for r in chosen if r['fold'] == k]})
         require(all(sides.values()), f'fold {k}: a side is empty'); folder = out/f'fold_{k}'; folder.mkdir()
         for name, rows in sides.items():
-            np.savez_compressed(folder/f'{name}.npz', **{f'{part}_{i}': cut[r['id']][j] for i, r in enumerate(rows) for j, part in enumerate(('image', 'mask'))})
-            write_json(folder/f'{name}.json', [{'id': r['id'], 'group_uuid': r['writer'], 'page': r['page'], 'box': r['box'], 'region': r['region'], 'window': cut[r['id']][2]} for r in rows])
-        write_json(folder/'records.json', [{'id': r['id'], 'group_uuid': r['writer'], 'split': 'train', 'source': 'human_confirmed'} for r in sides['training_native']])
+            np.savez_compressed(folder/f'{name}.npz', **{f'{part}_{i}': cut[r['id']][j] for i, r in enumerate(rows) for j, part in enumerate(parts) if part})
+            write_json(folder/f'{name}.json', [{'id': r['id'], 'group_uuid': r['writer'], 'page': r['page'], 'box': r['box'], 'region': r['region'], 'window': cut[r['id']][2],
+                                                'mode': r['mode'], **({'windowed': True} if args.split else {})} for r in rows])
+        write_json(folder/'records.json', [{'id': r['id'], 'group_uuid': r['writer'], 'split': 'train', 'source': 'human_confirmed', 'mode': r['mode']} for r in sides['training_native']])
         summary.append({name: len(rows) for name, rows in sides.items()})
         write_json(folder/'summary.json', {'validation_writers': sorted({r['writer'] for r in chosen if r['fold'] == k or r['val']} | held), 'fixed_writers': [], 'pages': labelled})
         write_manifest(folder, config={'dataset': str(args.dataset), 'fold': k, 'hold_out': args.hold_out}, inputs={str(args.dataset): digest(args.dataset)}, **summary[-1])
@@ -227,34 +249,73 @@ def pasted(canvas, part, box, origin):
     return canvas
 
 
+def window_scores(pieces):
+    """The pixel scores of restored windows (image, restored, human strike mask, polygon; float images in [0, 1]): the removal counts
+    inside the polygon (``baselines.restoration.removal_metrics``), and against the annotator's erased window (the scan with its strike
+    white) the PSNR of all their pixels together and the mean SSIM of the windows (each composed as the readers see it: the scan outside
+    the polygon)."""
+    from skimage.metrics import structural_similarity
+    from ..baselines.restoration import inside, removal_counts, removal_metrics
+    counts, squared, pixels, ssim = np.zeros(5, np.int64), 0., 0, []
+    for image, restored, mask, inner in pieces:
+        counts += removal_counts(*inside(image, restored, mask, inner))
+        shown = np.where(inner.astype(bool), restored, image); human = np.where(mask.astype(bool) & inner.astype(bool), 1., image)
+        squared += float(((shown-human)**2).sum()); pixels += shown.size
+        side = min(shown.shape)
+        if side >= 3: ssim.append(float(structural_similarity(human, shown, data_range=1., win_size=min(7, side-1+side % 2))))
+    return {'removal': removal_metrics(counts), 'psnr': float(-10*np.log10(max(squared/max(1, pixels), 1e-12))), 'ssim': float(np.mean(ssim)),
+            'regions': len(pieces), 'ssim_regions': len(ssim)}
+
+
 def separated_pack(args):
     from ..baselines.restoration import restore_native
     from ..baselines.restoration_export import selected_predictor
     from .pixel_masks import region_pixels
-    require(len(args.separator) == FOLDS, f'{FOLDS} separators, in the order of the folds')
+    folds = len(list(args.sets.glob('fold_*'))); require(len(args.separator) == folds, f'{folds} separators, in the order of the folds')
     source = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
     out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []; inputs = {str(args.pack/'pack.json'): digest(args.pack/'pack.json')}; shares = []
     for k, run in enumerate(args.separator):
         folder = args.sets/f'fold_{k}'; native = json.loads((folder/'heldout_native.json').read_text()); arrays = np.load(folder/'heldout_native.npz')
-        predict, checkpoint, _ = selected_predictor(run, args.upstream, None); inputs[str(checkpoint)] = digest(checkpoint)
+        if str(run) == 'none':   # nothing erased: the scan as its own erased crop
+            predict = lambda x: x
+        else:
+            predict, checkpoint, _ = selected_predictor(run, args.upstream, args.checkpoint); inputs[str(checkpoint)] = digest(checkpoint)
         for i, n in enumerate(native):
             row = source[n['id']]; require(row['fold'] == k, f"{n['id']}: not of fold {k} in the pack")
             image = arrays[f'image_{i}'].astype(np.float32)/255; restored = np.clip(restore_native(predict, image), 0, 1)
-            inside = region_pixels(n['region'], n['box']); share = taken_away(image, restored)*inside
             with Image.open(args.pack/row['images']['raw']) as opened: scan = np.asarray(opened.convert('L')).copy()
-            origin = n['window'][:2]
-            erased = np.where(pasted(np.zeros(scan.shape, bool), inside, n['box'], origin),                     # outside the polygon the scan stays
-                              pasted(scan.copy(), np.round(255*restored).astype(np.uint8), n['box'], origin), scan)
-            layer = pasted(np.zeros(scan.shape, np.uint8), np.round(255*share).astype(np.uint8), n['box'], origin)
+            if n.get('windowed'):   # the set holds the readers' window itself (white outside the polygon)
+                inner = arrays[f'inner_{i}'].astype(bool)
+                require(scan.shape == image.shape and (scan == arrays[f'image_{i}']).all(), f"{n['id']}: the set and the pack cut it differently")
+                share = taken_away(image, restored)*inner
+                erased = np.where(inner, np.round(255*restored), scan).astype(np.uint8); layer = np.round(255*share).astype(np.uint8)
+            else:
+                inside = region_pixels(n['region'], n['box']); share = taken_away(image, restored)*inside
+                origin = n['window'][:2]
+                erased = np.where(pasted(np.zeros(scan.shape, bool), inside, n['box'], origin),                     # outside the polygon the scan stays
+                                  pasted(scan.copy(), np.round(255*restored).astype(np.uint8), n['box'], origin), scan)
+                layer = pasted(np.zeros(scan.shape, np.uint8), np.round(255*share).astype(np.uint8), n['box'], origin)
             images = {name: f'crops/{len(rows):05d}_{name}.png' for name in ('raw', 'erased', 'map')}
             for name, array in zip(images, (scan, erased, layer)): Image.fromarray(array).save(out/images[name])
             rows.append({**row, 'images': images}); shares.append(float(share[arrays[f'mask_{i}'] > 0].mean()) if arrays[f'mask_{i}'].any() else None)
     require(len(rows) == len(source), 'the sets and the pack hold different regions')
     write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
     known = [s for s in shares if s is not None]
-    write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'separators': [str(r) for r in args.separator]}, inputs=inputs, regions=len(rows),
-                   strike_taken_away_mean=float(np.mean(known)))
+    write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'separators': [str(r) for r in args.separator], 'checkpoint': args.checkpoint},
+                   inputs=inputs, regions=len(rows), strike_taken_away_mean=float(np.mean(known)))
     print(json.dumps({'regions': len(rows), 'strike_taken_away_mean': float(np.mean(known))}), flush=True)
+
+
+def pixel_scores(args):
+    """``window_scores`` of a separated pack's erased windows of one fold of windowed sets (the windows as saved, 8 bits), to OUT.json."""
+    rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
+    folder = args.sets/f'fold_{args.fold}'; native = json.loads((folder/'heldout_native.json').read_text()); arrays = np.load(folder/'heldout_native.npz')
+    require(all(n.get('windowed') for n in native), 'not windowed sets')
+    pieces = [(arrays[f'image_{i}'].astype(np.float32)/255, np.asarray(Image.open(args.pack/rows[n['id']]['images']['erased']).convert('L'), np.float32)/255,
+               arrays[f'mask_{i}'], arrays[f'inner_{i}']) for i, n in enumerate(native)]
+    result = {**window_scores(pieces), 'pack': str(args.pack), 'sets': str(folder)}
+    require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, result)
+    print(json.dumps({k: result[k] for k in ('psnr', 'ssim', 'regions')} | {'f1': result['removal']['f1']}), flush=True)
 
 
 def intervened(scan, strike, share):
@@ -420,11 +481,16 @@ def main(argv=None):
         f.add_argument('--output-dir', type=Path, required=True)
     d = sub.add_parser('separated')
     for key in ('pack', 'sets', 'upstream', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)
-    d.add_argument('--separator', type=Path, action='append', required=True, help="a fold's separator run (baselines.restoration), given once per fold in order")
+    d.add_argument('--separator', type=Path, action='append', required=True,
+                   help="a fold's separator run (baselines.restoration), given once per fold in order; 'none': nothing erased")
+    d.add_argument('--checkpoint', help="a step directory of the separators in place of their selected one")
     b = sub.add_parser('library')
     for key in ('library', 'output-dir'): b.add_argument('--'+key, type=Path, required=True)
     b.add_argument('--dataset', type=Path, help='regions.json of a merged dataset: the regions it labels carry their targets')
     b.add_argument('--holdout-share', type=float, help="mark the labelled regions of the writers data.prefill_set holds out at this share")
+    q = sub.add_parser('scores')
+    for key in ('pack', 'sets', 'output'): q.add_argument('--'+key, type=Path, required=True)
+    q.add_argument('--fold', type=int, default=0)
     m = sub.add_parser('split')
     m.add_argument('--pack', type=Path, required=True); m.add_argument('--output', type=Path, required=True)
     a = sub.add_parser('answers')
@@ -433,7 +499,7 @@ def main(argv=None):
     for key in ('pack', 'human', 'output-dir'): c.add_argument('--'+key, type=Path, required=True)
     args = p.parse_args(argv)
     {'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack, 'views': views_pack, 'counterfactual': counterfactual_pack,
-     'library': library_pack, 'answers': answers_check, 'split': method_split}[args.command](args)
+     'library': library_pack, 'answers': answers_check, 'split': method_split, 'scores': pixel_scores}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -18,19 +18,25 @@ evaluate_versions() {   # LIST OUT LOG: every version of LIST (eval.unified_rest
 chosen_of() {   # SELECTION FAMILY: the chosen version's weights (a box remover's .pt, a restorer's step directory)
     "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1]))[sys.argv[2]]["spec"]; print(s["checkpoint"] if s["type"]=="own" else s["run"]+"/"+s["checkpoint"])' "$1/selection.json" "$2"
 }
+upstream_of() {   # MODEL -> the folder of official sources it is built from (NEW_UP: the method stage's VCGAN and DocRes)
+    case "$1" in StainRestorer) echo "$STAIN_UP" ;; VCGAN|DocRes) echo "${NEW_UP:?}" ;; *) echo "$UP" ;; esac
+}
+restorer_env() {   # MODEL: export the environment its code runs in (in a subshell) and set RUNTIME to its python
+    export PYTHONPATH="$ROOT"; unset LD_LIBRARY_PATH; RUNTIME=$PY
+    if [ "$1" = DE-GAN ]; then
+        RUNTIME=/home/zsh/hme/envs/paper2_restoration_tf/bin/python; export TF_USE_LEGACY_KERAS=1 LD_LIBRARY_PATH=""
+        for d in /home/zsh/hme/envs/paper2_restoration_tf/lib/python3.12/site-packages/nvidia/*/lib; do export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; done
+    elif [ "$1" = StainRestorer ]; then export PYTHONPATH="$ROOT:/home/zsh/hme/envs/paper2_stain_deps"; fi
+}
 finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT [BUDGET]: a restorer trained on DATA from INIT ('-': its own random start) with a
     # budget of configs/restoration.toml (default [finetune] from INIT); RESTORER_ARGS: further arguments of the restorer; RESTORER_MEMORY: the free MiB
     # the card must have (default 20000)
-    local model="$1" card="$2" numa="$3" init="$4" data="$5" out="$6" budget="${7:-}" runtime=$PY upstream=$UP start=()
+    local model="$1" card="$2" numa="$3" init="$4" data="$5" out="$6" budget="${7:-}" upstream start=()
     [ "$init" = - ] || start=(--init "$init"); [ -z "$budget" ] || start+=(--budget "$budget")
     [ ! -e "$out/selection.json" ] || return 0
-    [ "$model" != StainRestorer ] || upstream=$STAIN_UP
+    upstream=$(upstream_of "$model")
     (
-        export PYTHONPATH="$ROOT"; unset LD_LIBRARY_PATH
-        if [ "$model" = DE-GAN ]; then
-            runtime=/home/zsh/hme/envs/paper2_restoration_tf/bin/python; export TF_USE_LEGACY_KERAS=1 LD_LIBRARY_PATH=""
-            for d in /home/zsh/hme/envs/paper2_restoration_tf/lib/python3.12/site-packages/nvidia/*/lib; do export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; done
-        elif [ "$model" = StainRestorer ]; then export PYTHONPATH="$ROOT:/home/zsh/hme/envs/paper2_stain_deps"; fi
+        restorer_env "$model"; runtime=$RUNTIME
         idle=0; if [ "$card" = "$CARD3" ]; then idle=1; export ALLOW_GPU3=1; fi
         wait_for_gpu_memory "$card" "${RESTORER_MEMORY:-20000}" "$idle"
         bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$runtime" -m revrender.baselines.restoration --model "$model" \

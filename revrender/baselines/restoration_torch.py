@@ -20,6 +20,22 @@ def package(name,path):
     return m
 
 
+INVERTED=('COR-Generator','Strikethrough-CycleGAN','Strikethrough-CycleGAN-A')   # trained on inverted grey (ink bright)
+
+
+def docres_prompt(x,root):
+    """DocRes's binarization prompt (its inference.py ``binarization_promptv2``, unchanged but for the grey input) of grey tiles x
+    (N, H, W) in [0, 1]: per tile its Sauvola threshold map, Sobel gradient and Sauvola binarization (over 155 white), 3 channels in [0, 1]."""
+    import cv2
+    utils=module_file('official_docres_utils',root/'utils.py');out=[]
+    for tile in x:
+        img=cv2.cvtColor(np.rint(np.asarray(tile)*255).astype(np.uint8),cv2.COLOR_GRAY2BGR)
+        result,thresh=utils.SauvolaModBinarization(img);thresh=thresh.astype(np.uint8);result[result>155]=255;result[result<=155]=0
+        high=cv2.addWeighted(cv2.convertScaleAbs(cv2.Sobel(img,cv2.CV_16S,1,0)),.5,cv2.convertScaleAbs(cv2.Sobel(img,cv2.CV_16S,0,1)),.5,0)
+        out.append(np.stack([thresh,cv2.cvtColor(high,cv2.COLOR_BGR2GRAY),result]).astype(np.float32)/255)
+    return np.stack(out)
+
+
 def build(model,root,architecture=None):
     if model=='NAFNet':
         # Avoid BasicSR's unrelated dataset/extension auto-imports. Architecture files
@@ -38,7 +54,13 @@ def build(model,root,architecture=None):
     if model=='StainRestorer':
         m=module_file('official_stainrestorer',root/'models/StainRestorer.py')
         return m.StainRestorer(**(architecture or {})).cuda(),None,None
-    if model in ('COR-Generator','Strikethrough-CycleGAN'):
+    if model=='DocRes':   # the released training script's network: 6 channels in (image and prompt), 3 out
+        m=module_file('official_docres_restormer',root/'models/restormer_arch.py')
+        return m.Restormer(inp_channels=6,out_channels=3,dim=48,num_blocks=[2,3,3,4],num_refinement_blocks=4,heads=[1,2,4,8],
+                           ffn_expansion_factor=2.66,bias=False,LayerNorm_type='WithBias',dual_pixel_task=True).cuda(),None,None
+    if model=='VCGAN':   # its struck-to-clean generator (baselines.restoration_vcgan trains both directions)
+        return module_file('official_vcgan_generator',root/'generator_model.py').Generator(img_channels=3,num_residuals=9).cuda(),None,None
+    if model in INVERTED:
         file=root/'src/_models.py' if model=='COR-Generator' else root/'strikethrough_removal/src/network/generators.py'
         m=module_file('official_dense_'+model.replace('-','_'),file)
         return m.DenseGenerator(1,1,n_blocks=1).cuda(),None,None
@@ -70,9 +92,12 @@ def psnr_loss(value,target,weight=None,sample_weight=None):
     return loss.mean() if sample_weight is None else (loss*sample_weight).sum()/sample_weight.sum()
 
 
-def image_tensor(x,model):
+def image_tensor(x,model,root=None):
+    """Grey tiles (N, H, W) in [0, 1] as a model takes them (DocRes: with its prompt, built from ``root``)."""
     t=torch.from_numpy(np.ascontiguousarray(x[:,None])).cuda()
-    if model in ('COR-Generator','Strikethrough-CycleGAN'):return 1-t
+    if model in INVERTED:return 1-t
+    if model=='VCGAN':return t.repeat(1,3,1,1)*2-1
+    if model=='DocRes':return torch.cat([t.repeat(1,3,1,1),torch.from_numpy(docres_prompt(x,root)).cuda()],1)
     return t.repeat(1,3,1,1)
 
 
@@ -89,10 +114,10 @@ def stain_loss(outputs,target):
 
 
 @torch.no_grad()
-def predict_image(network,diffusion,x,model):
+def predict_image(network,diffusion,x,model,root=None):
     network.eval()
     with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
-        torch.manual_seed(SEED);xx=image_tensor(x,model)
+        torch.manual_seed(SEED);xx=image_tensor(x,model,root)
         if diffusion is not None:
             initial=network.init_predictor(xx,torch.zeros(len(xx),dtype=torch.long,device=xx.device))
             with contextlib.redirect_stdout(io.StringIO()):
@@ -102,8 +127,9 @@ def predict_image(network,diffusion,x,model):
             # memory bound as StainRestorer training without changing its output.
             if model=='StainRestorer':out=torch.cat([final_image(network(im[None]),model) for im in xx])
             else:out=network(xx)
-    if model in ('COR-Generator','Strikethrough-CycleGAN'):out=1-out
-    return out.mean(1).clamp(0,1).cpu().numpy()
+    if model in INVERTED:out=1-out
+    if model=='VCGAN':out=out*.5+.5
+    return out.float().mean(1).clamp(0,1).cpu().numpy()
 
 
 def train(e):
@@ -114,8 +140,9 @@ def train(e):
     if a.init:network.load_state_dict(torch.load(a.init/'weights.pt',map_location='cuda',weights_only=False)['model'])
     scale=a.learning_rate_scale
     is_doc=a.model=='DocDiff';is_cor=a.model=='COR-Generator';is_rest=a.model=='Restormer'
-    is_stain=a.model=='StainRestorer'
-    if is_cor:opt=torch.optim.Adam(network.parameters(),lr=1e-3*scale,betas=(.9,.999))
+    is_stain=a.model=='StainRestorer';is_docres=a.model=='DocRes';root=upstream_of(a.upstream,a.model)
+    if is_docres:opt=torch.optim.AdamW(network.parameters(),lr=2e-4*scale,weight_decay=5e-4)
+    elif is_cor:opt=torch.optim.Adam(network.parameters(),lr=1e-3*scale,betas=(.9,.999))
     elif is_stain:opt=torch.optim.AdamW(network.parameters(),lr=2e-4*scale,betas=(.9,.999),weight_decay=.01,eps=1e-8)
     else:
         opt=torch.optim.AdamW(network.parameters(),lr=scale*(1e-4 if is_doc else 3e-4 if is_rest else 1e-3),
@@ -123,7 +150,8 @@ def train(e):
             betas=(.9,.999) if is_doc or is_rest else (.9,.9))
     scheduler=None
     if a.model=='NAFNet':scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-7*scale)
-    if is_stain:scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-6*scale)
+    if is_stain or is_docres:scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-6*scale)
+    scaler=torch.amp.GradScaler('cuda') if is_docres else None   # DocRes trains in mixed precision, as released
     if is_rest:
         # Preserve the official flat/cosine fractions, scale duration to declared task budget.
         flat=max(1,round(a.steps*92000/300000))
@@ -140,8 +168,9 @@ def train(e):
         'architecture':a.model+' unchanged official architecture',
         'loss':('official PRE_ORI L2 high/low frequency, beta50/T100' if is_doc else
                 'BCE on inverted images' if is_cor else 'L1' if is_rest else
+                'L1 on the 3 output channels (its regression tasks), binarization prompt (Sauvola threshold, Sobel gradient, Sauvola map) of each tile; AdamW 2e-4 wd 5e-4, cosine to 1e-6, mixed precision' if is_docres else
                 'both stages: MSE + 0.2*(1-SSIM), author torchmetrics defaults per image' if is_stain else 'official PSNR loss'),
-        'diffusion_steps':100 if is_doc else None,'ema':ema is not None,'precision':'float32',
+        'diffusion_steps':100 if is_doc else None,'ema':ema is not None,'precision':'float16 autocast' if is_docres else 'float32',
         'ema_rule':'official .9999 parameter average every 100 updates after step 2000; initial model copy; raw and EMA validation candidates' if ema is not None else None,
         'adaptation':'256 native tiles; batch4; seed42; no rotation; task-specific budget; Restormer fixed patches and scaled flat/cosine schedule',
         'initialization':str(a.init) if a.init else 'official random initialization','learning_rate_scale':scale}
@@ -157,7 +186,7 @@ def train(e):
     active=network
 
     def predict(x):
-        return predict_image(active,ema_diffusion if active is ema else diffusion,x,a.model)
+        return predict_image(active,ema_diffusion if active is ema else diffusion,x,a.model,root)
 
     def save(path):
         path.mkdir()
@@ -174,8 +203,10 @@ def train(e):
         # These architectures have no batch norm. Accumulate an effective batch4.
         size=1 if is_rest or is_stain else len(x);value=0.
         for start in range(0,len(x),size):
-            xx=image_tensor(x[start:start+size],a.model);yy=image_tensor(y[start:start+size],a.model)
-            if is_doc:loss=docdiff_loss(network,diffusion,lap,xx,yy)
+            xx=image_tensor(x[start:start+size],a.model,root);yy=image_tensor(y[start:start+size],'NAFNet' if is_docres else a.model)   # DocRes's target: the grey on 3 channels
+            if is_docres:
+                with torch.autocast('cuda'):loss=F.l1_loss(network(xx),yy)
+            elif is_doc:loss=docdiff_loss(network,diffusion,lap,xx,yy)
             elif is_cor:loss=F.binary_cross_entropy(network(xx),yy)
             elif is_rest:loss=F.l1_loss(network(xx),yy)
             elif is_stain:loss=stain_loss(network(xx),yy)
@@ -184,11 +215,13 @@ def train(e):
                                torch.from_numpy(np.ascontiguousarray(sw[start:start+size])).cuda())
             else:loss=10/np.log(10)*torch.log(((network(xx)-yy)**2).mean((1,2,3))+1e-8).mean()
             require(torch.isfinite(loss).item(),'nonfinite training loss')
-            loss=loss*(len(xx)/len(x));value+=float(loss.detach());loss.backward()
+            loss=loss*(len(xx)/len(x));value+=float(loss.detach())
+            (scaler.scale(loss) if scaler else loss).backward()
         if a.model=='NAFNet':torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
         if is_rest:torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
-        opt.step()
-        if step==1:require(not torch.equal(before,next(network.parameters()).detach()),'model did not update')
+        if scaler:scaler.step(opt);scaler.update()
+        else:opt.step()
+        if step==1 and not scaler:require(not torch.equal(before,next(network.parameters()).detach()),'model did not update')
         if ema is not None and step>2000 and step%100==0:
             with torch.no_grad():
                 for target,current in zip(ema.parameters(),network.parameters()):target.mul_(.9999).add_(current,alpha=.0001)

@@ -45,7 +45,7 @@ def selected_predictor(run,upstream,checkpoint=None):
         state=torch.load(checkpoint,map_location='cpu',weights_only=False);network.load_state_dict(state['model']);network.eval()
         @torch.no_grad()
         def predict(x):
-            return predict_image(network,diffusion,x,model)
+            return predict_image(network,diffusion,x,model,upstream_of(upstream,model))
     return predict,checkpoint,manifest
 
 

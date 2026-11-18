@@ -64,6 +64,32 @@ validation_limit = 64
 min_steps = 40000
 patience = 6
 
+# The three baselines added for the method stage (plan of 2026-11-18); their own recipes are in their modules, a budget sets the steps.
+# CycleGAN-A: ATTR_GUIDED of the release (attribute = annotation mode); VCGAN: the release's batch 1 (gradient fix); DocRes: one task.
+[training.Strikethrough-CycleGAN-A]
+steps = 80910
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 80910
+patience = 0
+
+[training.VCGAN]
+steps = 80000
+batch_size = 1
+eval_every = 5000
+validation_limit = 64
+min_steps = 40000
+patience = 6
+
+[training.DocRes]
+steps = 80000
+batch_size = 4
+eval_every = 5000
+validation_limit = 64
+min_steps = 40000
+patience = 6
+
 # Fine-tuning every restorer on the box remover's 201 human regions plus its synthetic replay (2026-10-22, user: same real
 # annotations for every model, versions chosen on validation read-back): as many passes over the set as the box remover's own
 # fine-tuning (revrender_strokes_human.toml: 800 steps x 8 over 498 rows), a tenth of each recipe's learning rate, four
@@ -99,3 +125,20 @@ evaluations = 8
 passes = 6
 learning_rate_scale = 1.0
 evaluations = 12
+
+# Method stage, first round (plan 基线统一训练第一轮, 2026-11-18): every restorer from its own random start on the training writers of
+# configs/method_split.json, each to its own convergence by one rule: a validation every 10 passes (removal F1 inside the regions of
+# the validation writers), at least 100 passes, stopped after 6 validations in a row none 0.1 point above the best so far, at most 400.
+[method_round1]
+passes = 400
+evaluations = 40
+min_passes = 100
+patience = 6
+min_delta = 0.001
+learning_rate_scale = 1.0
+
+# Its smoke test (scripts/run_method_baselines.sh PART=smoke): two passes, two validations, no stop.
+[method_smoke]
+passes = 2
+evaluations = 2
+learning_rate_scale = 1.0

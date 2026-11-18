@@ -17,12 +17,14 @@ from PIL import Image
 
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
-MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer', 'StainRestorer']
+MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer', 'StainRestorer',
+          'Strikethrough-CycleGAN-A', 'VCGAN', 'DocRes']
+SOURCE = {'Strikethrough-CycleGAN-A': 'Strikethrough-CycleGAN'}   # the attribute-guided CycleGAN is built from the same release
 
 
 def upstream_of(upstream, model):
     """The official source a model is built from."""
-    return upstream/model
+    return upstream/SOURCE.get(model, model)
 
 
 def verified_source(path):
@@ -143,7 +145,7 @@ class Experiment:
         return self.rng.choice(self.train,self.args.batch_size,replace=False)
 
     def batch(self,unpaired=False,weights=False):
-        ids=self.sample()
+        ids=self.sample();self.last_ids=ids
         targets=self.unpaired_rng.choice(self.train,self.args.batch_size,replace=False) if unpaired else ids
         x,y=self.x[ids].astype(np.float32)/255,self.y[targets].astype(np.float32)/255
         w=self.w[ids].astype(np.float32) if self.w is not None and weights else np.ones_like(x);s=self.s[ids].copy() if weights else None
@@ -194,15 +196,16 @@ class Experiment:
         # by the removal F1 of the human validation, or (the prefill model) by its pixels or blocks to fix, fewer the better
         select=getattr(self.args,'select','f1')
         score={'edits':-result['human_edits'],'blocks':-result['human_blocks']}.get(select,result['human_removal']['f1'])
+        # a version is kept when it beats the best so far; it counts against the patience unless it beats it by --min-delta
         improved=score>self.best[0]
         self.last_step=step
-        self.candidate_improved|=improved
+        self.candidate_improved|=score>self.best[0]+getattr(self.args,'min_delta',0.)
         if final_candidate:
             self.stale=0 if self.candidate_improved else self.stale+1
             self.candidate_improved=False
         self.stop=bool(self.args.patience and step>=self.args.min_steps and self.stale>=self.args.patience)
         # Always retain the final checkpoint; intermediate checkpoints only when validation improves.
-        if improved or step==self.args.steps or self.stop:
+        if improved or step==self.args.steps or self.stop or getattr(self.args,'keep_all',False):
             save(self.out/f'step_{step}{suffix}')
             np.savez_compressed(self.out/f'native_{step}{suffix}.npz',**native_out)
             Image.fromarray(np.concatenate(tiles)).save(self.out/f'native_{step}{suffix}.png')
@@ -216,6 +219,7 @@ class Experiment:
             'checkpoint':f'step_{self.best[1]}{self.best[2]}','evaluation':f'evaluation_{self.best[1]}{self.best[2]}.json',
             'no_test_data_used':True,'actual_steps':self.last_step,
             'stop_reason':'validation_plateau' if self.stop else 'declared_budget',
+            'selected_at_last_evaluation':self.best[1]==self.last_step,
             'training_examples_seen':self.last_step*self.args.batch_size})
         self.log({'status':'completed','selected_step':self.best[1]})
 
@@ -231,6 +235,8 @@ def main(argv=None):
     p.add_argument('--validation-limit',type=int,default=64)
     p.add_argument('--min-steps',type=int,default=0)
     p.add_argument('--patience',type=int,default=0)
+    p.add_argument('--min-delta',type=float,default=0.,help='a validation counts against the patience unless it beats the best by this much')
+    p.add_argument('--keep-all',action='store_true',help='keep the weights of every validation, not only the improving ones')
     p.add_argument('--ema',action='store_true')
     p.add_argument('--augment',action='store_true',help='each weighted training tile scaled 0.8-1.25, turned 5 degrees either way, ink gamma 0.8-1.25')
     p.add_argument('--select',choices=['f1','edits','blocks'],default='f1',
@@ -251,13 +257,18 @@ def main(argv=None):
         require(pre.protocol is not None and budget in protocol,f'the protocol has no [{budget}] budget')
         rule=protocol[budget];rows=json.loads((args.data/'records.json').read_text())
         args.steps=max(rule['evaluations'],round(rule['passes']*sum(r['split']=='train' for r in rows)/args.batch_size))
-        args.eval_every=max(1,args.steps//rule['evaluations']);args.min_steps=0;args.patience=0
+        args.eval_every=max(1,args.steps//rule['evaluations'])
+        # a budget may stop early: no sooner than its min_passes (a whole number of validations), after `patience` validations short of the
+        # best by min_delta
+        args.min_steps=args.eval_every*round(rule['evaluations']*rule.get('min_passes',0)/rule['passes'])
+        args.patience=rule.get('patience',0);args.min_delta=rule.get('min_delta',0.)
         args.learning_rate_scale=rule.get('learning_rate_scale',1.)
     require(args.steps>0 and args.batch_size>0 and args.eval_every>0,'invalid budget')
     random.seed(SEED);np.random.seed(SEED)
     experiment=Experiment(args)
     if args.model=='DE-GAN':from .restoration_tf import train
-    elif args.model=='Strikethrough-CycleGAN':from .restoration_cycle import train
+    elif args.model in ('Strikethrough-CycleGAN','Strikethrough-CycleGAN-A'):from .restoration_cycle import train
+    elif args.model=='VCGAN':from .restoration_vcgan import train
     else:from .restoration_torch import train
     train(experiment)
 

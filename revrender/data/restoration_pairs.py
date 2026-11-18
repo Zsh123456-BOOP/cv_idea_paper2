@@ -393,7 +393,8 @@ def human_pairs(review_set, source, arm, destination, no_replay=False):
         for n, (tile, target, weight) in enumerate(made):
             data.append(tile); targets.append(target); weights.append(weight)
             rows.append({'id': f"{r['id']}~{n}", 'group_uuid': r['group_uuid'], 'split': 'train', 'source': source_of.get(r['id'], 'human_confirmed'),
-                         'clean': bool((tile == target).all()), **({'weight': weight_of[r['id']]} if r['id'] in weight_of else {})})
+                         'clean': bool((tile == target).all()), **({'weight': weight_of[r['id']]} if r['id'] in weight_of else {}),
+                         **({'mode': r['mode']} if 'mode' in r else {})})
     replay = [] if no_replay or not source else [r for r in records if r['source'] == 'synthetic_replay' and r['split'] == 'train']
     require(all('pair_index' in r for r in replay), 'the replay was not cut from these pairs')
     for r in replay:
