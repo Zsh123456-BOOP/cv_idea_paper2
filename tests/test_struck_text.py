@@ -176,3 +176,29 @@ def test_one_pass_keeps_open_regions_the_annotators_text_and_pages_left_without_
     assert [p['id'] for p in pack['pages']] == ['w1_2_1', 'w3_4_1']             # the page left without regions stays
     initial = json.loads((made/'page'/'initial.json').read_text())['pages']
     assert [r['text'] for r in initial['w1_2_1']['revisions']] == ['x', '', 'x'] and initial['w3_4_1']['revisions'] == []
+
+
+def test_sheets_draft_only_untouched_texts_and_use_the_annotators_pixels_where_kept(tmp_path):
+    import base64, io, json
+    from argparse import Namespace
+    import numpy as np
+    from PIL import Image
+    from revrender.data.pixel_masks import SCHEMA, encode
+    from revrender.tools.annotate import struck_text
+    from revrender.tools.annotate.pixel_offline import render_html
+    grey = np.full((60, 120), 255, np.uint8); grey[20:30, 10:110] = 0
+    buffer = io.BytesIO(); Image.fromarray(grey).save(buffer, format='PNG')
+    page = {'id': 'p', 'question': '1', 'image': 'data:image/png;base64,'+base64.b64encode(buffer.getvalue()).decode(), 'size': [120, 60], 'split': 'test'}
+    box = [5, 15, 115, 35]; region = [[5, 15], [115, 15], [115, 35], [5, 35]]; full = encode(np.ones((20, 110), bool))
+    rows = [{'id': f'r{k}', 'page': 0, 'box': box, 'region': region, 'runs': full, 'prefill': 'x', 'text': 'x'} for k in range(4)]
+    payload = {'id': 'pk', 'schema': 'paper2-pixel-review-pack-v1', 'task': 'strike_text', 'pages': [page], 'rows': rows, 'image_revision': 'rev', 'standalone': True}
+    (tmp_path/'page.html').write_text(render_html(payload, None))
+    base = {'box': box, 'region': region, 'runs': encode(np.zeros((20, 110), bool)), 'text': 'x'}
+    export = {'schema': SCHEMA, 'pack': 'pk', 'image_revision': 'rev', 'pages': {'p': {'revisions': [
+        {**base, 'id': 'r0'}, {**base, 'id': 'r1', 'text': 'changed'}, {**base, 'id': 'r2', 'text': 'done', 'text_confirmed': True, 'confirmed': True},
+        {**base, 'id': 'r3', 'ops': 2}]}}}
+    (tmp_path/'export.json').write_text(json.dumps(export))
+    struck_text.sheets(Namespace(source=tmp_path/'page.html', export=tmp_path/'export.json', output_dir=tmp_path/'out'))
+    index = json.loads((tmp_path/'out'/'index.json').read_text()); refs = json.loads((tmp_path/'out'/'reference.json').read_text())
+    assert {v['id']: v['pixels'] for v in index.values()} == {'r0': 'prefill', 'r3': 'annotator'}
+    assert [v['text'] for v in refs.values()] == ['done'] and (tmp_path/'out'/'draft_01.png').exists()

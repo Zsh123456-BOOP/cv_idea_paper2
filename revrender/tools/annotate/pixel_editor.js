@@ -338,6 +338,12 @@ async function start(){
       if(base.preserved_manual){if(!old||untouched(old))store.rows[base.id]=R.restoreRow(base,{...base});}
       else if(old&&untouched(old))store.rows[base.id]=R.restoreRow(base);}
     store.modelRevision=pack.model_revision;
+  }else if(pack.model_revision&&store.modelRevision!==pack.model_revision){
+    // A struck-text page given a new pixel prefill (struck_text update --runs): only the pixels of a region nobody confirmed, edited or
+    // deleted change; its text, marks and notes stay.  The draft as it was is kept first.
+    if(cached)await ReviewLibraryStore.put(key+'-before-'+String(pack.model_revision).slice(0,12),{draft:cached,savedAt:Date.now()}).catch(()=>{});
+    for(const base of pack.rows){const old=store.rows[base.id];if(old&&!old.confirmed&&!old.ops&&!old.deleted)old.runs=base.runs;}
+    store.modelRevision=pack.model_revision;
   }
   if(pack.library&&pack.duplicate_groups?.length){
     const next=clone(store),merged=R.mergeDuplicates(pack,next);

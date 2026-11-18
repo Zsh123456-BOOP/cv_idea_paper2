@@ -7,7 +7,10 @@ text, in the pixel review page's text mode, where the annotator types what was s
         --questions questions_with_answers.jsonl --answer-groups answer_groups.jsonl --output-dir PAGE
     python -m revrender.tools.annotate.struck_text erased --crops OUT --export EXPORT.json --review REVIEW_PACK_DIR --output-dir ERASED
     python -m revrender.tools.annotate.struck_text update --source PAGE.html [--readings predictions.jsonl --condition erased_neutral]
-        [--judgments DRAFT.json] --output-dir NEW_PAGE
+        [--judgments DRAFT.json] [--runs PREFILL] --output-dir NEW_PAGE
+    python -m revrender.tools.annotate.struck_text prefill --source PAGE.html --export EXPORT.json --restorer RUN --restorer-checkpoint STEP
+        --upstream UP --output-dir PREFILL
+    python -m revrender.tools.annotate.struck_text sheets --source PAGE.html --export EXPORT.json --output-dir SHEETS
 
 ``crops``: every confirmed, not deleted region of the review export (``data.pixel_masks`` schema) on a page of the review pack
 (``tools.annotate.pixel_library infer``) whose split is one of ``--split`` -- the pack's split already folds in paper 1's writers, the
@@ -31,8 +34,20 @@ is a line pack for ``recognize_lines --conditions erased_neutral`` (transcribe w
 ``update``: an existing page (``--source``) with its pack id, image revision and embedded progress kept, so the browser's progress
 stays, and the editor's current code; with ``--readings``, new starting texts (the editor replaces a region's text with the new one only
 where the annotator has neither confirmed nor changed it: it still equals a starting text it had, kept as ``previous_prefill``); with
-``--judgments``, drafted judgments of each revision (``paper2-revision-judgment-draft-v1``: was the struck content right, is what
+``--runs`` (``prefill``), new pixels for the regions it lists and the prefill's ``model_revision``: the editor gives them to a region
+only where the annotator has neither confirmed nor changed it (no edit, not deleted), its text and marks kept, the draft before it kept
+in the browser; with ``--judgments``, drafted judgments of each revision (``paper2-revision-judgment-draft-v1``: was the struck content right, is what
 replaced it right, the kind of revision, why), which the editor shows for the annotator to confirm or correct.  Crops, pages and the page are student work: never in Git.
+
+``prefill``: a restorer's pixels (``pixel_library.predictor_of``: the ink it brightens by more than ``REMOVED`` inside the region's polygon,
+as the library prefills a hinted region) for every region of ``--export`` nobody confirmed or changed (not confirmed, no edit, not
+deleted), on the page's own embedded images, in the region's box and polygon as the export has them: PREFILL/runs.json.
+
+``sheets``: contact sheets for drafting the struck text of the regions whose text nobody confirmed and nobody changed (it still equals
+the page's starting text, nothing marked unreadable): per region its window (the polygon's box and ``EDGE`` pixels, white outside) as
+scanned and with its erased pixels white (the annotator's where confirmed or changed, else the page's prefill), ``SHEET_SIZE`` regions a
+sheet, each under a short code; SHEETS/index.json maps a code to its region, its sheet and the starting text.  ``REFERENCES`` regions
+whose text was confirmed (seed 42) make reference sheets, their texts in SHEETS/reference.json.  Student work: never in Git.
 """
 import argparse
 import hashlib
@@ -55,6 +70,8 @@ from .pixel_offline import EmbeddedReview, render_html, standalone
 EDGE = 4               # paper kept round a region's polygon in the erased crops
 CROP = (30, 12)        # a crop is the region's box and this margin (x, y), as page_prefill cuts the box annotation's crops
 UNKNOWN_RUN = re.compile(r'\?{4,}')   # a reader that loops on unreadable characters starts as three of them
+SHEET_SIZE = 10        # regions a contact sheet
+REFERENCES = 30        # confirmed regions shown with their text
 
 
 def confirmed_regions(export, unconfirmed=False):
@@ -249,6 +266,12 @@ def update(args):
         payload['judgment_drafts'] = value['judgments']
         payload['judgment_values'] = value['values']
     changed = 0
+    if args.runs:   # new pixels for the regions nobody touched; the editor applies them where the browser's draft agrees
+        value = json.loads((args.runs/'runs.json').read_text())
+        require(value['pack'] == payload['id'], 'the prefill is of another page')
+        for row in payload['rows']:
+            if row['id'] in value['runs']: row['runs'] = value['runs'][row['id']]
+        payload['model_revision'] = value['model_revision']; payload['prefill_model'] = value['model']
     for row in payload['rows']:
         if row['id'] in texts:
             new = UNKNOWN_RUN.sub('???', texts[row['id']])
@@ -259,12 +282,107 @@ def update(args):
                 changed += 1
     out = make_output_dir(args.output_dir)
     (out/'标注.html').write_text(render_html(payload, draft, args.katex))
-    inputs = [p for p in (args.source, args.readings, args.judgments) if p]
+    inputs = [p for p in (args.source, args.readings, args.judgments, args.runs and args.runs/'runs.json') if p]
     if args.katex: inputs += [args.katex/'katex.min.js', args.katex/'katex.min.css']
-    summary = {'regions': len(payload['rows']), 'new_prefill': changed, 'judgments': len(payload.get('judgment_drafts', {}))}
+    summary = {'regions': len(payload['rows']), 'new_prefill': changed, 'judgments': len(payload.get('judgment_drafts', {})),
+               'new_pixels': len(value['runs']) if args.runs else 0}
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in inputs}, pack=payload['id'],
                    image_revision=payload.get('image_revision'), embedded_progress_preserved=True, **summary)
     print(json.dumps({'pack': payload['id'], **summary}, ensure_ascii=False))
+
+
+def page_images(payload):
+    """{page index: the page's embedded image as grey} of an offline page's pack."""
+    import base64, io
+    out = {}
+    for k, p in enumerate(payload['pages']):
+        require(p['image'].startswith('data:image/png;base64,'), 'not an offline page with its images')
+        with Image.open(io.BytesIO(base64.b64decode(p['image'].split(',', 1)[1]))) as opened: out[k] = np.asarray(opened.convert('L'))
+    return out
+
+
+def human_of(export, payload):
+    export = json.loads(export.read_text()) if isinstance(export, Path) else export
+    require(export.get('schema') == SCHEMA and export.get('pack') == payload['id'] and export.get('image_revision') == payload.get('image_revision'),
+            'the export is not of this page')
+    return {r['id']: r for q in export['pages'].values() for r in q.get('revisions', [])}
+
+
+def untouched(r):
+    return not r.get('confirmed') and not r.get('ops') and not r.get('deleted')
+
+
+def prefill(args):
+    from argparse import Namespace as Args
+    from ...data.pixel_masks import encode
+    from .pixel_library import predictor_of
+    payload = json.loads(EmbeddedReview(args.source.read_text()).values['review-pack']); human = human_of(args.export, payload)
+    rows = [r for r in payload['rows'] if r['id'] in human and untouched(human[r['id']])]
+    masks_of, selected, checkpoint = predictor_of(Args(restorer=args.restorer, restorer_checkpoint=args.restorer_checkpoint, upstream=args.upstream))
+    images, runs = page_images(payload), {}
+    for k in sorted({r['page'] for r in rows}):
+        chosen = [human[r['id']] for r in rows if r['page'] == k]; grey = images[k]
+        crops = [np.where(region_pixels(h['region'], h['box']), grey[h['box'][1]:h['box'][3], h['box'][0]:h['box'][2]], 255).astype(np.uint8) for h in chosen]
+        for h, mask in zip(chosen, masks_of(crops)): runs[h['id']] = encode(mask & region_pixels(h['region'], h['box']))
+    out = make_output_dir(args.output_dir)
+    value = {'pack': payload['id'], 'model': selected['selected'], 'model_revision': digest(checkpoint), 'runs': runs}
+    write_json(out/'runs.json', value)
+    summary = {'regions': len(payload['rows']), 'in_export': len(human), 'new_pixels': len(runs), 'kept': len(human)-len(runs),
+               'confirmed': sum(bool(h.get('confirmed')) for h in human.values()), 'changed_unconfirmed': sum(not h.get('confirmed') and bool(h.get('ops')) for h in human.values()),
+               'zero_masks': sum(not v for v in runs.values()), 'model': selected['selected']}
+    write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.source, args.export, checkpoint)}, **summary)
+    print(json.dumps(summary, ensure_ascii=False))
+
+
+def window_pair(grey, h, runs):
+    """(scan, erased) of a region's window: its polygon's box and ``EDGE`` pixels, white outside the polygon; ``runs`` white in erased."""
+    xs, ys = [p[0] for p in h['region']], [p[1] for p in h['region']]
+    box = [max(0, int(min(xs))-EDGE), max(0, int(min(ys))-EDGE), min(grey.shape[1], int(max(xs))+EDGE), min(grey.shape[0], int(max(ys))+EDGE)]
+    gone = erased(grey, {'box': h['box'], 'runs': runs})
+    outside = ~region_pixels(h['region'], box)
+    return [np.where(outside, 255, a[box[1]:box[3], box[0]:box[2]]).astype(np.uint8) for a in (grey, gone)]
+
+
+def sheet(cells, path):
+    """A contact sheet: per cell its code, then its scan and erased windows side by side, each scaled to a readable height."""
+    from PIL import ImageDraw
+    height = lambda a: min(160, max(96, a.shape[0]))
+    rendered = []
+    for code, scan, gone in cells:
+        k = height(scan)/scan.shape[0]; w = max(1, round(scan.shape[1]*k)); w = min(w, 700); k2 = w/scan.shape[1]; hh = max(1, round(scan.shape[0]*k2))
+        pair = [Image.fromarray(a).resize((w, hh), Image.Resampling.LANCZOS) for a in (scan, gone)]
+        rendered.append((code, pair, hh, w))
+    width = max(2*w+60 for _, _, _, w in rendered); total = sum(hh+40 for _, _, hh, _ in rendered)
+    canvas = Image.new('L', (width, total), 255); draw = ImageDraw.Draw(canvas); y = 0
+    for code, pair, hh, w in rendered:
+        draw.text((6, y+4), code, fill=0); y += 22
+        canvas.paste(pair[0], (10, y)); canvas.paste(pair[1], (w+40, y))
+        draw.rectangle((9, y-1, w+10, y+hh), outline=160); draw.rectangle((w+39, y-1, 2*w+40, y+hh), outline=160); y += hh+18
+    canvas.save(path)
+
+
+def sheets(args):
+    import random
+    payload = json.loads(EmbeddedReview(args.source.read_text()).values['review-pack']); human = human_of(args.export, payload)
+    rows = sorted((r for r in payload['rows'] if r['id'] in human and not human[r['id']].get('deleted')), key=lambda r: (r['page'], r['box'][1], r['box'][0]))
+    runs_of = lambda r: human[r['id']]['runs'] if not untouched(human[r['id']]) else r['runs']
+    draft = [r for r in rows if not human[r['id']].get('text_confirmed') and (human[r['id']].get('text') or '') == (r.get('prefill') or '') and not human[r['id']].get('unreadable')]
+    changed = [r['id'] for r in rows if not human[r['id']].get('text_confirmed') and r not in draft]
+    reference = random.Random(42).sample([r for r in rows if human[r['id']].get('text_confirmed')], min(REFERENCES, sum(bool(human[r['id']].get('text_confirmed')) for r in rows)))
+    images = page_images(payload); out = make_output_dir(args.output_dir); index, refs = {}, {}
+    for kind, chosen, letter in (('draft', draft, 'T'), ('reference', reference, 'R')):
+        for n in range(0, len(chosen), SHEET_SIZE):
+            name = f'{kind}_{n//SHEET_SIZE+1:02d}.png'; cells = []
+            for k, r in enumerate(chosen[n:n+SHEET_SIZE], n+1):
+                code = f'{letter}{k:03d}'; h = human[r['id']]; cells.append((code, *window_pair(images[r['page']], h, runs_of(r))))
+                if kind == 'draft': index[code] = {'id': r['id'], 'sheet': name, 'draft_32b': r.get('prefill') or '', 'pixels': 'annotator' if not untouched(h) else 'prefill'}
+                else: refs[code] = {'id': r['id'], 'sheet': name, 'text': h.get('text') or '', 'unreadable': bool(h.get('unreadable'))}
+            sheet(cells, out/name)
+    write_json(out/'index.json', index); write_json(out/'reference.json', refs)
+    summary = {'drafted': len(index), 'draft_sheets': -(-len(index)//SHEET_SIZE), 'reference': len(refs), 'reference_sheets': -(-len(refs)//SHEET_SIZE),
+               'text_changed_unconfirmed_left_out': len(changed), 'model': payload.get('prefill_model')}
+    write_json(out/'summary.json', {**summary, 'left_out_ids': changed})
+    print(json.dumps(summary, ensure_ascii=False))
 
 
 def main(argv=None):
@@ -296,9 +414,15 @@ def main(argv=None):
     d.add_argument('--judgments', type=Path, help='a judgment draft of the revisions')
     d.add_argument('--condition', default='erased_neutral')
     d.add_argument('--katex', type=Path, help='a KaTeX dist folder to inline (formulas render offline)')
+    d.add_argument('--runs', type=Path, help="a prefill's output (prefill): new pixels for the regions nobody touched")
     d.add_argument('--output-dir', type=Path, required=True)
+    f = sub.add_parser('prefill')
+    for key in ('source', 'export', 'restorer', 'upstream', 'output-dir'): f.add_argument('--'+key, type=Path, required=True)
+    f.add_argument('--restorer-checkpoint', required=True)
+    g = sub.add_parser('sheets')
+    for key in ('source', 'export', 'output-dir'): g.add_argument('--'+key, type=Path, required=True)
     args = parser.parse_args(argv)
-    {'crops': crops, 'page': page, 'erased': erased_crops, 'update': update}[args.command](args)
+    {'crops': crops, 'page': page, 'erased': erased_crops, 'update': update, 'prefill': prefill, 'sheets': sheets}[args.command](args)
     return 0
 
 
