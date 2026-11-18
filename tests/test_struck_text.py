@@ -200,5 +200,5 @@ def test_sheets_draft_only_untouched_texts_and_use_the_annotators_pixels_where_k
     (tmp_path/'export.json').write_text(json.dumps(export))
     struck_text.sheets(Namespace(source=tmp_path/'page.html', export=tmp_path/'export.json', output_dir=tmp_path/'out'))
     index = json.loads((tmp_path/'out'/'index.json').read_text()); refs = json.loads((tmp_path/'out'/'reference.json').read_text())
-    assert {v['id']: v['pixels'] for v in index.values()} == {'r0': 'prefill', 'r3': 'annotator'}
+    assert [v['id'] for v in index.values()] == ['r0']
     assert [v['text'] for v in refs.values()] == ['done'] and (tmp_path/'out'/'draft_01.png').exists()

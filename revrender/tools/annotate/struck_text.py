@@ -43,12 +43,10 @@ with ``--judgments``, drafted judgments of each revision (``paper2-revision-judg
 replaced it right, the kind of revision, why), which the editor shows for the annotator to confirm or correct.  Crops, pages and the page are student work: never in Git.
 
 ``prefill``: a restorer's pixels (``pixel_library.predictor_of``: the ink it brightens by more than ``REMOVED`` inside the region's polygon,
-as the library prefills a hinted region) for every region of ``--export`` nobody confirmed or changed (not confirmed, no edit, not
-deleted), on the page's own embedded images, in the region's box and polygon as the export has them: PREFILL/runs.json.
+as the library prefills a hinted region) for every region of ``--export`` nobody touched (``untouched``), on the page's own embedded images, in the region's box and polygon as the export has them: PREFILL/runs.json.
 
-``sheets``: contact sheets for drafting the struck text of the regions whose text nobody confirmed and nobody changed (it still equals
-the page's starting text, nothing marked unreadable): per region its window (the polygon's box and ``EDGE`` pixels, white outside) as
-scanned and with its erased pixels white (the annotator's where confirmed or changed, else the page's prefill), ``SHEET_SIZE`` regions a
+``sheets``: contact sheets for drafting the struck text of the regions nobody touched (``untouched``): per region its window (the
+polygon's box and ``EDGE`` pixels, white outside) as scanned and with the page's prefill white, ``SHEET_SIZE`` regions a
 sheet, each under a short code; SHEETS/index.json maps a code to its region, its sheet and the starting text.  ``REFERENCES`` regions
 whose text was confirmed (seed 42) make reference sheets, their texts in SHEETS/reference.json.  Student work: never in Git.
 """
@@ -332,8 +330,11 @@ def human_of(export, payload):
     return {r['id']: r for q in export['pages'].values() for r in q.get('revisions', [])}
 
 
-def untouched(r):
-    return not r.get('confirmed') and not r.get('ops') and not r.get('deleted')
+def untouched(h, row):
+    """Whether nobody touched a region: not confirmed (pixels or text), no edit, not deleted, nothing marked unreadable, no note, its
+    text still the page's starting text."""
+    return (not h.get('confirmed') and not h.get('text_confirmed') and not h.get('ops') and not h.get('deleted') and not h.get('unreadable')
+            and not h.get('note') and (h.get('text') or '') == (row.get('prefill') or ''))
 
 
 def prefill(args):
@@ -341,7 +342,7 @@ def prefill(args):
     from ...data.pixel_masks import encode
     from .pixel_library import predictor_of
     payload = json.loads(EmbeddedReview(args.source.read_text()).values['review-pack']); human = human_of(args.export, payload)
-    rows = [r for r in payload['rows'] if r['id'] in human and untouched(human[r['id']])]
+    rows = [r for r in payload['rows'] if r['id'] in human and untouched(human[r['id']], r)]
     masks_of, selected, checkpoint = predictor_of(Args(restorer=args.restorer, restorer_checkpoint=args.restorer_checkpoint, upstream=args.upstream))
     images, runs = page_images(payload), {}
     for k in sorted({r['page'] for r in rows}):
@@ -389,8 +390,8 @@ def sheets(args):
     import random
     payload = json.loads(EmbeddedReview(args.source.read_text()).values['review-pack']); human = human_of(args.export, payload)
     rows = sorted((r for r in payload['rows'] if r['id'] in human and not human[r['id']].get('deleted')), key=lambda r: (r['page'], r['box'][1], r['box'][0]))
-    runs_of = lambda r: human[r['id']]['runs'] if not untouched(human[r['id']]) else r['runs']
-    draft = [r for r in rows if not human[r['id']].get('text_confirmed') and (human[r['id']].get('text') or '') == (r.get('prefill') or '') and not human[r['id']].get('unreadable')]
+    runs_of = lambda r: human[r['id']]['runs'] if not untouched(human[r['id']], r) else r['runs']
+    draft = [r for r in rows if untouched(human[r['id']], r)]
     changed = [r['id'] for r in rows if not human[r['id']].get('text_confirmed') and r not in draft]
     reference = random.Random(42).sample([r for r in rows if human[r['id']].get('text_confirmed')], min(REFERENCES, sum(bool(human[r['id']].get('text_confirmed')) for r in rows)))
     images = page_images(payload); out = make_output_dir(args.output_dir); index, refs = {}, {}
@@ -399,7 +400,7 @@ def sheets(args):
             name = f'{kind}_{n//SHEET_SIZE+1:02d}.png'; cells = []
             for k, r in enumerate(chosen[n:n+SHEET_SIZE], n+1):
                 code = f'{letter}{k:03d}'; h = human[r['id']]; cells.append((code, *window_pair(images[r['page']], h, runs_of(r))))
-                if kind == 'draft': index[code] = {'id': r['id'], 'sheet': name, 'draft_32b': r.get('prefill') or '', 'pixels': 'annotator' if not untouched(h) else 'prefill'}
+                if kind == 'draft': index[code] = {'id': r['id'], 'sheet': name, 'draft_32b': r.get('prefill') or '', 'pixels': 'prefill'}
                 else: refs[code] = {'id': r['id'], 'sheet': name, 'text': h.get('text') or '', 'unreadable': bool(h.get('unreadable'))}
             sheet(cells, out/name)
     write_json(out/'index.json', index); write_json(out/'reference.json', refs)
