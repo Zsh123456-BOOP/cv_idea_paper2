@@ -25,7 +25,8 @@ PAGES=(--pages "$O/paper2_struck_dataset20261113/pages" --pages "$O/paper2_full_
 CEILING_PACK=${N}_revision_folds_human_masked20261117b_views
 UP=$O/paper2_restoration_sources20261008; STAIN_UP=$O/paper2_stainrestorer_resources20261009/upstream; NEW_UP=$O/paper2_clean_baselines20261118_sources
 PACK=${B}_human; HV=${B}_human_views; SETS=${B}_sets; TILES=${B}_tiles; RAW=${B}_raw; RAWV=${B}_raw_views; VAL=$SETS/fold_0
-MODELS=(StainRestorer Restormer DocDiff DocRes VCGAN Strikethrough-CycleGAN-A Strikethrough-CycleGAN NAFNet DE-GAN COR-Generator)   # the longest first
+# The longest first, but Restormer last: it and DocRes cannot share a card, and a job waiting for room holds up those behind it.
+MODELS=(StainRestorer DocRes DocDiff VCGAN Strikethrough-CycleGAN-A Strikethrough-CycleGAN NAFNet DE-GAN COR-Generator Restormer)
 source "$ROOT/scripts/_restorers.sh"
 exec 8>"$R/lock"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
 stamp() { echo "$* $(date -u +%FT%TZ)"; }
@@ -35,9 +36,9 @@ trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 
 PICK=(); for i in ${CARDS:-1 2}; do case "$i" in 1|2) PICK+=("${ALL_CARDS[$i]}") ;; *) echo "card $i is not ours this round"; exit 2 ;; esac; done
 ALL_CARDS=("${PICK[@]}")
-mib_of() {   # MODEL -> the free MiB its card must have when it starts (its peak in the smoke run and a margin)
-    case "$1" in COR-Generator) echo 3000 ;; NAFNet|DE-GAN|Strikethrough-CycleGAN|VCGAN) echo 6000 ;; DocDiff) echo 8000 ;;
-        Strikethrough-CycleGAN-A|DocRes) echo 12000 ;; *) echo 15000 ;; esac
+mib_of() {   # MODEL -> the free MiB its card must have when it starts (its peak in the smoke run, 2026-11-18, and a margin)
+    case "$1" in COR-Generator) echo 3000 ;; NAFNet|DE-GAN|Strikethrough-CycleGAN|VCGAN) echo 6000 ;; DocDiff|Strikethrough-CycleGAN-A) echo 8000 ;;
+        DocRes) echo 18000 ;; *) echo 15000 ;; esac
 }
 roomy() {   # the cards with room for an 8B reader (22,000 MiB free) and no job of ours, the most room first
     local c free
