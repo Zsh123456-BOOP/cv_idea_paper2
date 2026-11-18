@@ -130,11 +130,24 @@ const TextMode = (() => {
     }
     window.katexLoaded = () => { picker.paintBar(); preview(); if (row()) question(); };
     if (window.katex) window.katexLoaded();
+    // A drafted text (struck_text update --drafts) reaches, once, a region nobody confirmed, edited or deleted, whose text is still an
+    // earlier starting text and not marked unreadable: its text, its unreadable mark and, where the note is empty, the draft's note.
+    if (pack.text_revision && store.textRevision !== pack.text_revision) {
+      let drafted = 0;
+      for (const r of rows) {
+        if (r.prefill_note === undefined) continue;
+        const s = ensure(r), earlier = r.previous_prefill || [];
+        if (s.text_confirmed || s.confirmed || s.ops || s.deleted || s.unreadable || !earlier.includes(s.text || '')) continue;
+        s.text = r.prefill || ''; s.unreadable = !!r.unreadable_prefill; if (!s.note) s.note = r.prefill_note; drafted++;
+      }
+      store.textRevision = pack.text_revision; save();
+      if (drafted) notice = `已写入 ${drafted} 处新的文字初稿（还没确认，备注里标了和原初稿的比对）。`;
+    }
     // A new starting text reaches a region the annotator has neither confirmed nor changed (its text is still an earlier starting text).
     let redrafted = 0;
     for (const r of rows) {
       const s = ensure(r), earlier = r.previous_prefill || [];
-      if (!s.text_confirmed && s.text !== r.prefill && earlier.includes(s.text || '')) { s.text = r.prefill; redrafted++; }
+      if (r.prefill_note === undefined && !s.text_confirmed && s.text !== r.prefill && earlier.includes(s.text || '')) { s.text = r.prefill; redrafted++; }
     }
     if (redrafted) { save(); notice = `已用新的模型初稿替换 ${redrafted} 处还没改过的文字。`; }
     if (!store.textMigrated && pack.text_source_pack) {

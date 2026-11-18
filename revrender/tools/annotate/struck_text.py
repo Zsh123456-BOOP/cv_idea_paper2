@@ -36,7 +36,10 @@ stays, and the editor's current code; with ``--readings``, new starting texts (t
 where the annotator has neither confirmed nor changed it: it still equals a starting text it had, kept as ``previous_prefill``); with
 ``--runs`` (``prefill``), new pixels for the regions it lists and the prefill's ``model_revision``: the editor gives them to a region
 only where the annotator has neither confirmed nor changed it (no edit, not deleted), its text and marks kept, the draft before it kept
-in the browser; with ``--judgments``, drafted judgments of each revision (``paper2-revision-judgment-draft-v1``: was the struck content right, is what
+in the browser; with ``--drafts`` (``sheets``' folder with a drafts.json beside its index: code -> text, unreadable, sure,
+pixels_wrong), drafted texts for those regions, each with a note against the page's starting text (``draft_note``): the editor writes
+one once into a region nobody confirmed, edited or deleted whose text is still a starting text it had, the note only where it has none;
+with ``--judgments``, drafted judgments of each revision (``paper2-revision-judgment-draft-v1``: was the struck content right, is what
 replaced it right, the kind of revision, why), which the editor shows for the annotator to confirm or correct.  Crops, pages and the page are student work: never in Git.
 
 ``prefill``: a restorer's pixels (``pixel_library.predictor_of``: the ink it brightens by more than ``REMOVED`` inside the region's polygon,
@@ -50,6 +53,7 @@ sheet, each under a short code; SHEETS/index.json maps a code to its region, its
 whose text was confirmed (seed 42) make reference sheets, their texts in SHEETS/reference.json.  Student work: never in Git.
 """
 import argparse
+from collections import Counter
 import hashlib
 import json
 import re
@@ -254,6 +258,14 @@ def erased_crops(args):
 JUDGMENT_SCHEMA = 'paper2-revision-judgment-draft-v1'
 
 
+def draft_note(draft, before):
+    """The note a drafted text carries (plan of 2026-11-18): against the page's earlier starting text in the spelling of
+    ``eval.coverage.prepare``, 两稿一致 or 两稿不同, or 初稿：读不出; ·没把握 when the drafter was not sure, ·像素要看 when it saw the pixels wrong."""
+    from ...eval.coverage import prepare
+    head = '初稿：读不出' if draft['unreadable'] else '两稿一致' if prepare(draft['text']) == prepare(before or '') else '两稿不同'
+    return head+('' if draft['sure'] else '·没把握')+('·像素要看' if draft['pixels_wrong'] else '')
+
+
 def update(args):
     data = EmbeddedReview(args.source.read_text()).values
     require('review-pack' in data, 'not an offline review page')
@@ -272,6 +284,18 @@ def update(args):
         for row in payload['rows']:
             if row['id'] in value['runs']: row['runs'] = value['runs'][row['id']]
         payload['model_revision'] = value['model_revision']; payload['prefill_model'] = value['model']
+    notes = Counter()
+    if args.drafts:   # drafted texts of the contact sheets' regions, each with its note
+        index = json.loads((args.drafts/'index.json').read_text()); drafts = json.loads((args.drafts/'drafts.json').read_text())
+        require(set(index) == set(drafts), 'the drafts are not of the sheets')
+        by_id = {row['id']: row for row in payload['rows']}
+        for code, draft in drafts.items():
+            row = by_id[index[code]['id']]; require((row.get('prefill') or '') == index[code]['draft_32b'], f'{code}: the page is not the sheets\' page')
+            require(not (draft['unreadable'] and draft['text']), f'{code}: unreadable with a text')
+            note = draft_note(draft, row.get('prefill')); notes[note.split('·')[0]] += 1
+            row['previous_prefill'] = [*row.get('previous_prefill', []), row.get('prefill') or '']
+            row.update(prefill='' if draft['unreadable'] else draft['text'], unreadable_prefill=bool(draft['unreadable']), prefill_note=note)
+        payload['text_revision'] = digest(args.drafts/'drafts.json')
     for row in payload['rows']:
         if row['id'] in texts:
             new = UNKNOWN_RUN.sub('???', texts[row['id']])
@@ -282,10 +306,10 @@ def update(args):
                 changed += 1
     out = make_output_dir(args.output_dir)
     (out/'标注.html').write_text(render_html(payload, draft, args.katex))
-    inputs = [p for p in (args.source, args.readings, args.judgments, args.runs and args.runs/'runs.json') if p]
+    inputs = [p for p in (args.source, args.readings, args.judgments, args.runs and args.runs/'runs.json', args.drafts and args.drafts/'drafts.json') if p]
     if args.katex: inputs += [args.katex/'katex.min.js', args.katex/'katex.min.css']
     summary = {'regions': len(payload['rows']), 'new_prefill': changed, 'judgments': len(payload.get('judgment_drafts', {})),
-               'new_pixels': len(value['runs']) if args.runs else 0}
+               'new_pixels': len(value['runs']) if args.runs else 0, 'drafted': sum(notes.values()), 'notes': dict(notes)}
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in inputs}, pack=payload['id'],
                    image_revision=payload.get('image_revision'), embedded_progress_preserved=True, **summary)
     print(json.dumps({'pack': payload['id'], **summary}, ensure_ascii=False))
@@ -415,6 +439,7 @@ def main(argv=None):
     d.add_argument('--condition', default='erased_neutral')
     d.add_argument('--katex', type=Path, help='a KaTeX dist folder to inline (formulas render offline)')
     d.add_argument('--runs', type=Path, help="a prefill's output (prefill): new pixels for the regions nobody touched")
+    d.add_argument('--drafts', type=Path, help="sheets' folder with drafts.json: drafted texts for its regions, with their notes")
     d.add_argument('--output-dir', type=Path, required=True)
     f = sub.add_parser('prefill')
     for key in ('source', 'export', 'restorer', 'upstream', 'output-dir'): f.add_argument('--'+key, type=Path, required=True)
