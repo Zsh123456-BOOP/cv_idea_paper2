@@ -34,8 +34,8 @@ is a line pack for ``recognize_lines --conditions erased_neutral`` (transcribe w
 ``update``: an existing page (``--source``) with its pack id, image revision and embedded progress kept, so the browser's progress
 stays, and the editor's current code; with ``--readings``, new starting texts (the editor replaces a region's text with the new one only
 where the annotator has neither confirmed nor changed it: it still equals a starting text it had, kept as ``previous_prefill``); with
-``--runs`` (``prefill``), new pixels for the regions it lists and the prefill's ``model_revision``: the editor gives them to a region
-only where the annotator has neither confirmed nor changed it (no edit, not deleted), its text and marks kept, the draft before it kept
+``--runs`` (``prefill``), new pixels for the regions it lists, the digest of its runs as ``model_revision``: the editor gives them, once,
+to a region whose pixels nobody touched (not confirmed, no edit of them, not deleted), its text and marks kept, the draft before it kept
 in the browser; with ``--drafts`` (``sheets``' folder with a drafts.json beside its index: code -> text, unreadable, sure,
 pixels_wrong), drafted texts for those regions, each with a note against the page's starting text (``draft_note``): the editor writes
 one once into a region nobody confirmed, edited or deleted whose text is still a starting text it had, the note only where it has none;
@@ -43,7 +43,7 @@ with ``--judgments``, drafted judgments of each revision (``paper2-revision-judg
 replaced it right, the kind of revision, why), which the editor shows for the annotator to confirm or correct.  Crops, pages and the page are student work: never in Git.
 
 ``prefill``: a restorer's pixels (``pixel_library.predictor_of``: the ink it brightens by more than ``REMOVED`` inside the region's polygon,
-as the library prefills a hinted region) for every region of ``--export`` nobody touched (``untouched``), on the page's own embedded images, in the region's box and polygon as the export has them: PREFILL/runs.json.
+as the library prefills a hinted region) for every region of ``--export`` whose pixels nobody touched (``pixels_untouched``), on the page's own embedded images, in the region's box and polygon as the export has them: PREFILL/runs.json.
 
 ``sheets``: contact sheets for drafting the struck text of the regions nobody touched (``untouched``): per region its window (the
 polygon's box and ``EDGE`` pixels, white outside) as scanned and with the page's prefill white, ``SHEET_SIZE`` regions a
@@ -281,7 +281,8 @@ def update(args):
         require(value['pack'] == payload['id'], 'the prefill is of another page')
         for row in payload['rows']:
             if row['id'] in value['runs']: row['runs'] = value['runs'][row['id']]
-        payload['model_revision'] = value['model_revision']; payload['prefill_model'] = value['model']
+        # the revision is this prefill's (its runs), so a page given new pixels by the same model again still applies them once
+        payload['model_revision'] = digest(args.runs/'runs.json'); payload['prefill_model'] = value['model']
     notes = Counter()
     if args.drafts:   # drafted texts of the contact sheets' regions, each with its note
         index = json.loads((args.drafts/'index.json').read_text()); drafts = json.loads((args.drafts/'drafts.json').read_text())
@@ -330,6 +331,11 @@ def human_of(export, payload):
     return {r['id']: r for q in export['pages'].values() for r in q.get('revisions', [])}
 
 
+def pixels_untouched(h):
+    """Whether nobody touched a region's pixels: not confirmed, no edit of them, not deleted (its text may have been changed)."""
+    return not h.get('confirmed') and not h.get('ops') and not h.get('deleted')
+
+
 def untouched(h, row):
     """Whether nobody touched a region: not confirmed (pixels or text), no edit, not deleted, nothing marked unreadable, no note, its
     text still the page's starting text."""
@@ -342,7 +348,7 @@ def prefill(args):
     from ...data.pixel_masks import encode
     from .pixel_library import predictor_of
     payload = json.loads(EmbeddedReview(args.source.read_text()).values['review-pack']); human = human_of(args.export, payload)
-    rows = [r for r in payload['rows'] if r['id'] in human and untouched(human[r['id']], r)]
+    rows = [r for r in payload['rows'] if r['id'] in human and pixels_untouched(human[r['id']])]
     masks_of, selected, checkpoint = predictor_of(Args(restorer=args.restorer, restorer_checkpoint=args.restorer_checkpoint, upstream=args.upstream))
     images, runs = page_images(payload), {}
     for k in sorted({r['page'] for r in rows}):
@@ -350,7 +356,7 @@ def prefill(args):
         crops = [np.where(region_pixels(h['region'], h['box']), grey[h['box'][1]:h['box'][3], h['box'][0]:h['box'][2]], 255).astype(np.uint8) for h in chosen]
         for h, mask in zip(chosen, masks_of(crops)): runs[h['id']] = encode(mask & region_pixels(h['region'], h['box']))
     out = make_output_dir(args.output_dir)
-    value = {'pack': payload['id'], 'model': selected['selected'], 'model_revision': digest(checkpoint), 'runs': runs}
+    value = {'pack': payload['id'], 'model': selected['selected'], 'checkpoint_sha256': digest(checkpoint), 'runs': runs}
     write_json(out/'runs.json', value)
     summary = {'regions': len(payload['rows']), 'in_export': len(human), 'new_pixels': len(runs), 'kept': len(human)-len(runs),
                'confirmed': sum(bool(h.get('confirmed')) for h in human.values()), 'changed_unconfirmed': sum(not h.get('confirmed') and bool(h.get('ops')) for h in human.values()),
