@@ -37,8 +37,9 @@ def docres_prompt(x,root):
 
 
 def build(model,root,architecture=None):
-    if model=='NAFNet-hint':   # NAFNet as it is but for its channels: the scan and the hint in, z out (``hinted``)
-        return build('NAFNet',root,{'type':'NAFNetLocal','img_channel':2,'width':32,'middle_blk_num':1,'enc_blk_nums':[1,1,1,28],'dec_blk_nums':[1,1,1,1]})
+    if model=='NAFNet-hint':   # NAFNet as it is but for its channels: the scan and the hint in, z out (``hinted``); its local pooling
+        # is fitted at build on a random input of train_size, whose channels must be the network's (height and width as NAFNet's default)
+        return build('NAFNet',root,{'type':'NAFNetLocal','img_channel':2,'train_size':(1,2,256,256),'width':32,'middle_blk_num':1,'enc_blk_nums':[1,1,1,28],'dec_blk_nums':[1,1,1,1]})
     if model=='NAFNet':
         # Avoid BasicSR's unrelated dataset/extension auto-imports. Architecture files
         # are unchanged, including their own LayerNorm and local pooling code.
