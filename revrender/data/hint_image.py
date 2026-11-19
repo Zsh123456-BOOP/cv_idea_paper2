@@ -157,6 +157,9 @@ def windows(args):
             np.savez_compressed(dest/f'{name}.npz', **arrays); shutil.copyfile(folder/f'{name}.json', dest/f'{name}.json')
         for name in ('records.json', 'summary.json'):
             if (folder/name).exists(): shutil.copyfile(folder/name, dest/name)
+        # each fold is a review set of its own (data.restoration_pairs human reads its manifest)
+        write_manifest(dest, config={'sets': str(folder), 'answers': str(args.answers), 'readings': str(args.readings)},
+                       inputs={str(p): digest(p) for p in (folder/'run_manifest.json', args.answers, args.readings) if p.exists()})
     write_manifest(out, config={'sets': str(args.sets), 'answers': str(args.answers), 'readings': str(args.readings)},
                    inputs={str(p): digest(p) for p in (args.answers, args.readings)}, plain_typeset=fell)
     print(json.dumps({'folds': len(list(out.glob('fold_*'))), 'plain_typeset': fell}), flush=True)
