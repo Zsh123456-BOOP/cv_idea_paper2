@@ -102,6 +102,13 @@ def table(args):
     return out, cuts
 
 
+def finite(value):
+    """The value with every NaN (a correlation of constant values, a mean of nothing) as None, for JSON."""
+    if isinstance(value, dict): return {k: finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)): return [finite(v) for v in value]
+    return None if isinstance(value, float) and value != value else value
+
+
 def ned(c):
     return (c['s']+c['d']+c['i'])/max(c['n'], c['m'], 1)
 
@@ -187,7 +194,7 @@ def analyse(args):
                     'both_minus_h': {k: both_vs_h[k] for k in ('ar', 'exact')}, 'rule6_left_over': abs(both_vs_h['ar']['difference']) > .02},
               'D': d_part, 'E': e_part,
               'F': {a: {k: vs('E-NAFNet', a)[k] for k in ('ar', 'exact', 'ned')} for a in ('E-later1', 'E-later2')}}
-    write_json(out/'analysis.json', result)
+    result = finite(result); write_json(out/'analysis.json', result)
     inputs = {str(p): digest(p) for p in [args.pack/'pack.json', args.erased/'pack.json', *(Path(s.partition('=')[2]) for s in args.scores)]}
     write_manifest(out, config={k: [str(x) for x in v] if isinstance(v, list) else str(v) for k, v in vars(args).items() if k != 'command'}, inputs=inputs,
                    regions=len(regions), readable=len(can))
