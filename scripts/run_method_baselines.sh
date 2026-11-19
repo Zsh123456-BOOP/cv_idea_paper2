@@ -143,7 +143,7 @@ if ! done_ read; then
 
 # The scores (eval.transcription, paired by writer, 1,000 draws, seed 42) against E-NAFNet, R0 and H, and the rules of section four.
 if ! done_ score; then
-    arms=(); for d in "$R"/read_*; do [ -d "$d" ] && arms+=(--arm "${d##*/read_}=$d"); done
+    arms=(); for d in "$R"/read_*; do [ -e "$d/complete.json" ] && arms+=(--arm "${d##*/read_}=$d"); done   # a failed attempt set aside is no arm
     for ref in E-NAFNet R0 H; do [ -e "$R/scores_vs_$ref.json" ] || "$PY" -m revrender.eval.transcription --pack "$HV" "${arms[@]}" --reference "$ref" \
         $([ "$ref" != E-NAFNet ] || echo --readings "$R/readings.jsonl") --output "$R/scores_vs_$ref.json" > "$R/scores_vs_$ref.log" 2>&1; done
     [ -e "$R/rules.json" ] || "$PY" - "$R" "$B$TAG" "$TILES" "${MODELS[@]}" <<'PY'
