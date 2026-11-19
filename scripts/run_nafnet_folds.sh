@@ -8,13 +8,13 @@
 # readings of every region by readers that never saw its writer: H, E-NAFNet, R0, the three F (NAFNet's erased crop with its strike
 # left, its writing erased, or both put right from the annotator's pixels: data.struck_pack fixed) and E-later1/2 (the two validations
 # after the chosen one).  eval.transcription against R0, E-NAFNet, H and F-residual; eval.erase_gap the analyses A-F, the plan's
-# verdicts and the sheets of G.  Card 3 only (the user's word, 2026-11-19); cards 0, 1 and 2 are not touched.  Card 3 is taken while
-# nobody else is on it (CLAUDE.md), or by its memory alone with SHARE3=1.  PART=smoke: two passes, two reader steps, eight regions
+# verdicts and the sheets of G.  Card 1 only (the user's word, 2026-11-19: 「只用 1号卡」); cards 0, 2 and 3 are not touched, ALLOW_GPU3
+# is not set.  At most two jobs of ours on it, by its free memory.  PART=smoke: two passes, two reader steps, eight regions of fold 0
 # read; PART=main: the round.  Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True ALLOW_GPU3=1
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 O=/home/zsh/hme/outputs; N=$O/paper2_clean; B=${N}_nafnet_folds20261119; PART=${PART:-main}
 case "$PART" in main) TAG=; BUDGET=method_round1; STEPS=100; LIMIT=(); READ=(0 1 2 3 4) ;;
     smoke) TAG=_smoke; BUDGET=method_smoke; STEPS=2; LIMIT=(--limit 8); READ=(0) ;;   # the smoke reads fold 0 only
@@ -30,18 +30,17 @@ stamp() { echo "$* $(date -u +%FT%TZ)"; }
 done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
-CARD=$CARD3; NUMA=$(numa_of "$CARD")
-others() { card_users "$CARD" | grep -cvx "$ME" || true; }
-open3() {   # MiB WHOLE: card 3 has MiB free, fewer than two jobs of ours (none with WHOLE=1), and nobody else on it unless SHARE3=1
+CARD=${ALL_CARDS[1]}; NUMA=$(numa_of "$CARD")
+open1() {   # MiB WHOLE: card 1 has MiB free and fewer than two jobs of ours (none with WHOLE=1)
     local free; free=$(nvidia-smi -i "$CARD" --query-gpu=memory.free --format=csv,noheader,nounits)
-    [ "$free" -ge "$1" ] && [ "$(ours_on "$CARD")" -lt "$([ "$2" = 1 ] && echo 1 || echo 2)" ] && { [ "${SHARE3:-0}" = 1 ] || [ "$(others)" -eq 0 ]; }
+    [ "$free" -ge "$1" ] && [ "$(ours_on "$CARD")" -lt "$([ "$2" = 1 ] && echo 1 || echo 2)" ]
 }
-place() {   # MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background once card 3 is open twice ten seconds apart
+place() {   # MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background once card 1 is open twice ten seconds apart
     local mib="$1" whole="$2"; shift 2
-    until open3 "$mib" "$whole" && sleep 10 && open3 "$mib" "$whole"; do sleep 30; done
+    until open1 "$mib" "$whole" && sleep 10 && open1 "$mib" "$whole"; do sleep 30; done
     "$@" & PLACED_PIDS+=($!); PLACED_CARDS+=("$CARD"); sleep 30
 }
-job() {   # OUT -- COMMAND...: one GPU job on card 3
+job() {   # OUT -- COMMAND...: one GPU job on card 1
     local out="$1"; shift 2
     bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1
 }
