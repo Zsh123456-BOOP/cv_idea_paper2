@@ -112,8 +112,8 @@ def analyse(args):
     loop_e, loop_r0 = vs('E-NAFNet', 'T-循环'), vs('R0', 'T-循环')
     rule2 = {'vs_E-NAFNet': pick(loop_e), 'vs_R0': pick(loop_r0),
              'first_version': 'holds' if verdict_plus(loop_e) and loop_r0['exact']['interval'][0] > 0 else 'does_not_hold'}
-    # rule 3, on the readable regions with a wrong hint
-    part = [k for k, t in wrong.items() if t is not None and readable.get(k)]
+    # rule 3, on the readable regions with a wrong hint (that both readings read: a smoke test reads a few)
+    part = [k for k, t in wrong.items() if t is not None and readable.get(k) and k in arms['T-错'] and k in arms['T-空']]
     share = lambda arm, target: float(np.mean([same(arms[arm][k], target(k)) for k in part])) if part else None
     a, b = share('T-错', lambda k: wrong[k]), share('T-空', lambda k: wrong[k])
     answer = lambda k: rows[k]['text']
