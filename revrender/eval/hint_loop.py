@@ -167,7 +167,7 @@ def sheets(args):
              'loop_wrong_blind_right': lambda r: r['readable'] and not exact(r, 'T-循环') and exact(r, 'E-NAFNet'),
              'follows_wrong_hint': lambda r: r['wrong_hint'] is not None and r['readable'] and same(r['T-错']['text'], r['wrong_hint'])}
     order = lambda r: hashlib.sha256(f"{r['id']}:{SEED}".encode()).hexdigest(); index = {}
-    for kind, test in kinds.items():
+    for letter, (kind, test) in zip('ABC', kinds.items()):   # the plan's three kinds, in its order
         tiles = []
         for n, r in enumerate(sorted(filter(test, table), key=order)[:TAKE], 1):
             traced = wrong[r['id']] if kind == 'follows_wrong_hint' else rounds[r['loop']['stopped_at']-1][r['id']]
@@ -176,13 +176,13 @@ def sheets(args):
             pics = [grey(args.human, human[r['id']], 'raw'), grey(root, traced, 'hint'), grey(root, traced, 'erased'),
                     grey(args.blind, blind[r['id']], 'erased'), grey(args.human, human[r['id']], 'erased')]
             k = max(1, 120//max(1, pics[0].shape[0])); pics = [Image.fromarray(p).resize((p.shape[1]*k, p.shape[0]*k), Image.Resampling.NEAREST) for p in pics]
-            lines = [f"{kind[0].upper()}{n:02d}  答案：{r['label']}", f"T-循环（第 {r['loop']['stopped_at']} 轮）：{r['T-循环']['text']}", f"E-NAFNet：{r['E-NAFNet']['text']}"]
+            lines = [f"{letter}{n:02d}  答案：{r['label']}", f"T-循环（第 {r['loop']['stopped_at']} 轮）：{r['T-循环']['text']}", f"E-NAFNet：{r['E-NAFNet']['text']}"]
             if kind == 'follows_wrong_hint': lines += [f"错提示：{r['wrong_hint']}", f"T-错：{r['T-错']['text']}"]
             w = sum(p.width for p in pics)+60; h = max(p.height for p in pics)+20+28*len(lines); tile = Image.new('RGB', (max(w, 900), h), 'white'); x = 10
             for p in pics: tile.paste(p, (x, 10)); x += p.width+10
             draw = ImageDraw.Draw(tile)
             for m, text in enumerate(lines): draw.text((10, h-28*len(lines)+28*m), (text or '').replace('\n', ' ⏎ '), fill='black', font=font)
-            tiles.append(tile); index[f"{kind[0].upper()}{n:02d}"] = {'id': r['id'], 'kind': kind}
+            tiles.append(tile); index[f"{letter}{n:02d}"] = {'id': r['id'], 'kind': kind}
         if tiles:
             sheet = Image.new('RGB', (max(t.width for t in tiles), sum(t.height+6 for t in tiles)), (200, 200, 200)); y = 0
             for t in tiles: sheet.paste(t, (0, y)); y += t.height+6
