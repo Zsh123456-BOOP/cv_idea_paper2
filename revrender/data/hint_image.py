@@ -1,7 +1,9 @@
 """The hint a restorer is given beside the scan: a text (a reading, or the answer) typeset in print and laid over the region's ink
 (plan of 2026-11-20, 前提检验_带提示的描字器, section two).
 
-    python -m revrender.data.hint_image stats --pack PACK --readings DIR[,DIR...] --output OUT.json
+    python -m revrender.data.hint_image stats --pack PACK [--readings DIR[,DIR...]] --output OUT.json
+    python -m revrender.data.hint_image hints --pack PACK --source answer|wrong|white|readings [--readings DIR[,DIR...]] --output HINTS.json
+    python -m revrender.data.hint_image windows --sets SETS --answers ANSWERS.json --readings READINGS.json --output-dir HINTED_SETS
 
 ``hint_text``: the text as typeset -- the annotator's or a reader's LaTeX spelling, ``?`` dropped, ``$$...$$`` as ``$...$``, an odd
 count of ``$`` dropped altogether (plain text); None (a white hint) for a refusal, an empty text or the unreadable mark.  ``render``:
@@ -10,6 +12,10 @@ matplotlib's mathtext with DejaVu Sans and WenQuanYi Zen Hei, black on white; a 
 own box and scaled, each way on its own, to the box of the window's ink (grey below 200) inside the polygon, on a white window of the
 scan's size; a window with no ink inside its polygon gets a white hint.  ``wrong_answer``: the answer with one symbol changed by the
 plan's fixed rule (section four).  ``stats``: how many answers and readings fall back to the plain spelling and how many are white.
+``hints``: {region: text or null} of every region of a pack -- its answer (null where unreadable), its wrong answer (``wrong_answer``;
+null where it takes no part: unreadable, nothing to change, a ``\begin``), white, or a reading.  ``windows``: windowed sets
+(``data.struck_pack fold-sets --windowed``) again with the hint windows a restorer trains and stops on: per training region
+``hint_answer_<k>`` and ``hint_reading_<k>``, per validation and held-out region ``hint_<k>`` from the readings.
 """
 import argparse
 import io
@@ -121,12 +127,53 @@ def stats(args):
     print(json.dumps({k: {x: y for x, y in v.items() if x != 'plain_ids'} for k, v in result.items()}), flush=True)
 
 
+def hints(args):
+    from ..eval.transcription import read_arm
+    rows = json.loads((args.pack/'pack.json').read_text())['rows']
+    if args.source == 'readings':
+        texts = read_arm('R='+args.readings)[1]; fallback = json.loads(args.fallback.read_text()) if args.fallback else {}
+        out = {r['id']: texts[r['id']] if r['id'] in texts else fallback[r['id']] for r in rows}
+    else: out = {r['id']: None if args.source == 'white' or not r['readable'] else r['text'] if args.source == 'answer' else wrong_answer(r['text']) for r in rows}
+    require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, out)
+    print(json.dumps({'regions': len(out), 'white': sum(hint_text(t) is None for t in out.values())}), flush=True)
+
+
+def windows(args):
+    import shutil
+    from ..util import digest, make_output_dir, write_manifest
+    answers, readings = json.loads(args.answers.read_text()), json.loads(args.readings.read_text())
+    out = make_output_dir(args.output_dir); fell = {'answer': 0, 'reading': 0}
+    for folder in sorted(args.sets.glob('fold_*')):
+        dest = out/folder.name; dest.mkdir()
+        for name in ('training_native', 'validation_native', 'heldout_native'):
+            rows = json.loads((folder/f'{name}.json').read_text()); arrays = dict(np.load(folder/f'{name}.npz'))
+            require(all(r.get('windowed') for r in rows), 'not windowed sets')
+            for i, r in enumerate(rows):
+                image, inner = arrays[f'image_{i}'], arrays[f'inner_{i}']
+                if name == 'training_native':
+                    arrays[f'hint_answer_{i}'], a = render(answers[r['id']], image, inner); arrays[f'hint_reading_{i}'], b = render(readings[r['id']], image, inner)
+                    fell['answer'] += bool(a); fell['reading'] += bool(b)
+                else: arrays[f'hint_{i}'], _ = render(readings[r['id']], image, inner)
+            np.savez_compressed(dest/f'{name}.npz', **arrays); shutil.copyfile(folder/f'{name}.json', dest/f'{name}.json')
+        for name in ('records.json', 'summary.json'):
+            if (folder/name).exists(): shutil.copyfile(folder/name, dest/name)
+    write_manifest(out, config={'sets': str(args.sets), 'answers': str(args.answers), 'readings': str(args.readings)},
+                   inputs={str(p): digest(p) for p in (args.answers, args.readings)}, plain_typeset=fell)
+    print(json.dumps({'folds': len(list(out.glob('fold_*'))), 'plain_typeset': fell}), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0]); sub = p.add_subparsers(dest='command', required=True)
     s = sub.add_parser('stats')
     s.add_argument('--pack', type=Path, required=True); s.add_argument('--readings', help='DIR[,DIR...] of recognize_lines')
     s.add_argument('--output', type=Path, required=True)
-    args = p.parse_args(argv); {'stats': stats}[args.command](args)
+    h = sub.add_parser('hints')
+    h.add_argument('--pack', type=Path, required=True); h.add_argument('--source', choices=('answer', 'wrong', 'white', 'readings'), required=True)
+    h.add_argument('--readings', help='DIR[,DIR...] of recognize_lines, with --source readings'); h.add_argument('--output', type=Path, required=True)
+    h.add_argument('--fallback', type=Path, help='hints of the regions the readings lack (a smoke test reads a few)')
+    w = sub.add_parser('windows')
+    for key in ('sets', 'answers', 'readings', 'output-dir'): w.add_argument('--'+key, type=Path, required=True)
+    args = p.parse_args(argv); {'stats': stats, 'hints': hints, 'windows': windows}[args.command](args)
 
 
 if __name__ == '__main__':

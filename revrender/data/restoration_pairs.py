@@ -385,11 +385,14 @@ def human_pairs(review_set, source, arm, destination, no_replay=False):
     pairs = json.loads((source/'records.json').read_text()) if source else []
     if source: x = np.load(source/(arm+'.npy'), mmap_mode='r'); y = np.load(source/'targets.npy', mmap_mode='r')
     data, targets, rows, weights = [], [], [], []
+    hinted = any(name.startswith('hint_answer_') for name in arrays.files); hints = {'answer': [], 'reading': []}   # data.hint_image windows
     weighted = any(name.startswith('weight_') for name in arrays.files); source_of = {r['id']: r['source'] for r in records}
     weight_of = {r['id']: r['weight'] for r in records if 'weight' in r}
     for k, r in enumerate(native):
         made = tiles(arrays[f'image_{k}'], arrays[f'mask_{k}'], arrays[f'weight_{k}'] if weighted else None,
                      arrays[f'target_{k}'] if f'target_{k}' in arrays.files else None)
+        if hinted:
+            for kind in hints: hints[kind] += canvas_tiles(arrays[f'hint_{kind}_{k}'], 255)
         for n, (tile, target, weight) in enumerate(made):
             data.append(tile); targets.append(target); weights.append(weight)
             rows.append({'id': f"{r['id']}~{n}", 'group_uuid': r['group_uuid'], 'split': 'train', 'source': source_of.get(r['id'], 'human_confirmed'),
@@ -406,8 +409,11 @@ def human_pairs(review_set, source, arm, destination, no_replay=False):
             data.append(np.asarray(x[i])); targets.append(np.asarray(y[i]))
             rows.append({'id': r['id'], 'group_uuid': r['group_uuid'], 'split': 'val', 'source': 'synthetic_validation', 'clean': r['clean']})
     np.save(out/(arm+'.npy'), np.stack(data)); np.save(out/'targets.npy', np.stack(targets)); write_json(out/'records.json', rows)
+    if hinted:
+        require(not replay and not source, 'hints go with the human regions alone')
+        for kind, tiles_ in hints.items(): np.save(out/f'hint_{kind}.npy', np.stack(tiles_))
     if weighted: np.save(out/'weights.npy', np.concatenate([np.stack(weights), np.ones((len(data)-len(weights), SIZE, SIZE), np.uint8)]))
-    summary = {'counts': dict(Counter(r['source']+'/'+r['split'] for r in rows)), 'human_regions': len(native), 'weighted': weighted,
+    summary = {'counts': dict(Counter(r['source']+'/'+r['split'] for r in rows)), 'human_regions': len(native), 'weighted': weighted, 'hinted': hinted,
                'train_tiles': sum(r['split'] == 'train' for r in rows), 'review_set': str(review_set), 'source_pairs': str(source) if source else None}
     write_json(out/'summary.json', summary)
     inputs = {str(p): digest(p) for p in [review_set/'run_manifest.json', review_set/'training_native.npz', *([source/'run_manifest.json'] if source else [])]}

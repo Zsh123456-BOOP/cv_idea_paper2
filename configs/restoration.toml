@@ -66,6 +66,7 @@ patience = 6
 
 # The three baselines added for the method stage (plan of 2026-11-18); their own recipes are in their modules, a budget sets the steps.
 # CycleGAN-A: ATTR_GUIDED of the release (attribute = annotation mode); VCGAN: the release's batch 1 (gradient fix); DocRes: one task.
+# NAFNet-hint (plan of 2026-11-20): NAFNet's recipe with the hint as a second input channel and an output that only takes ink away.
 [training.Strikethrough-CycleGAN-A]
 steps = 80910
 batch_size = 4
@@ -77,6 +78,14 @@ patience = 0
 [training.VCGAN]
 steps = 80000
 batch_size = 1
+eval_every = 5000
+validation_limit = 64
+min_steps = 40000
+patience = 6
+
+[training.NAFNet-hint]
+steps = 80000
+batch_size = 4
 eval_every = 5000
 validation_limit = 64
 min_steps = 40000

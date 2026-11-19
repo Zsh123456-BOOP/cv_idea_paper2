@@ -44,6 +44,16 @@ place_job() {   # MiB FUNCTION ARGS...: run FUNCTION CARD NUMA ARGS... in the ba
     sleep 20      # until its process shows on the card
 }
 
+one_card_open() {   # CARD MiB WHOLE: the card has MiB free and fewer than two jobs of ours (none with WHOLE=1)
+    local free; free=$(nvidia-smi -i "$1" --query-gpu=memory.free --format=csv,noheader,nounits)
+    [ "$free" -ge "$2" ] && [ "$(ours_on "$1")" -lt "$([ "$3" = 1 ] && echo 1 || echo 2)" ]
+}
+one_card_place() {   # CARD MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background once the card is open twice ten seconds apart
+    local card="$1" mib="$2" whole="$3"; shift 3
+    until one_card_open "$card" "$mib" "$whole" && sleep 10 && one_card_open "$card" "$mib" "$whole"; do sleep 30; done
+    "$@" & PLACED_PIDS+=($!); PLACED_CARDS+=("$card"); sleep 30
+}
+
 refuse_card3() {   # $1 = GPU uuid
     case "$1" in *314fdf43*) [ "${ALLOW_GPU3:-0}" = 1 ] || { echo 'GPU 3 is not ours (ALLOW_GPU3=1 only on the user'"'"'s word)'; exit 2; } ;; esac
 }

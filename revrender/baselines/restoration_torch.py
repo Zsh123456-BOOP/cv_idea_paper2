@@ -37,6 +37,8 @@ def docres_prompt(x,root):
 
 
 def build(model,root,architecture=None):
+    if model=='NAFNet-hint':   # NAFNet as it is but for its channels: the scan and the hint in, z out (``hinted``)
+        return build('NAFNet',root,{'type':'NAFNetLocal','img_channel':2,'width':32,'middle_blk_num':1,'enc_blk_nums':[1,1,1,28],'dec_blk_nums':[1,1,1,1]})
     if model=='NAFNet':
         # Avoid BasicSR's unrelated dataset/extension auto-imports. Architecture files
         # are unchanged, including their own LayerNorm and local pooling code.
@@ -92,8 +94,16 @@ def psnr_loss(value,target,weight=None,sample_weight=None):
     return loss.mean() if sample_weight is None else (loss*sample_weight).sum()/sample_weight.sum()
 
 
+def hinted(network,xx):
+    """NAFNet-hint's output, only taking ink away (plan of 2026-11-20): the scan plus sigmoid(z) of the way to white, z its first
+    channel (NAFNet adds its input to it), xx the scan and the hint (N, 2, H, W)."""
+    scan=xx[:,:1];return scan+torch.sigmoid(network(xx)[:,:1])*(1-scan)
+
+
 def image_tensor(x,model,root=None):
-    """Grey tiles (N, H, W) in [0, 1] as a model takes them (DocRes: with its prompt, built from ``root``)."""
+    """Grey tiles (N, H, W) in [0, 1] as a model takes them (DocRes: with its prompt, built from ``root``; NAFNet-hint: (N, 2, H, W),
+    the scan and its hint)."""
+    if model=='NAFNet-hint':return torch.from_numpy(np.ascontiguousarray(x,np.float32)).cuda()
     t=torch.from_numpy(np.ascontiguousarray(x[:,None])).cuda()
     if model in INVERTED:return 1-t
     if model=='VCGAN':return t.repeat(1,3,1,1)*2-1
@@ -126,6 +136,7 @@ def predict_image(network,diffusion,x,model,root=None):
             # Native validation may batch several tiles. Keep the same per-image
             # memory bound as StainRestorer training without changing its output.
             if model=='StainRestorer':out=torch.cat([final_image(network(im[None]),model) for im in xx])
+            elif model=='NAFNet-hint':out=hinted(network,xx)
             else:out=network(xx)
     if model in INVERTED:out=1-out
     if model=='VCGAN':out=out*.5+.5
@@ -140,7 +151,8 @@ def train(e):
     if a.init:network.load_state_dict(torch.load(a.init/'weights.pt',map_location='cuda',weights_only=False)['model'])
     scale=a.learning_rate_scale
     is_doc=a.model=='DocDiff';is_cor=a.model=='COR-Generator';is_rest=a.model=='Restormer'
-    is_stain=a.model=='StainRestorer';is_docres=a.model=='DocRes';root=upstream_of(a.upstream,a.model)
+    is_stain=a.model=='StainRestorer';is_docres=a.model=='DocRes';root=upstream_of(a.upstream,a.model);is_hint=a.model=='NAFNet-hint'
+    naf=a.model in ('NAFNet','NAFNet-hint')
     if is_docres:opt=torch.optim.AdamW(network.parameters(),lr=2e-4*scale,weight_decay=5e-4)
     elif is_cor:opt=torch.optim.Adam(network.parameters(),lr=1e-3*scale,betas=(.9,.999))
     elif is_stain:opt=torch.optim.AdamW(network.parameters(),lr=2e-4*scale,betas=(.9,.999),weight_decay=.01,eps=1e-8)
@@ -149,7 +161,7 @@ def train(e):
             weight_decay=1e-4 if is_doc or is_rest else 1e-3,
             betas=(.9,.999) if is_doc or is_rest else (.9,.9))
     scheduler=None
-    if a.model=='NAFNet':scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-7*scale)
+    if naf:scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-7*scale)
     if is_stain or is_docres:scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=1e-6*scale)
     scaler=torch.amp.GradScaler('cuda') if is_docres else None   # DocRes trains in mixed precision, as released
     if is_rest:
@@ -169,7 +181,8 @@ def train(e):
         'loss':('official PRE_ORI L2 high/low frequency, beta50/T100' if is_doc else
                 'BCE on inverted images' if is_cor else 'L1' if is_rest else
                 'L1 on the 3 output channels (its regression tasks), binarization prompt (Sauvola threshold, Sobel gradient, Sauvola map) of each tile; AdamW 2e-4 wd 5e-4, cosine to 1e-6, mixed precision' if is_docres else
-                'both stages: MSE + 0.2*(1-SSIM), author torchmetrics defaults per image' if is_stain else 'official PSNR loss'),
+                'both stages: MSE + 0.2*(1-SSIM), author torchmetrics defaults per image' if is_stain else
+                'official PSNR loss of scan + sigmoid(z)*(1 - scan) (only taking ink away), the hint a second input channel' if is_hint else 'official PSNR loss'),
         'diffusion_steps':100 if is_doc else None,'ema':ema is not None,'precision':'float16 autocast' if is_docres else 'float32',
         'ema_rule':'official .9999 parameter average every 100 updates after step 2000; initial model copy; raw and EMA validation candidates' if ema is not None else None,
         'adaptation':'256 native tiles; batch4; seed42; no rotation; task-specific budget; Restormer fixed patches and scaled flat/cosine schedule',
@@ -200,6 +213,7 @@ def train(e):
     for step in range(1,a.steps+1):
         if step==1:before=next(network.parameters()).detach().clone()
         x,y,w,sw=e.batch(weights=True);network.train();opt.zero_grad(set_to_none=True)
+        if is_hint:x=np.stack([x,e.last_hints],1)   # (N, 2, H, W): the scan and its hint
         # These architectures have no batch norm. Accumulate an effective batch4.
         size=1 if is_rest or is_stain else len(x);value=0.
         for start in range(0,len(x),size):
@@ -210,6 +224,9 @@ def train(e):
             elif is_cor:loss=F.binary_cross_entropy(network(xx),yy)
             elif is_rest:loss=F.l1_loss(network(xx),yy)
             elif is_stain:loss=stain_loss(network(xx),yy)
+            elif is_hint:
+                yy=torch.from_numpy(np.ascontiguousarray(y[start:start+size,None])).cuda()
+                loss=10/np.log(10)*torch.log(((hinted(network,xx)-yy)**2).mean((1,2,3))+1e-8).mean()
             elif e.w is not None or (e.s!=1).any():   # NAFNet on weighted data (data.pseudo_regions)
                 loss=psnr_loss(network(xx),yy,torch.from_numpy(np.ascontiguousarray(w[start:start+size,None])).cuda().expand_as(yy),
                                torch.from_numpy(np.ascontiguousarray(sw[start:start+size])).cuda())
@@ -217,7 +234,7 @@ def train(e):
             require(torch.isfinite(loss).item(),'nonfinite training loss')
             loss=loss*(len(xx)/len(x));value+=float(loss.detach())
             (scaler.scale(loss) if scaler else loss).backward()
-        if a.model=='NAFNet':torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
+        if naf:torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
         if is_rest:torch.nn.utils.clip_grad_norm_(network.parameters(),.01)
         if scaler:scaler.step(opt);scaler.update()
         else:opt.step()

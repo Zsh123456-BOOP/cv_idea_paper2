@@ -18,8 +18,8 @@ from PIL import Image
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 MODELS = ['NAFNet', 'DocDiff', 'DE-GAN', 'COR-Generator', 'Strikethrough-CycleGAN', 'Restormer', 'StainRestorer',
-          'Strikethrough-CycleGAN-A', 'VCGAN', 'DocRes']
-SOURCE = {'Strikethrough-CycleGAN-A': 'Strikethrough-CycleGAN'}   # the attribute-guided CycleGAN is built from the same release
+          'Strikethrough-CycleGAN-A', 'VCGAN', 'DocRes', 'NAFNet-hint']
+SOURCE = {'Strikethrough-CycleGAN-A': 'Strikethrough-CycleGAN', 'NAFNet-hint': 'NAFNet'}   # the attribute-guided CycleGAN is built from the same release
 
 
 def upstream_of(upstream, model):
@@ -56,15 +56,17 @@ def removal_metrics(count):
                 new_dark_pixels=added,threshold=.2)
 
 
-def restore_native(predict, grey):
-    """Native resolution tiling; centre short regions on the same white 256 canvas."""
+def restore_native(predict, grey, hint=None):
+    """Native resolution tiling; centre short regions on the same white 256 canvas.  With a ``hint`` window (grey on [0, 1], the
+    scan's size: data.hint_image) each tile goes in with its hint tile as a second channel, (1, 2, 256, 256)."""
     h,w=grey.shape;ph=max(256,h);pw=max(256,w);oy=(ph-h)//2;ox=(pw-w)//2
     padded=np.ones((ph,pw),np.float32);padded[oy:oy+h,ox:ox+w]=grey
+    if hint is not None:hinted=np.ones((ph,pw),np.float32);hinted[oy:oy+h,ox:ox+w]=hint
     positions=lambda n: sorted(set(list(range(0,n-255,192))+[n-256]))
     total=np.zeros_like(padded);weight=np.zeros_like(padded)
     for y in positions(ph):
         for x in positions(pw):
-            tile=padded[None,y:y+256,x:x+256]
+            tile=padded[None,y:y+256,x:x+256] if hint is None else np.stack([padded[y:y+256,x:x+256],hinted[y:y+256,x:x+256]])[None]
             value=predict(tile)[0]
             total[y:y+256,x:x+256]+=value;weight[y:y+256,x:x+256]+=1
     return (total/weight)[oy:oy+h,ox:ox+w]
@@ -97,6 +99,7 @@ def inside(im,pred,gold,inner):
 class Experiment:
     w=None          # per-pixel loss weights of the data (weights.npy)
     ex=None         # --extra tiles: (images, targets, training indices)
+    h=None          # hint tiles (answer, reading) of a hinted restorer
 
     def __init__(self,args):
         self.args=args;self.out=make_output_dir(args.output_dir)
@@ -104,6 +107,9 @@ class Experiment:
         self.x=np.load(args.data/(args.arm+'.npy'),mmap_mode='r');self.y=np.load(args.data/'targets.npy',mmap_mode='r')
         # Per-pixel loss weights (data.pseudo_regions: 0 where the teachers disagree); honoured by NAFNet's loss.
         self.w=np.load(args.data/'weights.npy',mmap_mode='r') if (args.data/'weights.npy').exists() else None
+        # Hint tiles (data.hint_image windows): each training tile's hint is its answer's or its reading's, half the time each
+        self.h=tuple(np.load(args.data/f'hint_{k}.npy',mmap_mode='r') for k in ('answer','reading')) if (args.data/'hint_answer.npy').exists() else None
+        self.hint_rng=np.random.default_rng(np.random.SeedSequence(SEED).spawn(4)[3])
         # Per-sample loss weights (data.pseudo_regions --pseudo-weight: a pseudo-labelled region's against a human one's).
         self.s=np.array([float(r.get('weight',1.)) for r in self.rows],np.float32)
         self.train=np.array([i for i,r in enumerate(self.rows) if r['split']=='train'])
@@ -146,6 +152,9 @@ class Experiment:
 
     def batch(self,unpaired=False,weights=False):
         ids=self.sample();self.last_ids=ids
+        if self.h is not None:   # the hint tiles of this batch, read by the trainer as last_hints
+            answer=self.hint_rng.random(len(ids))<.5
+            self.last_hints=np.where(answer[:,None,None],self.h[0][ids],self.h[1][ids]).astype(np.float32)/255
         targets=self.unpaired_rng.choice(self.train,self.args.batch_size,replace=False) if unpaired else ids
         x,y=self.x[ids].astype(np.float32)/255,self.y[targets].astype(np.float32)/255
         w=self.w[ids].astype(np.float32) if self.w is not None and weights else np.ones_like(x);s=self.s[ids].copy() if weights else None
@@ -171,7 +180,8 @@ class Experiment:
         counts=np.zeros(5,np.int64);native_out={};tiles=[];edits=[];blocks=[]
         for i,_ in enumerate(self.native_rows):
             im=self.native[f'image_{i}'].astype(np.float32)/255;gold=self.native[f'mask_{i}']
-            pred=restore_native(predict,im);require(np.isfinite(pred).all(),'nonfinite restoration')
+            hint=self.native[f'hint_{i}'].astype(np.float32)/255 if f'hint_{i}' in self.native else None
+            pred=restore_native(predict,im,hint);require(np.isfinite(pred).all(),'nonfinite restoration')
             im,pred,gold=inside(im,pred,gold,self.native[f'inner_{i}'] if f'inner_{i}' in self.native else None)
             count=removal_counts(im,pred,gold);counts+=count;native_out[f'image_{i}']=np.rint(pred*255).astype(np.uint8)
             edits.append((count[1]+count[2])/max(1,count[0]+count[2]))   # pixels to fix (missed + writing erased) over the strike's

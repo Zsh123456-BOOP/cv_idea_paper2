@@ -31,15 +31,7 @@ done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 CARD=${ALL_CARDS[1]}; NUMA=$(numa_of "$CARD")
-open1() {   # MiB WHOLE: card 1 has MiB free and fewer than two jobs of ours (none with WHOLE=1)
-    local free; free=$(nvidia-smi -i "$CARD" --query-gpu=memory.free --format=csv,noheader,nounits)
-    [ "$free" -ge "$1" ] && [ "$(ours_on "$CARD")" -lt "$([ "$2" = 1 ] && echo 1 || echo 2)" ]
-}
-place() {   # MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background once card 1 is open twice ten seconds apart
-    local mib="$1" whole="$2"; shift 2
-    until open1 "$mib" "$whole" && sleep 10 && open1 "$mib" "$whole"; do sleep 30; done
-    "$@" & PLACED_PIDS+=($!); PLACED_CARDS+=("$CARD"); sleep 30
-}
+place() { one_card_place "$CARD" "$@"; }   # MiB WHOLE FUNCTION ARGS...
 job() {   # OUT -- COMMAND...: one GPU job on card 1
     local out="$1"; shift 2
     bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1

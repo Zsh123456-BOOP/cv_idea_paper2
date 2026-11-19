@@ -277,6 +277,8 @@ def separated_pack(args):
     from ..baselines.restoration_export import selected_predictor
     from .pixel_masks import region_pixels
     folds = len(list(args.sets.glob('fold_*'))); require(len(args.separator) == folds, f'{folds} separators, in the order of the folds')
+    hints = json.loads(args.hints.read_text()) if args.hints else None   # a hinted restorer's hint of each region (data.hint_image hints)
+    if hints: from .hint_image import render
     require(len(args.checkpoint or []) in (0, 1, folds), 'one --checkpoint for all the separators, or one each')
     source = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
     out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []; inputs = {str(args.pack/'pack.json'): digest(args.pack/'pack.json')}; shares = []
@@ -289,7 +291,10 @@ def separated_pack(args):
             predict, checkpoint, _ = selected_predictor(run, args.upstream, step); inputs[str(checkpoint)] = digest(checkpoint)
         for i, n in enumerate(native):
             row = source[n['id']]; require(row['fold'] == k, f"{n['id']}: not of fold {k} in the pack")
-            image = arrays[f'image_{i}'].astype(np.float32)/255; restored = np.clip(restore_native(predict, image), 0, 1)
+            image = arrays[f'image_{i}'].astype(np.float32)/255; hint = None
+            if hints is not None:
+                require(n.get('windowed'), 'hints need windowed sets'); hint = render(hints[n['id']], arrays[f'image_{i}'], arrays[f'inner_{i}'])[0]
+            restored = np.clip(restore_native(predict, image, None if hint is None else hint.astype(np.float32)/255), 0, 1)
             with Image.open(args.pack/row['images']['raw']) as opened: scan = np.asarray(opened.convert('L')).copy()
             if n.get('windowed'):   # the set holds the readers' window itself (white outside the polygon)
                 inner = arrays[f'inner_{i}'].astype(bool)
@@ -302,13 +307,15 @@ def separated_pack(args):
                 erased = np.where(pasted(np.zeros(scan.shape, bool), inside, n['box'], origin),                     # outside the polygon the scan stays
                                   pasted(scan.copy(), np.round(255*restored).astype(np.uint8), n['box'], origin), scan)
                 layer = pasted(np.zeros(scan.shape, np.uint8), np.round(255*share).astype(np.uint8), n['box'], origin)
-            images = {name: f'crops/{len(rows):05d}_{name}.png' for name in ('raw', 'erased', 'map')}
-            for name, array in zip(images, (scan, erased, layer)): Image.fromarray(array).save(out/images[name])
-            rows.append({**row, 'images': images}); shares.append(float(share[arrays[f'mask_{i}'] > 0].mean()) if arrays[f'mask_{i}'].any() else None)
+            images = {name: f'crops/{len(rows):05d}_{name}.png' for name in ('raw', 'erased', 'map', *(('hint',) if hint is not None else ()))}
+            for name, array in zip(images, (scan, erased, layer, hint)): Image.fromarray(array).save(out/images[name])
+            rows.append({**row, 'images': images, **({'hint': hints[n['id']]} if hints is not None else {})}); shares.append(float(share[arrays[f'mask_{i}'] > 0].mean()) if arrays[f'mask_{i}'].any() else None)
     require(len(rows) == len(source), 'the sets and the pack hold different regions')
     write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
     known = [s for s in shares if s is not None]
-    write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'separators': [str(r) for r in args.separator], 'checkpoint': args.checkpoint},
+    if hints is not None: inputs[str(args.hints)] = digest(args.hints)
+    write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'separators': [str(r) for r in args.separator], 'checkpoint': args.checkpoint,
+                                'hints': str(args.hints) if args.hints else None},
                    inputs=inputs, regions=len(rows), strike_taken_away_mean=float(np.mean(known)))
     print(json.dumps({'regions': len(rows), 'strike_taken_away_mean': float(np.mean(known))}), flush=True)
 
@@ -526,6 +533,7 @@ def main(argv=None):
     for key in ('pack', 'sets', 'upstream', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)
     d.add_argument('--separator', type=Path, action='append', required=True,
                    help="a fold's separator run (baselines.restoration), given once per fold in order; 'none': nothing erased")
+    d.add_argument('--hints', type=Path, help="data.hint_image hints: each region's hint for a hinted restorer (NAFNet-hint)")
     d.add_argument('--checkpoint', action='append', help="a step directory in place of the selected one: once for every separator, or once each")
     b = sub.add_parser('library')
     for key in ('library', 'output-dir'): b.add_argument('--'+key, type=Path, required=True)
