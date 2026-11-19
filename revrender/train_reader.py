@@ -16,7 +16,7 @@ Seed 42; OUT/adapter is the adapter (``recognize_lines --backend hf --adapter OU
 and its ``text``, rows of split ``val`` the validation), asked in the words of ``--condition`` (e.g. ``raw_struck``: read only what is
 struck out).  A pack of ``data.struck_pack folds`` is taught with ``--fold K``: the writers of fold K are left out altogether (they are
 read afterwards, ``recognize_lines --fold K``), the rows marked ``val`` among the rest are the validation, and the answer is the row's
-``target``.  The ``*_revision`` conditions show the images they name (``pair_revision`` two); the mapped ones need
+``target``; with ``--all-rest`` every row of the other folds is taught and none validates.  The ``*_revision`` conditions show the images they name (``pair_revision`` two); the mapped ones need
 ``--layer-map``: the row's layer map goes in beside the scan through a projection of its own (``models.vlm_tokens``), taught at
 ``--map-lr`` and saved as OUT/layer_map.pt.  ``--keep-best`` keeps the adapter of the lowest validation loss instead of the last.
 
@@ -217,6 +217,7 @@ def main(argv=None):
                    '1,536 weights by about this a step, so a patch with strike in it shifts by this times its strike pixels (1e-3 wrecked the image in two steps)')
     p.add_argument('--answer', choices=('target', 'latex'), default='target', help="with --pack: teach the row's target, or its text in LaTeX (data.struck_pack.latex_answer)")
     p.add_argument('--keep-best', action='store_true', help='keep the adapter of the lowest validation loss, not the last')
+    p.add_argument('--all-rest', action='store_true', help='with --fold: teach on every row of the other folds, the val marks ignored (no validation)')
     p.add_argument('--counterfactual', type=float, nargs=2, default=(0., 0.), metavar=('STRIKE_OFF', 'WRITING_OFF'),
                    help='with --pack: the probabilities a readable training row is shown with its strike, or its struck writing, taken off')
     p.add_argument('--pages', type=Path, action='append', help='with --corpus: a folder of scans <image_id>.jpg (repeatable)')
@@ -246,7 +247,7 @@ def main(argv=None):
         pack_rows = json.loads((args.pack/'pack.json').read_text())['rows']
         if args.fold is not None:
             rest = [r for r in pack_rows if r['fold'] != args.fold]
-            train_rows, val_rows = [r for r in rest if not r['val']], [r for r in rest if r['val']][:args.val_limit]
+            train_rows, val_rows = ([r for r in rest if not r['val']], [r for r in rest if r['val']][:args.val_limit]) if not args.all_rest else (rest, [])
         else:
             train_rows, val_rows = [r for r in pack_rows if r['split'] == 'train'], [r for r in pack_rows if r['split'] == 'val'][:args.val_limit]
     else:

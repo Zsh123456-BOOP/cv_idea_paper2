@@ -37,8 +37,10 @@ finetune_restorer() {   # MODEL CARD NUMA INIT DATA OUT [BUDGET]: a restorer tra
     upstream=$(upstream_of "$model")
     (
         restorer_env "$model"; runtime=$RUNTIME
-        idle=0; if [ "$card" = "$CARD3" ]; then idle=1; export ALLOW_GPU3=1; fi
-        wait_for_gpu_memory "$card" "${RESTORER_MEMORY:-20000}" "$idle"
+        # card 3 only while nobody else is on it (other jobs of ours may share it); SHARE3=1 (a round's word of the user): by its memory alone
+        if [ "$card" = "$CARD3" ]; then export ALLOW_GPU3=1
+            [ "${SHARE3:-0}" = 1 ] || until ! card_users "$card" | grep -qvx "$ME"; do sleep 60; done; fi
+        wait_for_gpu_memory "$card" "${RESTORER_MEMORY:-20000}" 0
         bash "$ROOT/scripts/launch_gpu_job.sh" "$card" "$numa" "$out" -- "$runtime" -m revrender.baselines.restoration --model "$model" \
             --arm gold_pixels --protocol "$ROOT/configs/restoration.toml" --data "$data" --upstream "$upstream" \
             --human-validation "$VAL/validation_native.json" "${start[@]}" ${RESTORER_ARGS:-} --output-dir "$out" > "$out.log" 2>&1 < /dev/null

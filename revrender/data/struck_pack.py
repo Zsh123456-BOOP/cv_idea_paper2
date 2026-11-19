@@ -13,7 +13,9 @@
 ``views`` take its two folds (0 its validation writers, 1 its training ones), and ``fold-sets`` then holds the readers' windows
 themselves (white outside the polygon, the polygon as ``inner_<k>``): fold_0 and fold_1 both train on fold 1 and stop by fold 0, each
 restoring its own fold.  ``separated --separator none`` leaves a fold unerased (the scan as its erased crop); ``scores`` gives the pixel
-scores of a separated pack's windows of one fold (``window_scores``).
+scores of a separated pack's windows of one fold (``window_scores``).  ``fold-sets --windowed``: the readers' windows for the pack's
+own folds, each trained on all the other folds and stopped by itself.  ``fixed`` (``fixed_pack``): a separated pack with one kind of
+its pixel errors put right from the annotator's pixels, for reading what that kind of error costs.
 
 ``folds``: the regions of the merged dataset (``data.struck_dataset``) whose pixels and struck text are both confirmed, as one pack for
 a cross-validation over writers.  The regions of the exports named by ``--hold-out`` (the test page) and every other region of their
@@ -208,26 +210,29 @@ def windowed(page, r):
 
 
 def fold_sets(args):
-    chosen, files, held, _ = chosen_regions(args); cut = {}
+    chosen, files, held, _ = chosen_regions(args); cut = {}; wide = args.split or args.windowed
     labelled = sorted({r['page'] for r in json.loads(args.dataset.read_text())})
     for key in sorted({(r['source'], r['page']) for r in chosen}):
         with Image.open(files[key]) as page:
             for r in (r for r in chosen if (r['source'], r['page']) == key):
                 bl, bt, br, bb = r['box']
-                cut[r['id']] = windowed(page, r) if args.split else (*reviewed_crop(page, {'box': r['box'], 'runs': r['runs'], 'region': r['region']}),
+                cut[r['id']] = windowed(page, r) if wide else (*reviewed_crop(page, {'box': r['box'], 'runs': r['runs'], 'region': r['region']}),
                                 list(window(r['region'] or [[bl, bt], [br, bt], [br, bb], [bl, bb]], page.size)))
-    out = make_output_dir(args.output_dir); summary = []; parts = ('image', 'mask', None, 'inner') if args.split else ('image', 'mask')
+    out = make_output_dir(args.output_dir); summary = []; parts = ('image', 'mask', None, 'inner') if wide else ('image', 'mask')
     for k in range(2 if args.split else FOLDS):
-        # a method split: always train on its training writers (fold 1) and stop by its validation writers (fold 0); fold K's regions restored
+        # a method split: always train on its training writers (fold 1) and stop by its validation writers (fold 0); fold K's regions restored.
+        # --windowed folds: train on all the other folds (the val marks ignored), stop by fold K and restore it
         sides = ({'training_native': [r for r in chosen if r['fold'] == 1], 'validation_native': [r for r in chosen if r['fold'] == 0],
                   'heldout_native': [r for r in chosen if r['fold'] == k]} if args.split else
+                 {'training_native': [r for r in chosen if r['fold'] != k], 'validation_native': [r for r in chosen if r['fold'] == k],
+                  'heldout_native': [r for r in chosen if r['fold'] == k]} if wide else
                  {'training_native': [r for r in chosen if r['fold'] != k and not r['val']], 'validation_native': [r for r in chosen if r['fold'] != k and r['val']],
                   'heldout_native': [r for r in chosen if r['fold'] == k]})
         require(all(sides.values()), f'fold {k}: a side is empty'); folder = out/f'fold_{k}'; folder.mkdir()
         for name, rows in sides.items():
             np.savez_compressed(folder/f'{name}.npz', **{f'{part}_{i}': cut[r['id']][j] for i, r in enumerate(rows) for j, part in enumerate(parts) if part})
             write_json(folder/f'{name}.json', [{'id': r['id'], 'group_uuid': r['writer'], 'page': r['page'], 'box': r['box'], 'region': r['region'], 'window': cut[r['id']][2],
-                                                'mode': r['mode'], **({'windowed': True} if args.split else {})} for r in rows])
+                                                'mode': r['mode'], **({'windowed': True} if wide else {})} for r in rows])
         write_json(folder/'records.json', [{'id': r['id'], 'group_uuid': r['writer'], 'split': 'train', 'source': 'human_confirmed', 'mode': r['mode']} for r in sides['training_native']])
         summary.append({name: len(rows) for name, rows in sides.items()})
         write_json(folder/'summary.json', {'validation_writers': sorted({r['writer'] for r in chosen if r['fold'] == k or r['val']} | held), 'fixed_writers': [], 'pages': labelled})
@@ -272,6 +277,7 @@ def separated_pack(args):
     from ..baselines.restoration_export import selected_predictor
     from .pixel_masks import region_pixels
     folds = len(list(args.sets.glob('fold_*'))); require(len(args.separator) == folds, f'{folds} separators, in the order of the folds')
+    require(len(args.checkpoint or []) in (0, 1, folds), 'one --checkpoint for all the separators, or one each')
     source = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
     out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows = []; inputs = {str(args.pack/'pack.json'): digest(args.pack/'pack.json')}; shares = []
     for k, run in enumerate(args.separator):
@@ -279,7 +285,8 @@ def separated_pack(args):
         if str(run) == 'none':   # nothing erased: the scan as its own erased crop
             predict = lambda x: x
         else:
-            predict, checkpoint, _ = selected_predictor(run, args.upstream, args.checkpoint); inputs[str(checkpoint)] = digest(checkpoint)
+            step = (args.checkpoint or [None])[k if len(args.checkpoint or []) > 1 else 0]
+            predict, checkpoint, _ = selected_predictor(run, args.upstream, step); inputs[str(checkpoint)] = digest(checkpoint)
         for i, n in enumerate(native):
             row = source[n['id']]; require(row['fold'] == k, f"{n['id']}: not of fold {k} in the pack")
             image = arrays[f'image_{i}'].astype(np.float32)/255; restored = np.clip(restore_native(predict, image), 0, 1)
@@ -304,6 +311,41 @@ def separated_pack(args):
     write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'separators': [str(r) for r in args.separator], 'checkpoint': args.checkpoint},
                    inputs=inputs, regions=len(rows), strike_taken_away_mean=float(np.mean(known)))
     print(json.dumps({'regions': len(rows), 'strike_taken_away_mean': float(np.mean(known))}), flush=True)
+
+
+FIXES = ('residual', 'damage', 'both')
+
+
+def fixed_pack(args):
+    """A separated pack with one kind of the restorer's pixel errors put right from the annotator's erased window (plan of 2026-11-19,
+    a diagnosis, not a method): ``residual`` the strike pixels it left (erased by the annotator, not by it), ``damage`` the writing it
+    erased (by it, not by the annotator), ``both``.  Erased as the F1 counts it: brighter than the scan by more than 0.2, on ink, inside
+    the polygon (the windowed sets' ``inner``).  The map is the share taken away of the new erased crop."""
+    rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows']}
+    out = make_output_dir(args.output_dir); (out/'crops').mkdir(); made, changed = [], {'residual': 0, 'damage': 0}
+    for folder in sorted(args.sets.glob('fold_*')):
+        native = json.loads((folder/'heldout_native.json').read_text()); arrays = np.load(folder/'heldout_native.npz')
+        require(all(n.get('windowed') for n in native), 'not windowed sets')
+        for i, n in enumerate(native):
+            row = rows[n['id']]; image = arrays[f'image_{i}'].astype(np.float32)/255
+            restored = np.asarray(Image.open(args.pack/row['images']['erased']).convert('L'), np.float32)/255
+            inner = arrays[f'inner_{i}'].astype(bool); ink = (image < INK/255) & inner
+            truth = arrays[f'mask_{i}'].astype(bool) & ink; removed = ((restored-image) > .2) & ink
+            human = np.where(truth, 1., image); fix = np.zeros(image.shape, bool)
+            if args.fix in ('residual', 'both'): fix |= truth & ~removed
+            if args.fix in ('damage', 'both'): fix |= removed & ~truth
+            changed['residual'] += int((truth & ~removed & fix).sum()); changed['damage'] += int((removed & ~truth & fix).sum())
+            erased = np.where(fix, human, restored)
+            images = {name: f'crops/{len(made):05d}_{name}.png' for name in ('raw', 'erased', 'map')}
+            shutil.copyfile(args.pack/row['images']['raw'], out/images['raw'])
+            Image.fromarray(np.round(255*erased).astype(np.uint8)).save(out/images['erased'])
+            Image.fromarray(np.round(255*taken_away(image, erased)*inner).astype(np.uint8)).save(out/images['map'])
+            made.append({**row, 'images': images})
+    require(len(made) == len(rows), 'the sets and the pack hold different regions')
+    write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': made})
+    write_manifest(out, config={'pack': str(args.pack), 'sets': str(args.sets), 'fix': args.fix}, inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json')},
+                   regions=len(made), pixels_changed=changed)
+    print(json.dumps({'regions': len(made), 'pixels_changed': changed}), flush=True)
 
 
 def pixel_scores(args):
@@ -476,6 +518,7 @@ def main(argv=None):
         f.add_argument('--folds-from', type=Path, help='a folds pack whose folds and val marks the writers keep (else they are drawn anew)')
         f.add_argument('--holdout-share', type=float, help="two folds: 0 the writers data.prefill_set holds out at this share, 1 the rest")
         f.add_argument('--split', type=Path, help='two folds: 0 the validation writers of this method split (``split``), 1 the training ones')
+        f.add_argument('--windowed', action='store_true', help="fold-sets: the readers' windows, each fold trained on all the others and stopped by itself")
         f.add_argument('--erased-by', type=Path, help="folds: a restorer run whose strike makes the erased crop and the map (the annotator's pixels otherwise)")
         f.add_argument('--erased-step', help='the step directory of --erased-by'); f.add_argument('--upstream', type=Path, help='the restorers\' sources, with --erased-by')
         f.add_argument('--output-dir', type=Path, required=True)
@@ -483,11 +526,14 @@ def main(argv=None):
     for key in ('pack', 'sets', 'upstream', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)
     d.add_argument('--separator', type=Path, action='append', required=True,
                    help="a fold's separator run (baselines.restoration), given once per fold in order; 'none': nothing erased")
-    d.add_argument('--checkpoint', help="a step directory of the separators in place of their selected one")
+    d.add_argument('--checkpoint', action='append', help="a step directory in place of the selected one: once for every separator, or once each")
     b = sub.add_parser('library')
     for key in ('library', 'output-dir'): b.add_argument('--'+key, type=Path, required=True)
     b.add_argument('--dataset', type=Path, help='regions.json of a merged dataset: the regions it labels carry their targets')
     b.add_argument('--holdout-share', type=float, help="mark the labelled regions of the writers data.prefill_set holds out at this share")
+    x = sub.add_parser('fixed')
+    for key in ('pack', 'sets', 'output-dir'): x.add_argument('--'+key, type=Path, required=True)
+    x.add_argument('--fix', choices=FIXES, required=True)
     q = sub.add_parser('scores')
     for key in ('pack', 'sets', 'output'): q.add_argument('--'+key, type=Path, required=True)
     q.add_argument('--fold', type=int, default=0)
@@ -499,7 +545,7 @@ def main(argv=None):
     for key in ('pack', 'human', 'output-dir'): c.add_argument('--'+key, type=Path, required=True)
     args = p.parse_args(argv)
     {'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack, 'views': views_pack, 'counterfactual': counterfactual_pack,
-     'library': library_pack, 'answers': answers_check, 'split': method_split, 'scores': pixel_scores}[args.command](args)
+     'library': library_pack, 'answers': answers_check, 'split': method_split, 'scores': pixel_scores, 'fixed': fixed_pack}[args.command](args)
 
 
 if __name__ == '__main__':
