@@ -23,6 +23,8 @@ read afterwards, ``recognize_lines --fold K``), the rows marked ``val`` among th
 ``--answer latex`` teaches a readable row of a folds pack its text in LaTeX (``data.struck_pack.latex_answer``, the spelling the words
 ask for) in place of its ``target`` (the scores' flattened spelling; the two agree once ``eval.coverage.prepare`` has been applied).
 
+``--init-adapter`` starts from an earlier run's adapter and teaches it on (a schedule of its own: warm-up and cosine over ``--steps``).
+
 ``--counterfactual S W`` (a pack of ``data.struck_pack counterfactual``) teaches what a change of the evidence should change: a
 training sample of a readable region is shown, with probability S, with its strike taken off the scan (the reading stays the same:
 the strike is not the writing) and, with probability W, with the struck writing taken off instead (the reading becomes
@@ -151,9 +153,10 @@ class Collate:
         return out
 
 
-def lora_model(model_dir, rank, alpha, dropout, layer_map=False):
+def lora_model(model_dir, rank, alpha, dropout, layer_map=False, init=None):
     """The model with a low-rank adapter on the language model's linear layers; with ``layer_map`` also the (trainable, zero) projection
-    of a layer map into the patch embedding, added after the adapter froze everything else."""
+    of a layer map into the patch embedding, added after the adapter froze everything else; with ``init`` the adapter starts as that one
+    (a run of this module) and goes on learning."""
     import torch
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForImageTextToText
@@ -162,7 +165,11 @@ def lora_model(model_dir, rank, alpha, dropout, layer_map=False):
     patch_embed_as_linear(model.model.visual.patch_embed)
     config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias='none',
                         target_modules=r'.*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)')
-    adapted = get_peft_model(model, config)
+    if init:
+        from peft import PeftModel
+        adapted = PeftModel.from_pretrained(model, str(init), is_trainable=True)
+    else:
+        adapted = get_peft_model(model, config)
     if layer_map:
         patch_embed_with_layer_map(model.model.visual.patch_embed)
     return adapted
@@ -217,6 +224,7 @@ def main(argv=None):
                    '1,536 weights by about this a step, so a patch with strike in it shifts by this times its strike pixels (1e-3 wrecked the image in two steps)')
     p.add_argument('--answer', choices=('target', 'latex'), default='target', help="with --pack: teach the row's target, or its text in LaTeX (data.struck_pack.latex_answer)")
     p.add_argument('--keep-best', action='store_true', help='keep the adapter of the lowest validation loss, not the last')
+    p.add_argument('--init-adapter', type=Path, help='start from this adapter (OUT/adapter of an earlier run) and go on teaching it, with a schedule of its own')
     p.add_argument('--all-rest', action='store_true', help='with --fold: teach on every row of the other folds, the val marks ignored (no validation)')
     p.add_argument('--counterfactual', type=float, nargs=2, default=(0., 0.), metavar=('STRIKE_OFF', 'WRITING_OFF'),
                    help='with --pack: the probabilities a readable training row is shown with its strike, or its struck writing, taken off')
@@ -275,7 +283,8 @@ def main(argv=None):
     loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=args.workers,
                                          generator=generator, drop_last=True, persistent_workers=args.workers > 0)
     val_loader = torch.utils.data.DataLoader(val_set, batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
-    model = lora_model(args.model, args.rank, args.alpha, args.dropout, args.layer_map).to('cuda')
+    require(not (args.init_adapter and args.layer_map), '--init-adapter with --layer-map is not supported')
+    model = lora_model(args.model, args.rank, args.alpha, args.dropout, args.layer_map, args.init_adapter).to('cuda')
     if args.checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
         model.enable_input_require_grads()
@@ -286,7 +295,7 @@ def main(argv=None):
     optimizer = torch.optim.AdamW(groups, lr=args.lr, weight_decay=0., betas=(.9, .999))
     schedule = lambda step: min(1., (step+1)/args.warmup)*(.1+.9*.5*(1+math.cos(math.pi*step/args.steps)))
     source = args.pack/'pack.json' if args.pack else args.corpus
-    write_manifest(out, config=to_jsonable(args), inputs={str(source): digest(source)},
+    write_manifest(out, config=to_jsonable(args), inputs={str(source): digest(source), **({str(w): digest(w) for w in sorted(args.init_adapter.glob('*.safetensors'))} if args.init_adapter else {})},
                    train_recipes=len(train_rows), val_recipes=len(val_rows),
                    trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds)
     stream = (out/'train_log.jsonl').open('x', encoding='utf-8')

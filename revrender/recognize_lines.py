@@ -56,6 +56,9 @@ token keeping its position:
   soft_band_neutral          the scan; the same tokens as hide_band, their attention logits lowered by ``--soft`` instead of removed
   blanked_hide_band_neutral  the columns whited out and the tokens over them hidden as well
 
+``--view-student`` (``--backend hf``, Qwen3-VL): a vision-tower adapter of ``train_clean_view``; the images of a condition at the places
+``--student-images`` names are seen through it, the others through the frozen tower (``models.vlm_tokens.Reader.student_features``).
+
 Greedy decoding, seed 42; every request carries one image, so nothing in the words can be read back as text.  The backend is vLLM (the
 default, for the plain conditions) or transformers (``hf``, for all of them: the plain conditions read the same to the precision of another
 kernel).  OUT/predictions.jsonl has a row per (condition, line): the reading (the text inside <transcription>), the raw output, its
@@ -219,6 +222,9 @@ def main(argv=None):
     p.add_argument('--cell-threshold', type=float, default=.25, help='token rules: share of a token cell under the band that hides it')
     p.add_argument('--ink-threshold', type=float, default=.05, help='token rules: share of a token cell on masked ink that hides it')
     p.add_argument('--soft', type=float, default=4., help='soft_band: bias subtracted from the attention logits of the hidden tokens')
+    p.add_argument('--view-student', type=Path, help='hf: a vision-tower adapter of train_clean_view; the images --student-images names are seen through it')
+    p.add_argument('--student-images', type=int, nargs='+', default=[], help='with --view-student: the places (1-based) of a condition\'s images the student sees')
+    p.add_argument('--student-off', action='store_true', help='with --view-student: those images go the student\'s way with its adapter disabled (the wiring check)')
     p.add_argument('--trust-remote-code', action='store_true')
     p.add_argument('--limit', type=int, default=0, help='only the first N lines (a smoke test)')
     p.add_argument('--output-dir', type=Path, required=True)
@@ -228,6 +234,7 @@ def main(argv=None):
     require(bool(args.layer_map) == bool(MAPPED & set(args.conditions)) and (not args.layer_map or set(args.conditions) <= MAPPED), 'mapped conditions, and only they, read with --layer-map')
     require(args.backend == 'hf' or not args.adapter, '--adapter needs --backend hf')
     require(args.backend == 'vllm' or 'from_pack' not in args.conditions, 'from_pack needs --backend vllm')
+    require(bool(args.view_student) == bool(args.student_images) and (args.backend == 'hf' or not args.view_student), '--view-student and --student-images go together, with --backend hf')
     pack = json.loads((args.pack/'pack.json').read_text())
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
     rows = [r for r in pack['rows'] if args.fold is None or r['fold'] == args.fold][:args.limit or None]
@@ -237,7 +244,7 @@ def main(argv=None):
     out = make_output_dir(args.output_dir)
     if args.backend == 'hf':
         from .models.vlm_tokens import Reader
-        reader = Reader(args.model, adapter=args.adapter, layer_map=args.layer_map)
+        reader = Reader(args.model, adapter=args.adapter, layer_map=args.layer_map, student=args.view_student, student_off=args.student_off)
     else:
         from vllm import LLM, SamplingParams
         model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=args.max_model_len, max_num_seqs=16, gpu_memory_utilization=args.gpu_memory,
@@ -247,11 +254,12 @@ def main(argv=None):
     write_manifest(out, config=to_jsonable(args), inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json'),
                                                            **{str(w): digest(w) for w in sorted(args.model.glob('*.safetensors'))},
                                                            **({str(w): digest(w) for w in sorted(args.adapter.glob('*.safetensors'))} if args.adapter else {}),
-                                                           **({str(args.layer_map): digest(args.layer_map)} if args.layer_map else {})},
+                                                           **({str(args.layer_map): digest(args.layer_map)} if args.layer_map else {}),
+                                                           **({str(w): digest(w) for w in sorted(args.view_student.glob('*.safetensors'))} if args.view_student else {})},
                    backend=args.backend, rows=len(jobs), lines=len(rows),
                    conditions={c: {'image': image_keys(c), 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0]), 'rows': sum(j[0] == c for j in jobs)} for c in args.conditions},
                    system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'loop_limit': args.loop_limit, 'dtype': 'bfloat16'})
-    name = args.model.name+(f'+{args.adapter.parent.name}' if args.adapter else '')      # the reading of a model with an adapter is another model's
+    name = args.model.name+(f'+{args.adapter.parent.name}' if args.adapter else '')+(f'+{args.view_student.parent.name}' if args.view_student else '')      # the reading of a model with an adapter is another model's
     started, done = time.monotonic(), 0
     with (out/'predictions.jsonl').open('x', encoding='utf-8') as stream:
         for start in range(0, len(jobs), args.batch_size):
@@ -264,7 +272,7 @@ def main(argv=None):
                              hidden_flags(reader, CONDITIONS[c][2], row, shown[0], args.pack, args) if c in TOKEN_RULES else None,
                              args.soft if CONDITIONS[c][2] == 'soft_band' else 0.) for (c, row), shown in zip(batch, images)]
                 results = reader.read(requests, SYSTEM, args.max_new_tokens, maps=[opened(row, 'map') for _, row in batch] if args.layer_map else None,      # of each job's first image
-                                      loop_limit=args.loop_limit)
+                                      loop_limit=args.loop_limit, students=[[n+1 in args.student_images for n in range(len(shown))] for shown in images] if args.view_student else None)
             else:
                 generated = model.chat([messages(shown, prompt(c, row), row.get('system', SYSTEM) if c == 'from_pack' else SYSTEM)
                                         for (c, row), shown in zip(batch, images)], sampling, use_tqdm=False)

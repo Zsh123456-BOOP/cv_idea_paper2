@@ -126,7 +126,7 @@ def with_layer_maps(pixel_values, maps, image_processor):
 class Reader:
     """A Qwen3-VL model (with a LoRA adapter, if given) and its processor on one device, reading batches of lines with hidden visual tokens."""
 
-    def __init__(self, model_dir, device='cuda', adapter=None, layer_map=None):
+    def __init__(self, model_dir, device='cuda', adapter=None, layer_map=None, student=None, student_off=False):
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor
         self.torch, self.device = torch, device
@@ -141,23 +141,57 @@ class Reader:
             patch_embed_with_layer_map(self.model.model.visual.patch_embed).load_state_dict(torch.load(str(layer_map), map_location=device))
         else:
             patch_embed_as_linear(self.model.model.visual.patch_embed)
+        self.view, self.flags = None, None
+        if student:                                                      # a vision-tower adapter of ``train_clean_view``: see ``student_features``
+            from peft import PeftModel
+            self.view = PeftModel.from_pretrained(self.model.model.visual, str(student)).eval()
+            self.model.model.get_image_features = self.student_features(self.model.model.get_image_features, student_off)
         self.merge = self.model.config.vision_config.spatial_merge_size
         self.image_token = self.model.config.image_token_id
         eos = self.model.generation_config.eos_token_id
         self.stop = set(eos if isinstance(eos, (list, tuple)) else [eos])
+
+    def student_features(self, features, off):
+        """The model's image features with the student for the images ``self.flags`` marks (in the batch's order) and the frozen tower
+        (the adapter disabled) for the others: the merged tokens and the deepstack levels alike.  ``off``: the marked images go the
+        same way but with the adapter disabled too (the wiring check: it must read as the plain model)."""
+        torch = self.torch
+
+        def chosen(pixel_values, image_grid_thw=None):
+            with self.view.disable_adapter():
+                embeds, deep = features(pixel_values, image_grid_thw)
+            flags = self.flags or [False]*len(embeds)
+            if len(flags) != len(embeds):
+                raise ValueError(f'{len(flags)} student flags for {len(embeds)} images')
+            if not any(flags):
+                return embeds, deep
+            if off:
+                with self.view.disable_adapter():
+                    s_embeds, s_deep = features(pixel_values, image_grid_thw)
+            else:
+                s_embeds, s_deep = features(pixel_values, image_grid_thw)
+            sizes = [e.shape[0] for e in embeds]
+            picked = tuple(s if f else t for f, s, t in zip(flags, s_embeds, embeds))
+            levels = [torch.cat([s if f else t for f, s, t in zip(flags, a.split(sizes), b.split(sizes))]) for a, b in zip(s_deep, deep)]
+            return picked, levels
+        return chosen
 
     def grid(self, image):
         """(rows, cols) of merged tokens the processor makes of an image."""
         thw = self.processor.image_processor(images=[image], return_tensors='pt')['image_grid_thw'][0]
         return int(thw[1])//self.merge, int(thw[2])//self.merge
 
-    def read(self, jobs, system, max_new_tokens=256, maps=None, loop_limit=0):
+    def read(self, jobs, system, max_new_tokens=256, maps=None, loop_limit=0, students=None):
         """Greedy readings of (image, words, hidden, soft) jobs: ``image`` one image or several, ``hidden`` the bool flags of the image's
         tokens (or None), ``soft`` 0 to remove the hidden tokens from every attention or a positive bias subtracted from their attention
         logits; ``maps`` the layer map of each job's first image (a reader made with ``layer_map``).  ``loop_limit``: a reading that
         ends in one block written that many times (``looped``) stops there and keeps the block once (finish ``loop``; 0: never).  A list
-        of dicts (text, tokens, confidence -- the geometric mean of the written tokens' probabilities --, finish)."""
+        of dicts (text, tokens, confidence -- the geometric mean of the written tokens' probabilities --, finish).  ``students``: per job,
+        which of its images the student sees (a reader made with ``student``)."""
         torch = self.torch
+        if students is not None and self.view is None:
+            raise ValueError('student images without a student')
+        self.flags = [f for job_flags in students for f in job_flags] if students is not None else None
         shown = lambda image: [{'type': 'image', 'image': one} for one in (image if isinstance(image, (list, tuple)) else [image])]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': system}]},
                           {'role': 'user', 'content': [*shown(image), {'type': 'text', 'text': words}]}] for image, words, _, _ in jobs]
