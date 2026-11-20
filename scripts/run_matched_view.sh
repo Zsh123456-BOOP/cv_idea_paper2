@@ -111,18 +111,33 @@ if ! done_ data; then
 # The checks of the plan's section six that need a model (smoke only: the main run starts after the planning session has seen them).
 if [ "$PART" = smoke ] && ! done_ checks; then
     # 5: the adapter training, its scans now from a scan pack: the raw views pack gives V-真's step-0 validation loss of fold 0
-    place 12000 0 job "$R/check5_replay" -- "$PY" -m revrender.train_clean_view train --model "$MODEL" --pack "$V" --scan-pack "$RAWV" --fold 0 \
-        --steps 1 --eval-every 1 --output-dir "$R/check5_replay"; wait
-    "$PY" -c 'import json,sys; a=json.load(open(sys.argv[1]))["initial_val_loss"]; b=json.load(open(sys.argv[2]))["initial_val_loss"]; r={"replay":a,"fourth_round":b,"difference":a-b,"passed":abs(a-b)<=.001}; json.dump(r,open(sys.argv[3],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["passed"] else "check 5 failed")' \
-        "$R/check5_replay/complete.json" "${P4}_view_real_f0/complete.json" "$R/checks/check5_replay.json"
-    # 1: the matched path with the adapters off, the annotator's pack: the shared reader of fold 0's first four steps
-    place 22000 1 teach "$R/check1_trajectory" "$V" 0 --steps 100 --stop-after 4 --view-students "$SYNTH_V" --student-images 2 3 --student-off; wait
-    "$PY" -c 'import json,sys
-read=lambda p:[json.loads(l)["loss"] for l in open(p)][:4]; a,b=read(sys.argv[1]),read(sys.argv[2]); d=[x-y for x,y in zip(a,b)]
-r={"matched_off":a,"shared_f0":b,"differences":d,"passed":len(a)==4 and max(map(abs,d))<=.01}; json.dump(r,open(sys.argv[3],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["passed"] else "check 1 failed")' \
-        "$R/check1_trajectory/train_log.jsonl" "${SH}0/train_log.jsonl" "$R/checks/check1_trajectory.json"
+    if [ ! -e "$R/checks/check5_replay.json" ]; then
+        place 12000 0 job "$R/check5_replay" -- "$PY" -m revrender.train_clean_view train --model "$MODEL" --pack "$V" --scan-pack "$RAWV" --fold 0 \
+            --steps 1 --eval-every 1 --output-dir "$R/check5_replay"; wait
+        "$PY" -c 'import json,sys; a=json.load(open(sys.argv[1]))["initial_val_loss"]; b=json.load(open(sys.argv[2]))["initial_val_loss"]; r={"replay":a,"fourth_round":b,"difference":a-b,"passed":abs(a-b)<=.001}; json.dump(r,open(sys.argv[3],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["passed"] else "check 5 failed")' \
+            "$R/check5_replay/complete.json" "${P4}_view_real_f0/complete.json" "$R/checks/check5_replay.json"; fi
+    # 1: the matched path with the adapters off, the annotator's pack, against the shared reader of fold 0's first four steps.  The
+    # bar as revised before any reading (plan, section six, 2026-11-20 evening; the first bar, 0.01, was tighter than the training's
+    # own jitter): step 1 within 0.001 of the record, steps 2-4 each within the largest difference of the recipe rerun as it was
+    if [ ! -e "$R/checks/check1_trajectory_revised.json" ]; then
+        place 22000 1 teach "$R/check1_trajectory" "$V" 0 --steps 100 --stop-after 4 --view-students "$SYNTH_V" --student-images 2 3 --student-off; wait
+        place 22000 1 teach "$R/diag_plain_rerun" "$V" 0 --steps 100 --stop-after 4; wait
+        "$PY" - "$R/check1_trajectory/train_log.jsonl" "${SH}0/train_log.jsonl" "$R/diag_plain_rerun/train_log.jsonl" "$R/diag_matched_off_rerun/train_log.jsonl" \
+            "$R/checks/check1_trajectory_revised.json" <<'PY'
+import json, sys
+from pathlib import Path
+read = lambda p: [json.loads(l)['loss'] for l in open(p)][:4] if Path(p).exists() else None
+mine, record, plain, again = map(read, sys.argv[1:5])
+bar = max(abs(x-y) for x, y in zip(plain[1:], record[1:]))
+d = [x-y for x, y in zip(mine, record)]
+r = {'record_shared_f0': record, 'recipe_rerun': plain, 'matched_off': mine, 'matched_off_again': again, 'differences': d, 'bar_steps_2_4': bar,
+     'first_bar_0.01_passed': max(map(abs, d)) <= .01, 'passed': len(mine) == 4 and abs(d[0]) <= .001 and max(map(abs, d[1:])) <= bar}
+Path(sys.argv[5]).write_text(json.dumps(r, indent=2)); print(json.dumps(r))
+sys.exit(0 if r['passed'] else 'check 1 failed')
+PY
+    fi
     # 2: the training and reading features of eight regions of folds 1-4, the fourth round's real+synthetic adapters on
-    place 22000 1 job "$R/checks/check2_agree.json" -- "$PY" -m revrender.train_clean_view agree --model "$MODEL" --pack "$RAWV" --students "$SYNTH_V" \
+    [ -e "$R/checks/check2_agree.json" ] || place 22000 1 job "$R/checks/check2_agree.json" -- "$PY" -m revrender.train_clean_view agree --model "$MODEL" --pack "$RAWV" --students "$SYNTH_V" \
         --fold 0 --regions 8 --output "$R/checks/check2_agree.json"; wait
     "$PY" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["passed"] else "check 2 failed")' "$R/checks/check2_agree.json"
     # 6: NAFNet's pack through the adapter path with the adapter off, the whole of fold 0: as E-NAFNet read
