@@ -137,9 +137,11 @@ sys.exit(0 if r['passed'] else 'check 1 failed')
 PY
     fi
     # 2: the training and reading features of eight regions of folds 1-4, the fourth round's real+synthetic adapters on
-    [ -e "$R/checks/check2_agree.json" ] || place 22000 1 job "$R/checks/check2_agree.json" -- "$PY" -m revrender.train_clean_view agree --model "$MODEL" --pack "$RAWV" --students "$SYNTH_V" \
-        --fold 0 --regions 8 --output "$R/checks/check2_agree.json"; wait
-    "$PY" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["passed"] else "check 2 failed")' "$R/checks/check2_agree.json"
+    # (as revised, plan section six, second revision: 2a bit for bit against adapters switched by hand, 2b eval, 2c the training
+    # model against the reading Reader; the first version's result stays in check2_agree.json)
+    [ -e "$R/checks/check2_revised.json" ] || place 22000 1 job "$R/checks/check2_revised.json" -- "$PY" -m revrender.train_clean_view agree --model "$MODEL" \
+        --pack "$RAWV" --students "$SYNTH_V" --fold 0 --regions 8 --reader-adapter "${SH}0/adapter" --output "$R/checks/check2_revised.json"; wait
+    "$PY" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["passed"] else "check 2 failed")' "$R/checks/check2_revised.json"
     # 6: NAFNet's pack through the adapter path with the adapter off, the whole of fold 0: as E-NAFNet read
     place 22000 1 read_with "$R/check6_wiring" "$EV" "${SH}0/adapter" 0 --view-student "${SYNTH_V//\{fold\}/0}" --student-images 2 3 --student-off; wait
     compare_reads "$R/check6_wiring" "$P2/read_E-NAFNet_f0" "$R/checks/check6_wiring.json" 'check 6'

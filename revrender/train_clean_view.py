@@ -30,10 +30,13 @@ teacher's merged features of the scan and of the clean crop have cosine below .9
 clean crop's features over those tokens of the scan (raw), NAFNet's crop and the student (DIST/distances.jsonl).  The student sees
 the scan, or with ``--scan-pack`` that pack's ``erased`` window and ``context`` line (what it was taught on).
 
-``agree`` (the fifth round's check 2): the features ``train_reader --view-students`` gives a training batch (the regions of the
-other folds, a few of each, mixed in one batch, each through its own fold's adapter) against the reading path's (each region alone,
-its images 2 and 3 flagged as ``recognize_lines --view-student`` flags them) and against the adapter as it was taught (the vision
-tower alone, ``levels``): per image and level the lowest token cosine (OUT.json); below .999 fails.
+``agree`` (the fifth round's check 2, as revised: plan, section six, second revision; OUT.json): 2a the features the training
+path (``train_reader --view-students``) gives a batch of the regions of the other folds, a few of each, each through its own fold's
+adapter, bit for bit the same as a pass written apart over the very batch with each adapter switched on by hand (the first image:
+all adapters off); 2b with the reader in training mode, every module of the tower and the adapters out of training and the same
+batch twice the same; 2c one fold's regions through its adapter by the training model and by the reading ``Reader``: per level the
+mean token cosine at least that of one image alone against in a batch (0.9988, 0.9999, 0.9995, 0.9994), the lowest and the count
+below .999 reported.
 """
 import argparse
 import hashlib
@@ -254,48 +257,65 @@ def distance(args):
 
 
 def agree(args):
-    """The fifth round's check 2 (see the module's words)."""
+    """The fifth round's check 2 as revised (plan, section six, second revision; see the module's words)."""
     import torch
     from transformers import AutoProcessor
-    from .models.vlm_tokens import install_students
+    from .models.vlm_tokens import Reader, install_students
     from .recognize_lines import image_keys, prompt
     from .train_reader import Collate, PackSamples, lora_model
+    names = ('merged', 'deepstack1', 'deepstack2', 'deepstack3'); places = (2, 3); keys = image_keys('context_revision')
     rows = [r for r in json.loads((args.pack/'pack.json').read_text())['rows'] if r['fold'] != args.fold]
     folds = sorted({r['fold'] for r in rows}); per = max(1, args.regions//len(folds))
-    chosen = [r for j in folds for r in sorted((r for r in rows if r['fold'] == j), key=lambda r: r['id'])[:per]]
+    mixed = [r for j in folds for r in sorted((r for r in rows if r['fold'] == j), key=lambda r: r['id'])[:per]]
+    one = sorted((r for r in rows if r['fold'] == folds[0]), key=lambda r: r['id'])[:args.regions]
     processor = AutoProcessor.from_pretrained(str(args.model)); processor.tokenizer.padding_side = 'right'
     adapters = {f'fold{j}': Path(args.students.format(fold=j)) for j in folds}
-    model = lora_model(args.model, 16, 32, .05).to('cuda'); model.train()
+    collate = Collate(processor, prompt('context_revision', {'boxes': [], 'problem': ''}), places)
+    batch_of = lambda chosen: collate([PackSamples(args.pack, chosen, keys, condition='context_revision', latex=True)[i] for i in range(len(chosen))])
+    model = lora_model(args.model, 16, 32, .05).to('cuda')
     inner = model.get_base_model().model; students = install_students(inner, adapters)
-    keys = image_keys('context_revision'); places = (2, 3)
-    samples = PackSamples(args.pack, chosen, keys, condition='context_revision', latex=True)
-    batch = Collate(processor, prompt('context_revision', {'boxes': [], 'problem': ''}), places)([samples[i] for i in range(len(chosen))])
-    students.flags = batch['students']
-    embeds, deep = inner.get_image_features(batch['pixel_values'].to('cuda', torch.bfloat16), batch['image_grid_thw'].to('cuda'))
-    sizes = [e.shape[0] for e in embeds]; training = [[e, *(d.split(sizes)[i] for d in deep)] for i, e in enumerate(embeds)]
-    cos = lambda a, b: float(torch.nn.functional.cosine_similarity(a.float(), b.float(), dim=-1).min())
-    names = ('merged', 'deepstack1', 'deepstack2', 'deepstack3'); result = []; tower = {}
-    for n, r in enumerate(chosen):
-        images = [opened(args.pack/r['images'][key]) for key in keys]
-        x, g = encode(processor, images, 'cuda')
-        students.flags = [f'fold{r["fold"]}' if i+1 in places else None for i in range(len(images))]
-        e2, d2 = inner.get_image_features(x, g); s2 = [e.shape[0] for e in e2]
-        if r['fold'] not in tower:
-            tower.clear(); tower[r['fold']] = with_student(vision_tower(args.model).to('cuda'), adapter=adapters[f'fold{r["fold"]}']).eval()
-        starts = np.cumsum([0, *(int(q.prod()) for q in g)])
-        for i in places:
-            t = training[n*len(keys)+i-1]; reading = [e2[i-1], *(d.split(s2)[i-1] for d in d2)]
-            with torch.no_grad():
-                taught = levels(tower[r['fold']], x[starts[i-1]:starts[i]], g[i-1:i])
-            result.append({'id': r['id'], 'fold': r['fold'], 'image': i,
-                           'reading': {name: cos(a, b) for name, a, b in zip(names, t, reading)},
-                           'taught': {name: cos(a, b) for name, a, b in zip(names, t, taught)}})
-    lowest = min(v for e in result for part in ('reading', 'taught') for v in e[part].values())
-    summary = {'regions': len(chosen), 'folds': {f'fold{j}': sum(r['fold'] == j for r in chosen) for j in folds}, 'lowest_cosine': lowest,
-               'passed': lowest >= .999, 'encoded': students.encoded, 'images': result}
-    require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, summary)
-    print(json.dumps({k: summary[k] for k in ('regions', 'lowest_cosine', 'passed')}), flush=True)
-    require(summary['passed'], f'the training and reading features differ (lowest cosine {lowest:.5f}): {args.output}')
+    model.train()                                                       # where train_reader puts the reader before its steps
+    plain = type(inner).get_image_features                              # the model's own, without the adapters' routing
+    split = lambda out: [[e, *(d.split([x.shape[0] for x in out[0]])[i] for d in out[1])] for i, e in enumerate(out[0])]
+    same = lambda a, b: all(torch.equal(x, y) for x, y in zip(a, b))
+    result = {}
+    # 2b: the tower and the adapters in eval while the reader trains; the same batch twice gives the same features
+    modules = list(inner.visual.modules())
+    result['2b'] = {'modules': len(modules), 'training': sum(m.training for m in modules), 'reader_modules_training': sum(m.training for m in model.modules())}
+    batch = batch_of(mixed); flags = batch.pop('students')
+    x, g = batch['pixel_values'].to('cuda', torch.bfloat16), batch['image_grid_thw'].to('cuda')
+    students.flags = flags; first = split(inner.get_image_features(x, g)); second = split(inner.get_image_features(x, g))
+    result['2b']['student_images_same_twice'] = all(same(a, b) for a, b, f in zip(first, second, flags) if f)
+    result['2b']['passed'] = result['2b']['training'] == 0 and result['2b']['student_images_same_twice']
+    # 2a: against a pass written apart -- each adapter switched on by hand over the very batch the training path feeds the tower
+    reference = {}
+    with torch.no_grad():
+        with students.view.disable_adapter():
+            reference[None] = split(plain(inner, x, g))
+        for name in sorted({f for f in flags if f}):
+            students.view.set_adapter(name, inference_mode=True)
+            reference[name] = split(plain(inner, x, g))
+    per_image = [{'id': mixed[i//len(keys)]['id'], 'image': i % len(keys)+1, 'adapter': f, 'bitwise': same(first[i], reference[f][i])} for i, f in enumerate(flags)]
+    result['2a'] = {'regions': len(mixed), 'folds': {f'fold{j}': sum(r['fold'] == j for r in mixed) for j in folds}, 'images': per_image,
+                    'passed': all(e['bitwise'] for e in per_image) and len({f for f in flags if f}) == len(folds)}
+    # 2c: one fold's regions through its adapter, by the training model and by the reading Reader
+    batch = batch_of(one); flags = batch.pop('students'); x, g = batch['pixel_values'].to('cuda', torch.bfloat16), batch['image_grid_thw'].to('cuda')
+    students.flags = flags; taught = [[t.cpu() for t in image] for image in split(inner.get_image_features(x, g))]
+    import gc
+    del model, inner, students, modules, first, second, reference, batch; gc.collect(); torch.cuda.empty_cache()
+    reader = Reader(args.model, adapter=args.reader_adapter, student=adapters[f'fold{folds[0]}'])
+    reader.students.flags = ['default' if f else None for f in flags]
+    read = split(reader.model.model.get_image_features(x, g))
+    bars = dict(zip(names, (.9988, .9999, .9995, .9994))); levels_ = {}
+    for k, name in enumerate(names):
+        c = torch.cat([torch.nn.functional.cosine_similarity(a[k].float(), b[k].cpu().float(), dim=-1) for a, b in zip(taught, read)])
+        levels_[name] = {'mean': float(c.mean()), 'min': float(c.min()), 'below_0.999': int((c < .999).sum()), 'tokens': int(c.numel()), 'bar': bars[name],
+                         'bitwise': all(torch.equal(a[k], b[k].cpu()) for a, b in zip(taught, read))}
+    result['2c'] = {'regions': len(one), 'fold': folds[0], 'levels': levels_, 'passed': all(v['mean'] >= v['bar'] for v in levels_.values())}
+    result['passed'] = all(result[part]['passed'] for part in ('2a', '2b', '2c'))
+    require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, result)
+    print(json.dumps({part: result[part]['passed'] for part in ('2a', '2b', '2c')}), flush=True)
+    require(result['passed'], f'check 2 failed: {args.output}')
 
 
 def main(argv=None):
@@ -312,7 +332,7 @@ def main(argv=None):
     a = sub.add_parser('agree')
     for key in ('model', 'pack', 'output'): a.add_argument('--'+key, type=Path, required=True)
     a.add_argument('--students', required=True, help="a fold's adapter, {fold} for the fold"); a.add_argument('--fold', type=int, required=True)
-    a.add_argument('--regions', type=int, default=8)
+    a.add_argument('--regions', type=int, default=8); a.add_argument('--reader-adapter', type=Path, help="the reading Reader's adapter (2c)")
     args = p.parse_args(argv); {'train': train, 'distance': distance, 'agree': agree}[args.command](args)
 
 
