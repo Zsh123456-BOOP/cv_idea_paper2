@@ -123,6 +123,69 @@ def with_layer_maps(pixel_values, maps, image_processor):
     return torch.cat([pixel_values, layers.to(pixel_values.dtype)], dim=1)
 
 
+class Students:
+    """The vision-tower adapters of ``train_clean_view`` installed in a Qwen3-VL (``install_students``): ``flags`` says, per image of
+    the next batch in order, which adapter sees it (its name) or the frozen tower (None); ``encoded`` counts the images each adapter saw."""
+
+    def __init__(self, view, names):
+        self.view, self.names, self.flags, self.encoded = view, names, None, {n: 0 for n in names}
+
+
+def install_students(inner, adapters, off=False):
+    """Load the vision-tower adapters ``{name: folder}`` into ``inner.visual`` (``inner``: the Qwen3VLModel) and route its image
+    features through them (``student_features``); the tower is pinned in eval (no dropout, whatever ``train()`` later says) and nothing
+    of it learns.  ``off``: the flagged images go the adapters' way with the adapters disabled (the wiring and trajectory checks)."""
+    import types
+    import torch
+    from peft import PeftModel
+    names = list(adapters)
+    view = PeftModel.from_pretrained(inner.visual, str(adapters[names[0]]), adapter_name=names[0])
+    for name in names[1:]:
+        view.load_adapter(str(adapters[name]), adapter_name=name)
+    for q in view.parameters():
+        q.requires_grad_(False)
+    inner.visual.train = types.MethodType(lambda self, mode=True: torch.nn.Module.train(self, False), inner.visual)
+    inner.visual.eval()
+    students = Students(view, names)
+    inner.get_image_features = student_features(inner.get_image_features, students, off)
+    return students
+
+
+def student_features(features, students, off):
+    """The model's image features with, for each image ``students.flags`` names an adapter for, that adapter's, and the frozen tower's
+    (the adapters disabled) for the others: the merged tokens and the deepstack levels alike.  The tower learns nothing, so no graph is
+    kept.  ``off``: the flagged images go the same way with the adapters disabled too (it must read, or learn, as the plain model)."""
+    import contextlib
+    import torch
+    view = students.view
+
+    def chosen(pixel_values, image_grid_thw=None):
+        with torch.no_grad():
+            with view.disable_adapter():
+                embeds, deep = features(pixel_values, image_grid_thw)
+            flags = students.flags or [None]*len(embeds)
+            if len(flags) != len(embeds):
+                raise ValueError(f'{len(flags)} student flags for {len(embeds)} images')
+            used = [n for n in students.names if n in flags]
+            if not used:
+                return embeds, deep
+            sizes = [e.shape[0] for e in embeds]
+            picked, levels = list(embeds), [list(d.split(sizes)) for d in deep]
+            for name in used:
+                if not off:
+                    view.set_adapter(name, inference_mode=True)
+                with view.disable_adapter() if off else contextlib.nullcontext():
+                    s_embeds, s_deep = features(pixel_values, image_grid_thw)
+                for i, f in enumerate(flags):
+                    if f == name:
+                        picked[i] = s_embeds[i]
+                        for level, d in zip(levels, s_deep):
+                            level[i] = d.split(sizes)[i]
+                students.encoded[name] += flags.count(name)
+            return tuple(picked), [torch.cat(level) for level in levels]
+    return chosen
+
+
 class Reader:
     """A Qwen3-VL model (with a LoRA adapter, if given) and its processor on one device, reading batches of lines with hidden visual tokens."""
 
@@ -141,40 +204,13 @@ class Reader:
             patch_embed_with_layer_map(self.model.model.visual.patch_embed).load_state_dict(torch.load(str(layer_map), map_location=device))
         else:
             patch_embed_as_linear(self.model.model.visual.patch_embed)
-        self.view, self.flags = None, None
-        if student:                                                      # a vision-tower adapter of ``train_clean_view``: see ``student_features``
-            from peft import PeftModel
-            self.view = PeftModel.from_pretrained(self.model.model.visual, str(student)).eval()
-            self.model.model.get_image_features = self.student_features(self.model.model.get_image_features, student_off)
+        self.students = None
+        if student:                                                      # a vision-tower adapter of ``train_clean_view``: see ``install_students``
+            self.students = install_students(self.model.model, {'default': student}, student_off)
         self.merge = self.model.config.vision_config.spatial_merge_size
         self.image_token = self.model.config.image_token_id
         eos = self.model.generation_config.eos_token_id
         self.stop = set(eos if isinstance(eos, (list, tuple)) else [eos])
-
-    def student_features(self, features, off):
-        """The model's image features with the student for the images ``self.flags`` marks (in the batch's order) and the frozen tower
-        (the adapter disabled) for the others: the merged tokens and the deepstack levels alike.  ``off``: the marked images go the
-        same way but with the adapter disabled too (the wiring check: it must read as the plain model)."""
-        torch = self.torch
-
-        def chosen(pixel_values, image_grid_thw=None):
-            with self.view.disable_adapter():
-                embeds, deep = features(pixel_values, image_grid_thw)
-            flags = self.flags or [False]*len(embeds)
-            if len(flags) != len(embeds):
-                raise ValueError(f'{len(flags)} student flags for {len(embeds)} images')
-            if not any(flags):
-                return embeds, deep
-            if off:
-                with self.view.disable_adapter():
-                    s_embeds, s_deep = features(pixel_values, image_grid_thw)
-            else:
-                s_embeds, s_deep = features(pixel_values, image_grid_thw)
-            sizes = [e.shape[0] for e in embeds]
-            picked = tuple(s if f else t for f, s, t in zip(flags, s_embeds, embeds))
-            levels = [torch.cat([s if f else t for f, s, t in zip(flags, a.split(sizes), b.split(sizes))]) for a, b in zip(s_deep, deep)]
-            return picked, levels
-        return chosen
 
     def grid(self, image):
         """(rows, cols) of merged tokens the processor makes of an image."""
@@ -189,9 +225,10 @@ class Reader:
         of dicts (text, tokens, confidence -- the geometric mean of the written tokens' probabilities --, finish).  ``students``: per job,
         which of its images the student sees (a reader made with ``student``)."""
         torch = self.torch
-        if students is not None and self.view is None:
+        if students is not None and self.students is None:
             raise ValueError('student images without a student')
-        self.flags = [f for job_flags in students for f in job_flags] if students is not None else None
+        if self.students is not None:
+            self.students.flags = [('default' if f else None) for job_flags in students for f in job_flags] if students is not None else None
         shown = lambda image: [{'type': 'image', 'image': one} for one in (image if isinstance(image, (list, tuple)) else [image])]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': system}]},
                           {'role': 'user', 'content': [*shown(image), {'type': 'text', 'text': words}]}] for image, words, _, _ in jobs]

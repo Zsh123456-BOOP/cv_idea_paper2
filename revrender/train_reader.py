@@ -25,6 +25,14 @@ ask for) in place of its ``target`` (the scores' flattened spelling; the two agr
 
 ``--init-adapter`` starts from an earlier run's adapter and teaches it on (a schedule of its own: warm-up and cosine over ``--steps``).
 
+``--view-students PATTERN`` (with ``--fold K``; plan of 2026-11-20, 第五轮_X与V结合, section 4.1): the reader learns on what the
+vision-tower adapters of ``train_clean_view`` make of its images.  PATTERN names a fold's adapter (``{fold}``); the images at the places
+``--student-images`` names (1-based) of a training row of fold j are seen through fold j's adapter -- the one that never trained on fold
+j -- and fold K's is never loaded (the reader of fold K reads fold K through it, ``recognize_lines --view-student``).  The adapters
+are frozen and in eval, as when reading (``models.vlm_tokens.install_students``); only the language model's adapter learns.
+``--student-off``: those images go the adapters' way with the adapters disabled (the trajectory check: it must learn as the plain
+reader).  ``--stop-after N``: stop after N steps of the schedule of ``--steps`` (the trajectory check).
+
 ``--counterfactual S W`` (a pack of ``data.struck_pack counterfactual``) teaches what a change of the evidence should change: a
 training sample of a readable region is shown, with probability S, with its strike taken off the scan (the reading stays the same:
 the strike is not the writing) and, with probability W, with the struck writing taken off instead (the reading becomes
@@ -124,32 +132,37 @@ class PackSamples:
         elif draw < sum(self.counterfactual):
             swap, text = INTERVENED['writing_off'], UNREADABLE
         opened = lambda key: Image.open(self.root/row['images'][swap.get(key, key)]).convert('RGB')
-        return [opened(key) for key in self.keys], text, opened('map') if self.mapped else None, prompt(self.condition, row) if self.condition else None
+        return ([opened(key) for key in self.keys], text, opened('map') if self.mapped else None, prompt(self.condition, row) if self.condition else None,
+                row.get('fold'))
 
 
 class Collate:
-    """A batch for the model: the chat with the answer, the loss only on the answer; the words are a sample's own when it carries them."""
+    """A batch for the model: the chat with the answer, the loss only on the answer; the words are a sample's own when it carries them.
+    ``students``: the places (1-based) of a sample's images its own fold's vision adapter sees; the batch then carries ``students``,
+    per image in order, that adapter's name (``fold<j>``) or None."""
 
-    def __init__(self, processor, words):
-        self.processor, self.words = processor, words
+    def __init__(self, processor, words, students=()):
+        self.processor, self.words, self.students = processor, words, tuple(students)
         self.start = processor.tokenizer.convert_tokens_to_ids('<|im_start|>')
 
     def __call__(self, batch):
-        batch = [item if len(item) == 4 else ([item[0]], item[1], None, None) for item in batch]      # (images, text, layer map, words)
+        batch = [item if len(item) == 5 else ([item[0]], item[1], None, None, None) for item in batch]      # (images, text, layer map, words, fold)
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': SYSTEM}]},
                           {'role': 'user', 'content': [*({'type': 'image', 'image': image} for image in images), {'type': 'text', 'text': words or self.words}]},
-                          {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _, words in batch]
+                          {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _, words, _ in batch]
         out = self.processor.apply_chat_template(conversations, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
         out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw')}
         if batch[0][2] is not None:
             from .models.vlm_tokens import layer_maps, with_layer_maps
-            out['pixel_values'] = with_layer_maps(out['pixel_values'], [m for images, _, layer in batch for m in layer_maps(images, layer)], self.processor.image_processor)
+            out['pixel_values'] = with_layer_maps(out['pixel_values'], [m for images, _, layer, _, _ in batch for m in layer_maps(images, layer)], self.processor.image_processor)
         labels = out['input_ids'].clone()
         for b in range(labels.shape[0]):
             marks = (out['input_ids'][b] == self.start).nonzero().flatten()
             labels[b, :int(marks[-1])+3] = -100                        # the system and user turns and "<|im_start|>assistant\n"
         labels[out['attention_mask'] == 0] = -100
         out['labels'] = labels
+        if self.students:
+            out['students'] = [f'fold{fold}' if n+1 in self.students else None for images, _, _, _, fold in batch for n in range(len(images))]
         return out
 
 
@@ -204,7 +217,7 @@ def evaluate(model, loader, device):
     total, count = 0., 0
     with torch.inference_mode():
         for batch in loader:
-            batch = {k: v.to(device) for k, v in batch.items()}
+            batch = {k: v.to(device) for k, v in batch.items() if k != 'students'}
             batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
             tokens = int((batch['labels'] != -100).sum())
             total += float(answer_loss(model, batch))*tokens
@@ -226,6 +239,10 @@ def main(argv=None):
     p.add_argument('--keep-best', action='store_true', help='keep the adapter of the lowest validation loss, not the last')
     p.add_argument('--init-adapter', type=Path, help='start from this adapter (OUT/adapter of an earlier run) and go on teaching it, with a schedule of its own')
     p.add_argument('--all-rest', action='store_true', help='with --fold: teach on every row of the other folds, the val marks ignored (no validation)')
+    p.add_argument('--view-students', help="with --pack and --fold: a fold's vision adapter of train_clean_view, {fold} for the fold (see above)")
+    p.add_argument('--student-images', type=int, nargs='+', default=[], help='with --view-students: the places (1-based) of the images the adapters see')
+    p.add_argument('--student-off', action='store_true', help='with --view-students: those images go the adapters\' way with the adapters disabled')
+    p.add_argument('--stop-after', type=int, help='stop after this many steps of the --steps schedule (the trajectory check)')
     p.add_argument('--counterfactual', type=float, nargs=2, default=(0., 0.), metavar=('STRIKE_OFF', 'WRITING_OFF'),
                    help='with --pack: the probabilities a readable training row is shown with its strike, or its struck writing, taken off')
     p.add_argument('--pages', type=Path, action='append', help='with --corpus: a folder of scans <image_id>.jpg (repeatable)')
@@ -262,6 +279,10 @@ def main(argv=None):
         require(args.pages, '--corpus needs --pages')
         train_rows, val_rows = read_rows(args.corpus, args.kinds, 'train'), read_rows(args.corpus, args.kinds, 'val')[:args.val_limit]
     require(train_rows, 'no training recipe of these kinds')
+    require(bool(args.view_students) == bool(args.student_images) and (not args.view_students or (args.pack and args.fold is not None and not args.layer_map)),
+            '--view-students and --student-images go together, with --pack and --fold')
+    folds_used = sorted({r['fold'] for r in train_rows + val_rows}) if args.view_students else []
+    require(args.fold not in folds_used, 'a fold read by this reader would be seen through an adapter of its own')
     require(not (args.blank and 'stack' in args.kinds), '--blank and the stack kind do not go together: the blanked column holds valid writing')
     out = make_output_dir(args.output_dir)
     torch.manual_seed(SEED)
@@ -270,7 +291,7 @@ def main(argv=None):
     processor = AutoProcessor.from_pretrained(str(args.model))
     processor.tokenizer.padding_side = 'right'
     if args.pack:
-        collate = Collate(processor, prompt(args.condition, {'boxes': [], 'problem': ''}))      # each pack sample carries its own words
+        collate = Collate(processor, prompt(args.condition, {'boxes': [], 'problem': ''}), args.student_images)      # each pack sample carries its own words
         shown = image_keys(args.condition), args.condition in MAPPED
         latex = args.answer == 'latex'
         train_set = PackSamples(args.pack, train_rows, *shown, tuple(args.counterfactual), args.condition, latex)
@@ -285,6 +306,12 @@ def main(argv=None):
     val_loader = torch.utils.data.DataLoader(val_set, batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
     require(not (args.init_adapter and args.layer_map), '--init-adapter with --layer-map is not supported')
     model = lora_model(args.model, args.rank, args.alpha, args.dropout, args.layer_map, args.init_adapter).to('cuda')
+    students, adapters = None, {f'fold{j}': Path(args.view_students.format(fold=j)) for j in folds_used}
+    if args.view_students:
+        from .models.vlm_tokens import install_students
+        state = torch.get_rng_state(), torch.cuda.get_rng_state_all()      # loading the adapters draws their (overwritten) initial weights
+        students = install_students(model.get_base_model().model, adapters, args.student_off)
+        torch.set_rng_state(state[0]); torch.cuda.set_rng_state_all(state[1])
     if args.checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
         model.enable_input_require_grads()
@@ -297,7 +324,10 @@ def main(argv=None):
     source = args.pack/'pack.json' if args.pack else args.corpus
     write_manifest(out, config=to_jsonable(args), inputs={str(source): digest(source), **({str(w): digest(w) for w in sorted(args.init_adapter.glob('*.safetensors'))} if args.init_adapter else {})},
                    train_recipes=len(train_rows), val_recipes=len(val_rows),
-                   trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds)
+                   trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds,
+                   **({'students': {k: str(v) for k, v in adapters.items()}, 'student_off': args.student_off,
+                       'students_used': {f'fold{j}': sum(r['fold'] == j for r in train_rows) for j in folds_used},
+                       'student_adapter_files': {str(w): digest(w) for v in adapters.values() for w in sorted(v.glob('*.safetensors'))}} if students else {}))
     stream = (out/'train_log.jsonl').open('x', encoding='utf-8')
     started, iterator, kept = time.monotonic(), cycle(loader), (math.inf, None)
 
@@ -305,12 +335,15 @@ def main(argv=None):
         model.save_pretrained(out/'adapter')
         if args.layer_map:
             torch.save(layer_map_state(model), out/'layer_map.pt')
-    for step in range(args.steps):
+    for step in range(args.stop_after or args.steps):
         for group in optimizer.param_groups:
             group['lr'] = group['base']*schedule(step)
         total, tokens = 0., 0
         for _ in range(args.accumulate):
-            batch = {k: v.to('cuda') for k, v in next(iterator).items()}
+            batch = next(iterator)
+            if students is not None:
+                students.flags = batch.pop('students')
+            batch = {k: v.to('cuda') for k, v in batch.items()}
             batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
             loss = answer_loss(model, batch)
             (loss/args.accumulate).backward()
@@ -331,7 +364,9 @@ def main(argv=None):
         save()
     stream.close()
     write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'final_loss': row['loss'], 'final_val_loss': row.get('val_loss'),
-                                     'kept_step': kept[1] or args.steps, 'kept_val_loss': kept[0] if kept[1] else row.get('val_loss')})
+                                     'kept_step': kept[1] or args.steps, 'kept_val_loss': kept[0] if kept[1] else row.get('val_loss'),
+                                     **({'stopped_after': args.stop_after} if args.stop_after else {}),
+                                     **({'students_encoded': students.encoded} if students else {})})
     return 0
 
 

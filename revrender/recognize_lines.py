@@ -57,7 +57,7 @@ token keeping its position:
   blanked_hide_band_neutral  the columns whited out and the tokens over them hidden as well
 
 ``--view-student`` (``--backend hf``, Qwen3-VL): a vision-tower adapter of ``train_clean_view``; the images of a condition at the places
-``--student-images`` names are seen through it, the others through the frozen tower (``models.vlm_tokens.Reader.student_features``).
+``--student-images`` names are seen through it, the others through the frozen tower (``models.vlm_tokens.student_features``).
 
 Greedy decoding, seed 42; every request carries one image, so nothing in the words can be read back as text.  The backend is vLLM (the
 default, for the plain conditions) or transformers (``hf``, for all of them: the plain conditions read the same to the precision of another

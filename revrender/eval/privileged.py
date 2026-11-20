@@ -1,6 +1,7 @@
 """The rules and reports of the fourth round (plan of 2026-11-20, 第四轮_特权视图三样试验, sections 4.1-4.3): X (a reader taught on
 NAFNet's held-out erased crops), V (the reader's vision tower taught to see the scan as clean) and A (a reader taught first on
-synthetic regions a teacher read).
+synthetic regions a teacher read); and of the fifth (第五轮_X与V结合, section 5): V with a matched reader (VR-真+合, VR-真), the
+adapter looking at NAFNet's crop (NV, NVR) or at the scan with NAFNet's erasure in red (MV, MVR).
 
     python -m revrender.eval.privileged analyse --pack VIEWS --arm NAME=DIR[,DIR...] [...] --scores REF=FILE [...]
         [--distances NAME=DIR[,DIR...] ...] [--teacher FILE ...] --output-dir OUT
@@ -8,7 +9,11 @@ synthetic regions a teacher read).
 ``--scores``: ``eval.transcription`` runs against E-NAFNet, R0, H, V-真 and R0-长.  The rules, each as the plan writes it ("成立": the
 exact interval's lower end above 0 and the AR difference at least +2; "worse": the exact interval wholly below 0):
 X1 X against E-NAFNet; X2 X against R0 (exact lower end above 0); V1 V-真+合 against E-NAFNet; V2 V-真+合 against R0; V3 V-真+合
-against V-真; A1 R0-长 against R0 (then A's control is R0-长, else R0); A2 A against its control.  Reported only: exact by
+against V-真; A1 R0-长 against R0 (then A's control is R0-长, else R0); A2 A against its control.  The fifth round's four grades
+(``grade``): holds, worse, exact up but AR short (the exact interval's lower end above 0, the AR difference under +2), cannot tell;
+rule 1 VR-真+合 against V-真+合, rule 2 NVR against VR-真, rule 3 MVR against VR-真, rule 4 each new reading against V-真+合: of
+those that hold, the highest exact is the next version, within 0.2 points a tie, broken for the one without NAFNet, then for the
+shared reader (``next_version``).  Reported only: the pairs ``REPORTED``, each new reading against H, R0, E-NAFNet and X.  Reported only: exact by
 annotation mode and the label's length, every arm's refusal, every arm against H; the feature distances (``train_clean_view
 distance``: on the touched tokens of each region, the mean cosine to the clean crop's features of the scan, NAFNet's crop and the
 student), their means and the paired differences with writer-resampled 95% intervals; the teacher's answers of A (``--teacher``:
@@ -27,10 +32,32 @@ from .hint_loop import raw_rows, verdict_plus
 from .transcription import counts, rates
 
 LEVELS = ('merged', 'deepstack1', 'deepstack2', 'deepstack3')
+NEW = ('VR-真+合', 'VR-真', 'NV', 'NVR', 'MV', 'MVR')
+WITH_NAFNET, SHARED = {'NV', 'NVR', 'MV', 'MVR'}, {'NV', 'MV'}
+RULES5 = (('rule1', 'VR-真+合', 'V-真+合'), ('rule2', 'NVR', 'VR-真'), ('rule3', 'MVR', 'VR-真'))
+REPORTED = (('VR-真', 'V-真'), ('NV', 'V-真'), ('MV', 'V-真'), ('MVR', 'NVR'))
 
 
 def worse(a):
     return a['exact']['interval'][1] < 0
+
+
+def grade(a):
+    """The fifth round's four grades of a paired difference."""
+    if verdict_plus(a): return 'holds'
+    if worse(a): return 'worse'
+    return 'exact_up_ar_short' if a['exact']['interval'][0] > 0 else 'cannot_tell'
+
+
+def next_version(graded, exact):
+    """Rule 4: of the new readings that hold against V-真+合 (``graded`` name -> grade), the highest exact (``exact`` name -> rate);
+    within 0.2 points a tie, broken for the one without NAFNet, then for the shared reader; None when none holds."""
+    held = [n for n in NEW if graded.get(n) == 'holds']
+    if not held: return None
+    top = max(exact[n] for n in held); tied = [n for n in held if top-exact[n] < .002]
+    for prefer in (lambda n: n not in WITH_NAFNET, lambda n: n in SHARED):
+        if any(prefer(n) for n in tied) and not all(prefer(n) for n in tied): tied = [n for n in tied if prefer(n)]
+    return max(tied, key=lambda n: exact[n])
 
 
 def pick(a):
@@ -91,12 +118,21 @@ def analyse(args):
         rules['A1_R0-长_vs_R0'] = {**pick(long_), 'verdict': 'undertrained' if undertrained else 'not_undertrained'}
         control = 'R0-长' if undertrained else 'R0'; a = vs(control, 'A')
         rules['A2_vs_control'] = {**pick(a), 'control': control, 'verdict': 'useful' if verdict_plus(a) else 'worse' if worse(a) else 'cannot_tell'}
+    if 'VR-真+合' in arms:
+        for rule, arm, ref in RULES5:
+            rules[f'{rule}_{arm}_vs_{ref}'] = {**pick(vs(ref, arm)), 'verdict': grade(vs(ref, arm))}
+        graded = {n: grade(vs('V-真+合', n)) for n in NEW if n in arms}
+        exact = {n: scores['V-真+合'][n]['exact'] for n in graded}
+        rules['rule4_vs_V-真+合'] = {'arms': {n: {**pick(vs('V-真+合', n)), 'verdict': graded[n], 'exact_rate': exact[n]} for n in graded},
+                                     'next_version': next_version(graded, exact)}
+        rules['reported'] = {f'{arm}_vs_{ref}': {**pick(vs(ref, arm)), 'grade': grade(vs(ref, arm))} for arm, ref in REPORTED if arm in arms and ref in scores}
+        rules['reported'].update({f'{n}_vs_{ref}': pick(vs(ref, n)) for n in graded for ref in ('H', 'R0', 'E-NAFNet', 'X') if ref in scores})
     names = list(arms)
     can = [k for k in rows if rows[k]['readable'] and all(k in arms[n] for n in names)]
     scored = lambda arm, ks: [counts(rows[k]['text'], arms[arm][k]) for k in ks]
     lengths = lambda k: (lambda n: '1-2' if n <= 2 else '3-9' if n <= 9 else '10+')(len(prepare(rows[k]['text']).replace('?', '')))
     groups = {}
-    for g, key in (('mode', lambda k: rows[k]['mode']), ('length', lengths)):
+    for g, key in (('mode', lambda k: rows[k]['mode']), ('length', lengths), ('fold', lambda k: rows[k]['fold'])):
         groups[g] = {v: {'regions': len(ks), **{n: rates(scored(n, ks))['exact'] for n in names}}
                      for v in sorted({key(k) for k in can}) for ks in [[k for k in can if key(k) == v]]}
     rng = np.random.default_rng(SEED); dist, by_region = {}, {}
@@ -118,7 +154,7 @@ def analyse(args):
                                     ensure_ascii=False)+'\n')
     write_manifest(out, config={k: [str(x) for x in v] if isinstance(v, list) else str(v) for k, v in vars(args).items() if k != 'command'},
                    inputs={str(p): digest(p) for p in [args.pack/'pack.json', *(Path(s.partition('=')[2]) for s in args.scores)]})
-    print(json.dumps({k: v['verdict'] for k, v in rules.items()}), flush=True)
+    print(json.dumps({k: v.get('verdict', v.get('next_version')) for k, v in rules.items() if k != 'reported'}, ensure_ascii=False), flush=True)
 
 
 def main(argv=None):

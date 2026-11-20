@@ -8,6 +8,13 @@
     python -m revrender.data.struck_pack counterfactual --pack SEPARATED_PACK --human FOLDS_PACK --output-dir OUT
     python -m revrender.data.struck_pack split --pack PACK --output configs/method_split.json
     python -m revrender.data.struck_pack scores --pack SEPARATED_PACK --sets SETS --fold 0 --output OUT.json
+    python -m revrender.data.struck_pack tinted --raw RAW_VIEWS --erased ERASED_VIEWS --output-dir OUT
+
+``tinted`` (plan of 2026-11-20, 第五轮_X与V结合, section 4.3): a views pack whose ``erased`` window and ``context`` line show a
+restorer's erasure in red: red the gray of the erased views' image, green and blue the gray of the raw views' (the restorer's erased
+ink red, the ink it left black, all of the scan's ink still there); where the two images agree pixel for pixel (the line outside the
+region, its blue box) the raw views' image as it is.  ``raw`` stays the scan.  Every image is read back and checked
+(OUT/summary.json); one that is not as made fails the pack.
 
 ``split`` (``method_split``): one 9:1 split of the writers, kept for the method stage; ``--split FILE`` makes ``folds``, ``fold-sets`` and
 ``views`` take its two folds (0 its validation writers, 1 its training ones), and ``fold-sets`` then holds the readers' windows
@@ -442,6 +449,47 @@ def views_pack(args):
     print(json.dumps(summary), flush=True)
 
 
+def tint(scan, erased):
+    """The RGB image of ``tinted`` (see the module's words) from a scan and the restorer's erased image of one size."""
+    s, e = np.asarray(scan.convert('RGB')), np.asarray(erased.convert('RGB'))
+    require(s.shape == e.shape, f'the scan is {s.shape[:2]} and the erased image {e.shape[:2]}')
+    gray = lambda image: np.asarray(image.convert('L'))
+    out = np.stack([gray(erased), gray(scan), gray(scan)], -1)
+    same = (s == e).all(-1)
+    out[same] = s[same]
+    return Image.fromarray(out)
+
+
+def tinted_pack(args):
+    raw = json.loads((args.raw/'pack.json').read_text())['rows']; erased = {r['id']: r for r in json.loads((args.erased/'pack.json').read_text())['rows']}
+    require(set(erased) == {r['id'] for r in raw}, 'the two packs hold different regions')
+    out = make_output_dir(args.output_dir); (out/'crops').mkdir(); rows, checked = [], {'windows': 0, 'lines': 0, 'line_pixels_kept_as_scan': 0}
+    for n, r in enumerate(raw):
+        q = erased[r['id']]; images = {name: f'crops/{n:05d}_{name}.png' for name in ('raw', 'erased', 'context')}
+        shutil.copyfile(args.raw/r['images']['raw'], out/images['raw'])
+        pairs = {'erased': (args.raw/r['images']['erased'], args.erased/q['images']['erased']), 'context': (args.raw/r['images']['context'], args.erased/q['images']['context'])}
+        for name, (a, b) in pairs.items():
+            with Image.open(a) as scan, Image.open(b) as gone:
+                tint(scan, gone).save(out/images[name])
+                with Image.open(out/images[name]) as back:
+                    got, s, e = np.asarray(back.convert('RGB')), np.asarray(scan.convert('RGB')), np.asarray(gone.convert('RGB'))
+                    differ = ~(s == e).all(-1); gs, ge = np.asarray(scan.convert('L')), np.asarray(gone.convert('L'))
+                    good = (np.array_equal(got[..., 0][differ], ge[differ]) and np.array_equal(got[..., 1][differ], gs[differ]) and np.array_equal(got[..., 2][differ], gs[differ])
+                            and np.array_equal(got[~differ], s[~differ]))
+                    require(good, f'{r["id"]} {name}: the tinted image is not as made')
+                    if name == 'erased':
+                        require(np.array_equal(got[..., 0], ge) and np.array_equal(got[..., 1], gs) and np.array_equal(got[..., 2], gs), f'{r["id"]}: the window is not red/scan')
+                        checked['windows'] += 1
+                    else:
+                        checked['lines'] += 1; checked['line_pixels_kept_as_scan'] += int(((got != np.stack([ge, gs, gs], -1)).any(-1)).sum())
+        rows.append({**r, 'images': images})
+    write_json(out/'pack.json', {'schema': 'revrender-line-pack', 'rows': rows})
+    summary = {'regions': len(rows), **checked}
+    write_json(out/'summary.json', summary)
+    write_manifest(out, config={'raw': str(args.raw), 'erased': str(args.erased)}, inputs={str(p/'pack.json'): digest(p/'pack.json') for p in (args.raw, args.erased)}, **summary)
+    print(json.dumps(summary), flush=True)
+
+
 def tidy(line):
     """A line of an annotated answer with its whitespace dropped, but for one space where it parts a command from a letter
     (``\\times x``) and after a LaTeX line break (``\\\\``, whose following ``{`` must not read as ``\\{``)."""
@@ -551,9 +599,11 @@ def main(argv=None):
     a.add_argument('--pack', type=Path, required=True); a.add_argument('--output', type=Path, required=True)
     c = sub.add_parser('counterfactual')
     for key in ('pack', 'human', 'output-dir'): c.add_argument('--'+key, type=Path, required=True)
+    t = sub.add_parser('tinted')
+    for key in ('raw', 'erased', 'output-dir'): t.add_argument('--'+key, type=Path, required=True)
     args = p.parse_args(argv)
     {'folds': folds_pack, 'fold-sets': fold_sets, 'separated': separated_pack, 'views': views_pack, 'counterfactual': counterfactual_pack,
-     'library': library_pack, 'answers': answers_check, 'split': method_split, 'scores': pixel_scores, 'fixed': fixed_pack}[args.command](args)
+     'library': library_pack, 'answers': answers_check, 'split': method_split, 'scores': pixel_scores, 'fixed': fixed_pack, 'tinted': tinted_pack}[args.command](args)
 
 
 if __name__ == '__main__':

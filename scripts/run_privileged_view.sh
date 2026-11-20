@@ -73,7 +73,7 @@ if ! done_ X; then
 # V: the vision adapters, the wiring check, the distances, the readings.
 student() {   # OUT FOLD [--synthetic DIR]
     local out="$1" fold="$2"; shift 2
-    [ -e "$out/complete.json" ] || job "$out" -- "$PY" -m revrender.train_clean_view train --model "$MODEL" --pack "$V" --raw-pack "$RAWV" --fold "$fold" \
+    [ -e "$out/complete.json" ] || job "$out" -- "$PY" -m revrender.train_clean_view train --model "$MODEL" --pack "$V" --scan-pack "$RAWV" --fold "$fold" \
         --steps "$V_STEPS" --eval-every "$V_EVAL" "$@" --output-dir "$out"
 }
 distance() {   # OUT STUDENT FOLD
