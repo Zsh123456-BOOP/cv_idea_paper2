@@ -102,23 +102,24 @@ def analyse(args):
         ref, _, path = spec.partition('='); scores[ref] = json.loads(Path(path).read_text())['arms']
     vs = lambda ref, arm: scores[ref][arm]['against_reference']
     rules = {}
-    if 'X' in arms:
+    fifth = 'VR-真+合' in arms                                         # the fourth round's arms are then references only
+    if 'X' in arms and not fifth:
         x_e, x_r = vs('E-NAFNet', 'X'), vs('R0', 'X')
         rules['X1_vs_E-NAFNet'] = {**pick(x_e), 'verdict': 'useful' if verdict_plus(x_e) else 'worse' if worse(x_e) else 'cannot_tell'}
         rules['X2_vs_R0'] = {**pick(x_r), 'verdict': 'erase_then_read_beats_raw' if x_r['exact']['interval'][0] > 0 else 'does_not_beat_raw'}
-    if 'V-真+合' in arms:
+    if 'V-真+合' in arms and not fifth:
         v_e, v_r = vs('E-NAFNet', 'V-真+合'), vs('R0', 'V-真+合')
         rules['V1_vs_E-NAFNet'] = {**pick(v_e), 'verdict': 'premise_holds' if verdict_plus(v_e) else 'premise_does_not_hold'}
         rules['V2_vs_R0'] = {**pick(v_r), 'verdict': 'first_version_holds' if v_r['exact']['interval'][0] > 0 else 'does_not_beat_raw'}
         if 'V-真' in scores:
             v_v = vs('V-真', 'V-真+合')
             rules['V3_vs_V-真'] = {**pick(v_v), 'verdict': 'synthetic_pairs_useful' if v_v['exact']['interval'][0] > 0 else 'cannot_tell'}
-    if 'A' in arms:
+    if 'A' in arms and not fifth:
         long_ = vs('R0', 'R0-长'); undertrained = verdict_plus(long_)
         rules['A1_R0-长_vs_R0'] = {**pick(long_), 'verdict': 'undertrained' if undertrained else 'not_undertrained'}
         control = 'R0-长' if undertrained else 'R0'; a = vs(control, 'A')
         rules['A2_vs_control'] = {**pick(a), 'control': control, 'verdict': 'useful' if verdict_plus(a) else 'worse' if worse(a) else 'cannot_tell'}
-    if 'VR-真+合' in arms:
+    if fifth:
         for rule, arm, ref in RULES5:
             rules[f'{rule}_{arm}_vs_{ref}'] = {**pick(vs(ref, arm)), 'verdict': grade(vs(ref, arm))}
         graded = {n: grade(vs('V-真+合', n)) for n in NEW if n in arms}
