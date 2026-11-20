@@ -19,11 +19,11 @@ source "$(dirname "$0")/_common.sh"
 require_clean_source
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 O=/home/zsh/hme/outputs; N=$O/paper2_clean; B=${N}_privileged_view20261120; PART=${PART:-main}
-# V_STEPS: the vision adapter's step cap, set from the smoke test's pace to keep a training within about 30 minutes (plan, 4.2)
-case "$PART" in main) TAG=; STEPS=100; LONG=300; FIRST=200; V_STEPS=${V_STEPS:-0}; V_EVAL=50; TAKE=3000; TEACH=1500; LIMIT=(); TLIMIT=(); READ=(0 1 2 3 4) ;;
+# V_STEPS: the vision adapter's step cap, from the smoke test's pace (about 0.7 s a step, two trainings on the card) to keep a training
+# within about 30 minutes (plan, 4.2): 2,000 steps, about 25 minutes and the validations
+case "$PART" in main) TAG=; STEPS=100; LONG=300; FIRST=200; V_STEPS=2000; V_EVAL=50; TAKE=3000; TEACH=1500; LIMIT=(); TLIMIT=(); READ=(0 1 2 3 4) ;;
     smoke) TAG=_smoke; STEPS=2; LONG=3; FIRST=2; V_STEPS=20; V_EVAL=10; TAKE=40; TEACH=16; LIMIT=(--limit 8); TLIMIT=(--limit 16); READ=(0) ;;
     *) echo "PART is main or smoke"; exit 2 ;; esac
-[ "$V_STEPS" -gt 0 ] || { echo 'V_STEPS (the step cap from the smoke test) is not set'; exit 2; }
 R=$B$TAG; mkdir -p "$R"
 P2=${N}_nafnet_folds20261119; FOLDS_PACK=${N}_revision_folds_human_masked20261117b; V=${FOLDS_PACK}_views
 EV=${P2}_erased_views; RAWV=${P2}_raw_views; SYN=${B}${TAG}_synth
