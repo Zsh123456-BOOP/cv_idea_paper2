@@ -332,7 +332,8 @@ def main(argv=None):
     started, iterator, kept = time.monotonic(), cycle(loader), (math.inf, None)
 
     def save():
-        model.save_pretrained(out/'adapter')
+        # with --view-students the vision adapters sit inside the model too; only the language model's adapter is the reader's
+        model.save_pretrained(out/'adapter', **({'state_dict': {k: v for k, v in model.state_dict().items() if '.visual.' not in k}} if students else {}))
         if args.layer_map:
             torch.save(layer_map_state(model), out/'layer_map.pt')
     for step in range(args.stop_after or args.steps):
