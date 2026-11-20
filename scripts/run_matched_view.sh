@@ -14,7 +14,10 @@
 # both parts), 5 the adapter training with the raw views pack against V-真's step-0 validation loss, 6 NAFNet's pack through the
 # adapter path with the adapter off against E-NAFNet, 7 the tinted pack read back (in the builder).  Card 1 only (the user's word,
 # 2026-11-19: 「只用 1号卡」); cards 0, 2 and 3 are not touched, ALLOW_GPU3 is not set.  Unattended; a step whose marker is in $R is
-# skipped.
+# skipped.  HELPER=1 (PART=main, beside a main run under way; the user's word, 2026-11-21: 「可以在多用1张空卡跑」): card 2 takes
+# work from the end of the main run's later stages -- the distances, then NV / MV readings and NVR / MVR of folds 4, 3, 2 --
+# each only while the main run, going up from fold 0, cannot reach it before it is done (``ahead``); the main run then finds those
+# outputs complete and skips them.  It writes no stage marker; its lock and failure marker are its own.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -27,13 +30,13 @@ R=$B$TAG; mkdir -p "$R/checks"
 P2=${N}_nafnet_folds20261119; V=${N}_revision_folds_human_masked20261117b_views; EV=${P2}_erased_views; RAWV=${P2}_raw_views
 P4=${N}_privileged_view20261120; TINT=${B}_tinted; SH=${P2}_reader_shared_f
 MODEL=/home/zsh/hme/models/Qwen3-VL-8B-Instruct
-exec 8>"$R/lock"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
+exec 8>"$R/lock${HELPER:+_card2}"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
 stamp() { echo "$* $(date -u +%FT%TZ)"; }
 done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
-trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
+trap 'stamp "failed at line $LINENO"; touch "$R/${HELPER:+card2_}FAILED"' ERR
 test -e "$P2/COMPLETE" && test -e "$P4/COMPLETE" || { echo 'the second or fourth round is not complete'; exit 2; }
-CARD=${ALL_CARDS[1]}; NUMA=$(numa_of "$CARD")
+CARD=${ALL_CARDS[$([ -n "${HELPER:-}" ] && echo 2 || echo 1)]}; NUMA=$(numa_of "$CARD")
 place() { one_card_place "$CARD" "$@"; }   # MiB WHOLE FUNCTION ARGS...
 job() {   # OUT -- COMMAND...: one GPU job on card 1
     local out="$1"; shift 2
@@ -101,6 +104,32 @@ PY
 dirs() { local k s=; for k in "${READ[@]}"; do s+="${s:+,}$1_f$k"; done; echo "$s"; }   # PREFIX -> the folds' folders
 SYNTH_V="${P4}_view_synth_f{fold}/student"; REAL_V="${P4}_view_real_f{fold}/student"
 NPLUG="${B}${TAG}_view_N_f{fold}/student"; MPLUG="${B}${TAG}_view_M_f{fold}/student"
+
+if [ -n "${HELPER:-}" ]; then
+    [ "$PART" = main ] && done_ NM_train || { echo 'the helper goes beside a main run past the adapters'; exit 2; }
+    # a fold k is taken only while the main run has not begun its fold k-2 of that stage: it has two folds of work (about twice the
+    # helper's) before it reaches fold k
+    ahead() { [ ! -e "$1$(($2-2))" ]; }   # MAIN_PREFIX K
+    # the distances: only while the main run has a whole fold of NVR / MVR still to begin
+    if [ ! -e "${B}_reader_NVR_f1" ]; then
+        for k in 0 1 2 3 4; do
+            place 6000 0 distance "$R/distance_N_f$k" "${NPLUG//\{fold\}/$k}" "$EV" "$k"; place 6000 0 distance "$R/distance_M_f$k" "${MPLUG//\{fold\}/$k}" "$TINT" "$k"
+        done; wait
+        for k in 0 1 2 3 4; do test -e "$R/distance_N_f$k/distances.jsonl"; test -e "$R/distance_M_f$k/distances.jsonl"; done; stamp "card 2: distances"
+    fi
+    for k in 4 3 2; do
+        ahead "$R/read_NV_f" "$k" || break
+        place 22000 1 read_with "$R/read_NV_f$k" "$EV" "${SH}$k/adapter" "$k" --view-student "${NPLUG//\{fold\}/$k}" --student-images 2 3; wait
+        place 22000 1 read_with "$R/read_MV_f$k" "$TINT" "${SH}$k/adapter" "$k" --view-student "${MPLUG//\{fold\}/$k}" --student-images 2 3; wait
+        test -e "$R/read_NV_f$k/complete.json"; test -e "$R/read_MV_f$k/complete.json"; stamp "card 2: NV, MV fold $k"
+    done
+    for k in 4 3 2; do
+        ahead "${B}_reader_NVR_f" "$k" || break
+        matched NVR "$EV" "$NPLUG" "$k"; matched MVR "$TINT" "$MPLUG" "$k"
+        test -e "$R/read_NVR_f$k/complete.json"; test -e "$R/read_MVR_f$k/complete.json"; stamp "card 2: NVR, MVR fold $k"
+    done
+    stamp "card 2 helper complete"; exit 0
+fi
 
 # The tinted pack (CPU; check 7 inside), shared by both parts.
 if ! done_ data; then
