@@ -178,9 +178,14 @@ def lora_model(model_dir, rank, alpha, dropout, layer_map=False, init=None):
     import torch
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForImageTextToText
+    from .models.internvl import is_internvl, training_model
     from .models.vlm_tokens import patch_embed_as_linear, patch_embed_with_layer_map
-    model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa')
-    patch_embed_as_linear(model.model.visual.patch_embed)
+    if is_internvl(model_dir):                                           # InternVL3.5: its bundled model (models.internvl)
+        require(not layer_map, 'layer maps are not supported on InternVL')
+        model = training_model(model_dir)
+    else:
+        model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa')
+        patch_embed_as_linear(model.model.visual.patch_embed)
     config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias='none',
                         target_modules=LANGUAGE_TARGETS)
     if init:
@@ -270,7 +275,7 @@ def main(argv=None):
     p.add_argument('--output-dir', type=Path, required=True)
     args = p.parse_args(argv)
     import torch
-    from transformers import AutoProcessor
+    from .models.vlm_tokens import processor_for
     if args.pack:
         require(args.condition is not None, '--pack needs --condition')
         require(args.layer_map == (args.condition in MAPPED), 'a mapped condition, and only it, is taught with --layer-map')
@@ -293,7 +298,7 @@ def main(argv=None):
     torch.manual_seed(SEED)
     random.seed(SEED)
     np.random.seed(SEED)
-    processor = AutoProcessor.from_pretrained(str(args.model))
+    processor = processor_for(args.model)
     processor.tokenizer.padding_side = 'right'
     if args.pack:
         collate = Collate(processor, prompt(args.condition, {'boxes': [], 'problem': ''}), args.student_images)      # each pack sample carries its own words

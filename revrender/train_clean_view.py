@@ -89,10 +89,17 @@ from .util import SEED, digest, make_output_dir, require, to_jsonable, write_jso
 
 TOUCHED = .99
 DISCRIMINATOR_LR, ADVERSARIAL_WEIGHT = 1e-6, .1      # MAA's values (its train_maa.py defaults)
-TARGETS = r'.*blocks\.\d+\.(attn\.(qkv|proj)|mlp\.(linear_fc1|linear_fc2))'
+TARGETS = r'.*(blocks|encoder\.layers)\.\d+\.(attn\.(qkv|proj)|mlp\.(linear_fc1|linear_fc2|fc1|fc2))'     # Qwen's blocks, InternViT's layers
 
 
 def vision_tower(model_dir):
+    from .models.internvl import is_internvl, tower
+    if is_internvl(model_dir):                                           # InternVL3.5: its vision model and mlp1 (models.internvl.tower)
+        return tower(model_dir)
+    return qwen_tower(model_dir)
+
+
+def qwen_tower(model_dir):
     """The vision tower of a Qwen3-VL or Qwen3.5 checkpoint alone (bf16 weights, sdpa), its patch embedding run as a matrix product (the
     two towers are built alike; Qwen3.5's has no deepstack levels, so its features are the merged tokens alone).  Its buffers
     stay as built, as the whole model keeps them: the rotary ``inv_freq`` in float32 (a cast of the tower to bf16 coarsened the
@@ -223,7 +230,7 @@ def validation_writers(regions, share=.1):
 
 def train(args):
     import torch
-    from transformers import AutoProcessor
+    from .models.vlm_tokens import processor_for
     real = regions_of(args.pack, args.scan_pack, lambda r: r['fold'] != args.fold, args.window_only)
     require(not (args.window_only and (args.synthetic or args.covered)), '--window-only goes with real pairs only')
     held = validation_writers(real); val = [r for r in real if r[1] in held]; real = [r for r in real if r[1] not in held]
@@ -238,7 +245,7 @@ def train(args):
         synthetic = regions_of(args.synthetic/f'fold_{args.fold}_clean', args.synthetic/f'fold_{args.fold}_raw', lambda r: True)
     out = make_output_dir(args.output_dir)
     torch.manual_seed(SEED); rng = random.Random(SEED)
-    processor = AutoProcessor.from_pretrained(str(args.model))
+    processor = processor_for(args.model)
     model = with_student(vision_tower(args.model).to('cuda'), args.rank, args.alpha, args.dropout)
     params = [q for q in model.parameters() if q.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0., betas=(.9, .999))
@@ -322,13 +329,13 @@ def train(args):
 
 def distance(args):
     import torch
-    from transformers import AutoProcessor
+    from .models.vlm_tokens import processor_for
     rows = {r['id']: r for r in json.loads((args.pack/'pack.json').read_text())['rows'] if r['fold'] == args.fold}
     raw = {r['id']: r for r in json.loads((args.raw_pack/'pack.json').read_text())['rows']}
     erased = {r['id']: r for r in json.loads((args.erased_pack/'pack.json').read_text())['rows']}
     scans = {r['id']: r for r in json.loads((args.scan_pack/'pack.json').read_text())['rows']} if args.scan_pack else None
     out = make_output_dir(args.output_dir)
-    processor = AutoProcessor.from_pretrained(str(args.model))
+    processor = processor_for(args.model)
     model = with_student(vision_tower(args.model).to('cuda'), adapter=args.student).eval()
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.pack/'pack.json', args.raw_pack/'pack.json', args.erased_pack/'pack.json',
                    *((args.scan_pack/'pack.json',) if args.scan_pack else ()), *sorted(Path(args.student).glob('*.safetensors')))}, touched_below=TOUCHED)
@@ -367,7 +374,7 @@ def distance(args):
 def agree(args):
     """The fifth round's check 2 as revised (plan, section six, second revision; see the module's words)."""
     import torch
-    from transformers import AutoProcessor
+    from .models.vlm_tokens import processor_for
     from .models.vlm_tokens import Reader, install_students
     from .recognize_lines import image_keys, prompt
     from .train_reader import Collate, PackSamples, lora_model
@@ -376,7 +383,7 @@ def agree(args):
     folds = sorted({r['fold'] for r in rows}); per = max(1, args.regions//len(folds))
     mixed = [r for j in folds for r in sorted((r for r in rows if r['fold'] == j), key=lambda r: r['id'])[:per]]
     one = sorted((r for r in rows if r['fold'] == folds[0]), key=lambda r: r['id'])[:args.regions]
-    processor = AutoProcessor.from_pretrained(str(args.model)); processor.tokenizer.padding_side = 'right'
+    processor = processor_for(args.model); processor.tokenizer.padding_side = 'right'
     adapters = {f'fold{j}': Path(args.students.format(fold=j)) for j in folds}
     collate = Collate(processor, prompt('context_revision', {'boxes': [], 'problem': ''}), places)
     batch_of = lambda chosen: collate([PackSamples(args.pack, chosen, keys, condition='context_revision', latex=True)[i] for i in range(len(chosen))])
@@ -442,10 +449,11 @@ def subsets(args):
 
 def same_tower(args):
     import torch
-    from transformers import AutoModelForImageTextToText, AutoProcessor
+    from transformers import AutoModelForImageTextToText
+    from .models.vlm_tokens import processor_for
     from .models.vlm_tokens import patch_embed_as_linear
     rows = json.loads((args.pack/'pack.json').read_text())['rows'][:8]
-    processor = AutoProcessor.from_pretrained(str(args.model))
+    processor = processor_for(args.model)
     x, g = encode(processor, [opened(args.pack/r['images'][k]) for r in rows for k in ('raw', 'erased', 'context')], 'cuda')
     with torch.no_grad():
         alone = levels(vision_tower(args.model).to('cuda').eval(), x, g)
@@ -465,11 +473,11 @@ def same_tower(args):
 def head(args):
     import torch
     from scipy.stats import pearsonr, spearmanr
-    from transformers import AutoProcessor
+    from .models.vlm_tokens import processor_for
     rows = json.loads((args.pack/'pack.json').read_text())['rows']; folds = sorted({r['fold'] for r in rows})
     adapters = {f'fold{j}': Path(args.students.format(fold=j)) for j in folds}
     out = make_output_dir(args.output_dir); torch.manual_seed(SEED)
-    processor = AutoProcessor.from_pretrained(str(args.model))
+    processor = processor_for(args.model)
     from peft import PeftModel
     tower = PeftModel.from_pretrained(vision_tower(args.model).to('cuda'), str(adapters['fold0']), adapter_name='fold0')
     for name in list(adapters)[1:]:
@@ -516,10 +524,10 @@ def head(args):
 
 def boards_distance(args):
     import torch
-    from transformers import AutoProcessor
+    from .models.vlm_tokens import processor_for
     packs = {k: {r['id']: r for r in json.loads((args.boards/k/'teacher'/'pack.json').read_text())['rows']} for k in args.kinds}
     ids = sorted(i for i, r in packs[args.kinds[0]].items() if r['fold'] == args.fold)
-    out = make_output_dir(args.output_dir); processor = AutoProcessor.from_pretrained(str(args.model))
+    out = make_output_dir(args.output_dir); processor = processor_for(args.model)
     model = with_student(vision_tower(args.model).to('cuda'), adapter=args.student).eval()
     write_manifest(out, config=to_jsonable(args), inputs={str(args.boards/k/'teacher'/'pack.json'): digest(args.boards/k/'teacher'/'pack.json') for k in args.kinds}
                    | {str(w): digest(w) for w in sorted(Path(args.student).glob('*.safetensors'))}, touched_below=TOUCHED,
@@ -552,8 +560,8 @@ SPREAD = 3000
 def spread(args):
     import torch
     from peft import PeftModel
-    from transformers import AutoProcessor
-    rows = json.loads((args.pack/'pack.json').read_text())['rows']; processor = AutoProcessor.from_pretrained(str(args.model))
+    from .models.vlm_tokens import processor_for
+    rows = json.loads((args.pack/'pack.json').read_text())['rows']; processor = processor_for(args.model)
     named = [s.partition('=')[::2] for s in args.student]; tower = vision_tower(args.model).to('cuda'); model = None
     for name, pattern in named:
         for k in args.folds:

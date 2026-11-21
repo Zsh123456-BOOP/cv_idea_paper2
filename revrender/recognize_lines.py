@@ -243,8 +243,8 @@ def main(argv=None):
     require(jobs, 'no row has the images of the conditions')
     out = make_output_dir(args.output_dir)
     if args.backend == 'hf':
-        from .models.vlm_tokens import Reader
-        reader = Reader(args.model, adapter=args.adapter, layer_map=args.layer_map, student=args.view_student, student_off=args.student_off)
+        from .models.vlm_tokens import reader_for
+        reader = reader_for(args.model, adapter=args.adapter, layer_map=args.layer_map, student=args.view_student, student_off=args.student_off)
     else:
         from vllm import LLM, SamplingParams
         model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=args.max_model_len, max_num_seqs=16, gpu_memory_utilization=args.gpu_memory,

@@ -178,63 +178,122 @@ class Students:
         self.view, self.names, self.flags, self.encoded = view, names, None, {n: 0 for n in names}
 
 
-def install_students(inner, adapters, off=False):
-    """Load the vision-tower adapters ``{name: folder}`` into ``inner.visual`` (``inner``: the Qwen3VLModel) and route its image
-    features through them (``student_features``); the tower is pinned in eval (no dropout, whatever ``train()`` later says) and nothing
+def install_students(inner, adapters, off=False, tower=None, attribute='get_image_features', route=None):
+    """Load the vision-tower adapters ``{name: folder}`` into ``tower`` (default ``inner.visual``, ``inner`` the Qwen3VLModel) and
+    route ``inner``'s image features (its ``attribute``) through them (``route``, default ``student_features``; InternVL:
+    ``models.internvl.Reader``); the tower and its parts are pinned in eval (no dropout, whatever ``train()`` later says) and nothing
     of it learns.  ``off``: the flagged images go the adapters' way with the adapters disabled (the wiring and trajectory checks)."""
     import types
     import torch
     from peft import PeftModel
+    tower = inner.visual if tower is None else tower
     names = list(adapters)
-    view = PeftModel.from_pretrained(inner.visual, str(adapters[names[0]]), adapter_name=names[0])
+    view = PeftModel.from_pretrained(tower, str(adapters[names[0]]), adapter_name=names[0])
     for name in names[1:]:
         view.load_adapter(str(adapters[name]), adapter_name=name)
     for q in view.parameters():
         q.requires_grad_(False)
-    inner.visual.train = types.MethodType(lambda self, mode=True: torch.nn.Module.train(self, False), inner.visual)
-    inner.visual.eval()
+    for part in (tower, *tower.children()):
+        part.train = types.MethodType(lambda self, mode=True: torch.nn.Module.train(self, False), part)
+        part.eval()
     students = Students(view, names)
-    inner.get_image_features = student_features(inner.get_image_features, students, off)
+    setattr(inner, attribute, (route or student_features)(getattr(inner, attribute), students, off))
     return students
 
 
-def student_features(features, students, off):
-    """The model's image features with, for each image ``students.flags`` names an adapter for, that adapter's, and the frozen tower's
-    (the adapters disabled) for the others: the merged tokens and the deepstack levels alike.  The tower learns nothing, so no graph is
-    kept.  ``off``: the flagged images go the same way with the adapters disabled too (it must read, or learn, as the plain model)."""
+def picked(students, run, off):
+    """Per image, what ``run()`` gives per image (a list) with, for each image ``students.flags`` names an adapter for, that adapter
+    switched on, and the adapters disabled for the others; no graph is kept.  ``off``: the flagged images the adapters' way with the
+    adapters disabled too.  Returns (the frozen run's whole output, the choice per image, or None when no image is flagged)."""
     import contextlib
     import torch
     view = students.view
+    with torch.no_grad():
+        with view.disable_adapter():
+            whole, frozen = run()
+        flags = students.flags or [None]*len(frozen)
+        if len(flags) != len(frozen):
+            raise ValueError(f'{len(flags)} student flags for {len(frozen)} images')
+        used = [n for n in students.names if n in flags]
+        if not used:
+            return whole, None
+        chosen = list(frozen)
+        for name in used:
+            if not off:
+                view.set_adapter(name, inference_mode=True)
+            with view.disable_adapter() if off else contextlib.nullcontext():
+                _, taught = run()
+            for i, f in enumerate(flags):
+                if f == name:
+                    chosen[i] = taught[i]
+            students.encoded[name] += flags.count(name)
+        return whole, chosen
+
+
+def student_features(features, students, off):
+    """The model's image features (Qwen) with each image through the adapter ``students.flags`` names for it (``picked``): the merged
+    tokens and the deepstack levels alike."""
+    import torch
 
     def chosen(pixel_values, image_grid_thw=None, **kwargs):
-        with torch.no_grad():
-            with view.disable_adapter():
-                out = features(pixel_values, image_grid_thw, **kwargs)
-            frozen = image_levels(out)
-            flags = students.flags or [None]*len(frozen)
-            if len(flags) != len(frozen):
-                raise ValueError(f'{len(flags)} student flags for {len(frozen)} images')
-            used = [n for n in students.names if n in flags]
-            if not used:
-                return out
-            picked = list(frozen)
-            for name in used:
-                if not off:
-                    view.set_adapter(name, inference_mode=True)
-                with view.disable_adapter() if off else contextlib.nullcontext():
-                    taught = image_levels(features(pixel_values, image_grid_thw, **kwargs))
-                for i, f in enumerate(flags):
-                    if f == name:
-                        picked[i] = taught[i]
-                students.encoded[name] += flags.count(name)
-            embeds, deep = tuple(p[0] for p in picked), [tuple(p[n] for p in picked) for n in range(1, len(picked[0]))]
-            if isinstance(out, (tuple, list)):                              # 4.57: the levels each one tensor
-                return embeds, [torch.cat(level) for level in deep]
-            out.pooler_output = embeds
-            if getattr(out, 'deepstack_features', None) is not None:
-                out.deepstack_features = deep
+        def run():
+            out = features(pixel_values, image_grid_thw, **kwargs)
+            return out, image_levels(out)
+        out, choice = picked(students, run, off)
+        if choice is None:
             return out
+        embeds, deep = tuple(p[0] for p in choice), [tuple(p[n] for p in choice) for n in range(1, len(choice[0]))]
+        if isinstance(out, (tuple, list)):                                  # 4.57: the levels each one tensor
+            return embeds, [torch.cat(level) for level in deep]
+        out.pooler_output = embeds
+        if getattr(out, 'deepstack_features', None) is not None:
+            out.deepstack_features = deep
+        return out
     return chosen
+
+
+def greedy(first, advance, stop, max_new_tokens, loop_limit, tokenizer):
+    """The greedy decode of a batch from the prefill's output ``first``: ``advance(token, step)`` runs one step of the written tokens
+    and gives its output.  ``loop_limit``: a reading that ends in one block written that many times (``looped``) stops there and keeps
+    the block once (finish ``loop``; 0: never).  A list of dicts (text, tokens, confidence -- the geometric mean of the written tokens'
+    probabilities --, finish)."""
+    n = first.logits.shape[0]; out = first
+    written, done, loops, logged = [[] for _ in range(n)], [False]*n, set(), [[] for _ in range(n)]
+    for step in range(max_new_tokens):
+        chances = out.logits[:, -1].float().log_softmax(-1); token = chances.argmax(-1); chance = chances.gather(1, token[:, None])[:, 0].tolist()
+        for b, t in enumerate(token.tolist()):
+            if not done[b]:
+                written[b].append(t); logged[b].append(chance[b])
+                done[b] = t in stop
+                cut = looped(written[b], loop_limit) if loop_limit and not done[b] else 0
+                if cut:
+                    del written[b][-cut:], logged[b][-cut:]
+                    done[b] = True
+                    loops.add(b)
+        if all(done) or step == max_new_tokens-1:
+            break
+        out = advance(token, step)
+    return [{'text': tokenizer.decode([t for t in w if t not in stop], skip_special_tokens=True), 'tokens': len(w),
+             'confidence': float(np.exp(np.mean(logged[b]))) if logged[b] else 0.,
+             'finish': 'loop' if b in loops else 'stop' if w and w[-1] in stop else 'length'} for b, w in enumerate(written)]
+
+
+def processor_for(model_dir):
+    """The processor of a model folder: transformers' own, or ``models.internvl.Processor``."""
+    from .internvl import Processor as InternProcessor, is_internvl
+    if is_internvl(model_dir):
+        return InternProcessor(model_dir)
+    from transformers import AutoProcessor
+    return AutoProcessor.from_pretrained(str(model_dir))
+
+
+def reader_for(model_dir, **kwargs):
+    """The reader of a model folder: ``Reader`` (Qwen3-VL, Qwen3.5) or ``models.internvl.Reader``."""
+    from .internvl import is_internvl
+    if is_internvl(model_dir):
+        from .internvl import Reader as InternReader
+        return InternReader(model_dir, **kwargs)
+    return Reader(model_dir, **kwargs)
 
 
 class Reader:
@@ -291,9 +350,13 @@ class Reader:
         ids, valid = batch['input_ids'], batch['attention_mask'].bool()
         blocked = blocked_keys(ids.numpy(), valid.numpy(), self.image_token, [job[2] for job in jobs])
         bias = key_bias(valid.numpy(), blocked, [job[3] for job in jobs])
-        dtype = self.model.dtype
-        mask = torch.from_numpy(prefill_mask(bias)).to(self.device, dtype)
+        mask = torch.from_numpy(prefill_mask(bias)).to(self.device, self.model.dtype)
         ids, valid = ids.to(self.device), valid.to(self.device)
+        return self.run(jobs, batch, ids, valid, bias, mask, maps, max_new_tokens, loop_limit)
+
+    def run(self, jobs, batch, ids, valid, bias, mask, maps, max_new_tokens, loop_limit):
+        """The prefill and the decode of a prepared batch (the model's own part of ``read``)."""
+        torch, dtype = self.torch, self.model.dtype
         positions = rope_index(self.model.model, ids, batch['image_grid_thw'].to(self.device), valid, self.image_token)
         several = lambda image: list(image) if isinstance(image, (list, tuple)) else [image]
         pixels = batch['pixel_values'] if maps is None else with_layer_maps(
@@ -302,28 +365,14 @@ class Reader:
         from transformers import DynamicCache
         config = self.model.config; cache = DynamicCache(config=config)
         with torch.inference_mode():
-            out = self.model(input_ids=ids, attention_mask=language_mask(config, mask, valid), position_ids=positions, pixel_values=pixel_values,
-                             image_grid_thw=grid, past_key_values=cache, use_cache=True, logits_to_keep=1)
-            keys = torch.from_numpy(bias).to(self.device, dtype)
+            first = self.model(input_ids=ids, attention_mask=language_mask(config, mask, valid), position_ids=positions, pixel_values=pixel_values,
+                               image_grid_thw=grid, past_key_values=cache, use_cache=True, logits_to_keep=1)
             last = positions.amax(dim=(0, 2))                                  # the last position each row used
-            written, done, loops, logged = [[] for _ in jobs], [False]*len(jobs), set(), [[] for _ in jobs]
-            for step in range(max_new_tokens):
-                chances = out.logits[:, -1].float().log_softmax(-1); token = chances.argmax(-1); chance = chances.gather(1, token[:, None])[:, 0].tolist()
-                for b, t in enumerate(token.tolist()):
-                    if not done[b]:
-                        written[b].append(t); logged[b].append(chance[b])
-                        done[b] = t in self.stop
-                        cut = looped(written[b], loop_limit) if loop_limit and not done[b] else 0
-                        if cut:
-                            del written[b][-cut:], logged[b][-cut:]
-                            done[b] = True
-                            loops.add(b)
-                if all(done) or step == max_new_tokens-1:
-                    break
-                keys = torch.cat([keys, torch.zeros(len(jobs), 1, device=self.device, dtype=dtype)], dim=1)
+            keys = [torch.from_numpy(bias).to(self.device, dtype)]
+
+            def advance(token, step):
+                keys[0] = torch.cat([keys[0], torch.zeros(len(jobs), 1, device=self.device, dtype=dtype)], dim=1)
                 position = (last+1+step).view(1, -1, 1).expand(3, -1, 1)
-                out = self.model(input_ids=token.view(-1, 1), attention_mask=language_mask(config, keys.view(len(jobs), 1, 1, -1), None), position_ids=position,
-                                 past_key_values=cache, use_cache=True)
-        return [{'text': self.processor.tokenizer.decode([t for t in w if t not in self.stop], skip_special_tokens=True), 'tokens': len(w),
-                 'confidence': float(np.exp(np.mean(logged[b]))) if logged[b] else 0.,
-                 'finish': 'loop' if b in loops else 'stop' if w and w[-1] in self.stop else 'length'} for b, w in enumerate(written)]
+                return self.model(input_ids=token.view(-1, 1), attention_mask=language_mask(config, keys[0].view(len(jobs), 1, 1, -1), None), position_ids=position,
+                                  past_key_values=cache, use_cache=True)
+            return greedy(first, advance, self.stop, max_new_tokens, loop_limit, self.processor.tokenizer)
