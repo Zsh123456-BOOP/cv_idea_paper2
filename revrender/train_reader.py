@@ -219,7 +219,7 @@ def answer_loss(model, batch):
     first = int((labels != -100).int().argmax(1).min())                 # the earliest answer token of the batch
     keep = labels.shape[1]-first+1
     logits = model(**{k: v for k, v in batch.items() if k != 'labels'}, logits_to_keep=keep).logits
-    return torch.nn.functional.cross_entropy(logits[:, :-1].float().flatten(0, 1), labels[:, labels.shape[1]-keep+1:].flatten(), ignore_index=-100)
+    return torch.nn.functional.cross_entropy(logits[:, :-1].float().flatten(0, 1), labels[:, labels.shape[1]-keep+1:].flatten().to(logits.device), ignore_index=-100)
 
 
 def as_list(items):
