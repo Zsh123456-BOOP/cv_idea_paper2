@@ -312,7 +312,7 @@ def train(args):
         stream.write(json.dumps(row)+'\n'); stream.flush(); print(json.dumps(row), flush=True)
     stream.close()
     write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'initial_val_loss': first,
-                                     'kept_step': best[1], 'kept_val_loss': best[0]})
+                                     'kept_step': best[1], 'kept_val_loss': best[0] if best[1] else None})
 
 
 def distance(args):
