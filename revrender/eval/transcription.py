@@ -106,14 +106,15 @@ def left_wrong(readings, scored):
     return {'left_wrong': wrong, 'exact_by_length': by_length}
 
 
-def paired(reference, version, writers, rng, draws=1000):
-    """The version's scores minus the reference's on the regions both have counts for, with writer-resampled 95% intervals."""
+def paired(reference, version, writers, rng, draws=1000, bounds=(2.5, 97.5)):
+    """The version's scores minus the reference's on the regions both have counts for, with writer-resampled intervals (95%; another
+    width by its percentile ``bounds``)."""
     ids = sorted(set(reference) & set(version)); names = sorted({writers[k] for k in ids}); by = {w: [k for k in ids if writers[k] == w] for w in names}
     def difference(keys):
         a, b = rates([reference[k] for k in keys]), rates([version[k] for k in keys])
         return {m: b[m]-a[m] for m in ('ar', 'exact', 'ned')}
     full = difference(ids); sample = [difference([k for w in rng.choice(names, len(names)) for k in by[w]]) for _ in range(draws)]
-    return {'regions': len(ids), 'writers': len(names), **{m: {'difference': full[m], 'interval': [float(np.percentile([s[m] for s in sample], q)) for q in (2.5, 97.5)]}
+    return {'regions': len(ids), 'writers': len(names), **{m: {'difference': full[m], 'interval': [float(np.percentile([s[m] for s in sample], q)) for q in bounds]}
                                                        for m in full}}
 
 

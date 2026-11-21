@@ -31,7 +31,8 @@ against V-真; A1 R0-长 against R0 (then A's control is R0-长, else R0); A2 A 
 (``grade``): holds, worse, exact up but AR short (the exact interval's lower end above 0, the AR difference under +2), cannot tell;
 rule 1 VR-真+合 against V-真+合, rule 2 NVR against VR-真, rule 3 MVR against VR-真, rule 4 each new reading against V-真+合: of
 those that hold, the highest exact is the next version, within 0.2 points a tie, broken for the one without NAFNet, then for the
-shared reader (``next_version``).  Reported only: the pairs ``REPORTED``, each new reading against H, R0, E-NAFNet and X.  The
+shared reader (``next_version``).  The stronger discriminators (V-判别-10, V-判别-100; plan 判别器调强): each against V-修 as rule
+G, on 97.5 % intervals (the 1.25 and 98.75 percentiles; the 95 % figures beside), and the next best (``ruleG_stronger``).  Reported only: the pairs ``REPORTED``, each new reading against H, R0, E-NAFNet and X.  The
 sixth round (``--shares``): rule F V-修 against V-真+合 (the four grades); rule A V-涂满 against V-修 on the heavier half (``rule_a``),
 the whole and the lighter half as its floor, the four grades of the whole beside; reported the learning curve (L25, L50, V-修 on the
 whole and each half, L50 - L25, V-修 - L50 and a doubling's gain carried to twice the data, marked rough) and each new reading
@@ -58,6 +59,7 @@ NEW = ('VR-真+合', 'VR-真', 'NV', 'NVR', 'MV', 'MVR')
 WITH_NAFNET, SHARED = {'NV', 'NVR', 'MV', 'MVR'}, {'NV', 'MV'}
 RULES5 = (('rule1', 'VR-真+合', 'V-真+合'), ('rule2', 'NVR', 'VR-真'), ('rule3', 'MVR', 'VR-真'))
 REPORTED = (('VR-真', 'V-真'), ('NV', 'V-真'), ('MV', 'V-真'), ('MVR', 'NVR'))
+STRONGER = {'V-判别-10': 1e-5, 'V-判别-100': 1e-4}          # the stronger discriminators and their learning rates
 
 
 def worse(a):
@@ -219,9 +221,10 @@ def analyse(args):
     if 'V-修' in arms:
         half = {k: v['half'] for k, v in json.loads(args.shares.read_text())['regions'].items() if 'half' in v}
         writers = {k: rows[k]['writer'] for k in rows}
-        def on(part, ref, arm):
-            ks = [k for k in rows if rows[k]['readable'] and half.get(k) == part and k in arms[ref] and k in arms[arm]]
-            return paired({k: counts(rows[k]['text'], arms[ref][k]) for k in ks}, {k: counts(rows[k]['text'], arms[arm][k]) for k in ks}, writers, np.random.default_rng(SEED))
+        def on(part, ref, arm, bounds=(2.5, 97.5)):
+            ks = [k for k in rows if rows[k]['readable'] and (part == 'whole' or half.get(k) == part) and k in arms[ref] and k in arms[arm]]
+            return paired({k: counts(rows[k]['text'], arms[ref][k]) for k in ks}, {k: counts(rows[k]['text'], arms[arm][k]) for k in ks}, writers,
+                          np.random.default_rng(SEED), bounds=bounds)
         rules['ruleF_V-修_vs_V-真+合'] = {**pick(vs('V-真+合', 'V-修')), 'verdict': grade(vs('V-真+合', 'V-修'))}
         if 'V-涂满' in arms:
             heavy, light, whole = on('heavy', 'V-修', 'V-涂满'), on('light', 'V-修', 'V-涂满'), vs('V-修', 'V-涂满')
@@ -233,11 +236,22 @@ def analyse(args):
             gain = (curve['V-修']['whole']-curve['L25']['whole'])/2
             curve['pairs'] = {'L50_vs_L25': pick(vs('L25', 'L50')), 'V-修_vs_L50': pick(vs('L50', 'V-修')),
                               'rough_200_percent': {'exact': curve['V-修']['whole']+gain, 'gain_per_doubling': gain, 'note': 'rough: the mean gain of the two doublings, carried once more'}}
-        if 'V-判别' in arms:
+        strong = [n for n in STRONGER if n in arms]
+        if strong:                                # the stronger discriminators (their plan, section three): 97.5 % intervals
+            block = {}
+            for n in strong:
+                at = {q: [on(part, 'V-修', n, bounds) for part in ('heavy', 'light', 'whole')] for q, bounds in (('97.5', (1.25, 98.75)), ('95', (2.5, 97.5)))}
+                block[n] = {'heavy': pick(at['97.5'][0]), 'light': pick(at['97.5'][1]), 'whole': pick(at['97.5'][2]), 'verdict': rule_a(*at['97.5']),
+                            'at_95': {'heavy': pick(at['95'][0]), 'light': pick(at['95'][1]), 'whole': pick(at['95'][2]), 'verdict': rule_a(*at['95'])},
+                            'whole_grade_95': grade(vs('V-修', n)), 'heavy_exact': rates([counts(rows[k]['text'], arms[n][k]) for k in rows if half.get(k) == 'heavy' and k in arms[n]])['exact']}
+            useful = [n for n in strong if block[n]['verdict'] == 'useful']
+            block['next_best'] = max(useful, key=lambda n: (block[n]['heavy_exact'], -STRONGER[n])) if useful else 'V-修'
+            rules['ruleG_stronger'] = block
+        elif 'V-判别' in arms:
             heavy, light, whole = on('heavy', 'V-修', 'V-判别'), on('light', 'V-修', 'V-判别'), vs('V-修', 'V-判别')
             rules['ruleG_V-判别_vs_V-修'] = {'heavy': pick(heavy), 'light': pick(light), 'whole': pick(whole), 'verdict': rule_a(heavy, light, whole), 'whole_grade': grade(whole)}
         rules['learning_curve'] = curve
-        rules['reported'] = {f'{n}_vs_{ref}': pick(vs(ref, n)) for n in ('V-修', 'V-涂满', 'L25', 'L50') if n in arms for ref in ('V-真+合', 'H', 'R0', 'X') if ref in scores and ref != n}
+        rules['reported'] = {f'{n}_vs_{ref}': pick(vs(ref, n)) for n in ('V-修', 'V-涂满', 'L25', 'L50', *STRONGER) if n in arms for ref in ('V-真+合', 'H', 'R0', 'X', 'V-判别') if ref in scores and ref != n}
     names = list(arms)
     can = [k for k in rows if rows[k]['readable'] and all(k in arms[n] for n in names)]
     scored = lambda arm, ks: [counts(rows[k]['text'], arms[arm][k]) for k in ks]

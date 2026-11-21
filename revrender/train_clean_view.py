@@ -48,7 +48,7 @@ correlations per fold and over all.
 
 ``train --discriminator`` (V-判别, the sixth round's update, section two): MAA's token discriminator (``TokenDiscriminator``) learns
 the teacher's merged tokens of the clean images as real and the adapter's as fake (0.5 x the two BCEs, AdamW at ``DISCRIMINATOR_LR``,
-float32), then the adapter learns the alignment loss plus ``ADVERSARIAL_WEIGHT`` x the BCE of its tokens judged real, each step in
+float32; ``--discriminator-lr`` another rate), then the adapter learns the alignment loss plus ``ADVERSARIAL_WEIGHT`` x the BCE of its tokens judged real, each step in
 that order, windows and lines, real and synthetic pairs alike; the discriminator is built with the random streams put back as they
 were and never saved.  ``--window-only``: the window's pair alone (a board pack of ``data.hint_image boards``).
 
@@ -241,7 +241,7 @@ def train(args):
     if args.discriminator:                       # built without touching the adapter's random streams (sixth round's update, section two)
         state = torch.get_rng_state(), torch.cuda.get_rng_state_all()
         judge = TokenDiscriminator(model.base_model.model.config.out_hidden_size).to("cuda")
-        judge_optimizer = torch.optim.AdamW(judge.parameters(), lr=DISCRIMINATOR_LR, weight_decay=0.)
+        judge_optimizer = torch.optim.AdamW(judge.parameters(), lr=args.discriminator_lr, weight_decay=0.)
         torch.set_rng_state(state[0]); torch.cuda.set_rng_state_all(state[1])
         bce = lambda logits, label: torch.nn.functional.binary_cross_entropy_with_logits(logits, torch.full_like(logits, label))
     schedule = lambda step: min(1., (step+1)/args.warmup)*(.1+.9*.5*(1+math.cos(math.pi*step/args.steps)))
@@ -252,7 +252,7 @@ def train(args):
                    synthetic_share=(.25 if covered else .5) if synthetic else 0., covered_training=len(covered), covered_share=.25 if covered else 0.,
                    real_share=args.real_share, real_regions_all=everyone, real_writers=subset, real_regions_kept=len(real), window_only=args.window_only,
                    **({'discriminator': {'structure': 'token -> 2048 LeakyReLU(0.2) -> 5 residual blocks -> 1 (MAA TokenDiscriminator), float32',
-                                         'level': 'merged tokens', 'lr': DISCRIMINATOR_LR, 'weight': ADVERSARIAL_WEIGHT, 'loss': '0.5 (BCE(real, 1) + BCE(fake, 0)); adapter + weight x BCE(fake, 1)',
+                                         'level': 'merged tokens', 'lr': args.discriminator_lr, 'weight': ADVERSARIAL_WEIGHT, 'loss': '0.5 (BCE(real, 1) + BCE(fake, 0)); adapter + weight x BCE(fake, 1)',
                                          'parameters': sum(q.numel() for q in judge.parameters()), 'saved': 'never: it exists only while training'}} if judge is not None else {}))
 
     def pairs_of(chosen):
@@ -594,6 +594,7 @@ def main(argv=None):
     t.add_argument('--real-share', type=float, default=1., help='the share of the real training regions kept (the learning curve)')
     t.add_argument('--window-only', action='store_true', help='the window pairs alone (the boards of data.hint_image)')
     t.add_argument('--discriminator', action='store_true', help="MAA's token discriminator on the merged tokens (V-判别)")
+    t.add_argument('--discriminator-lr', type=float, default=DISCRIMINATOR_LR, help="the discriminator's learning rate (MAA's 1e-6 by default)")
     t.add_argument('--stop-after', type=int, help='stop after this many steps of the --steps schedule (a check)')
     t.add_argument('--steps', type=int, default=600); t.add_argument('--batch-size', type=int, default=8, help='regions a step (each a window and a line)')
     t.add_argument('--eval-every', type=int, default=50); t.add_argument('--rank', type=int, default=16); t.add_argument('--alpha', type=int, default=32)

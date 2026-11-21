@@ -18,7 +18,11 @@
 # and the boards' premise test (data.hint_image boards; adapters C on blank boards and T on the answer, windows only, real pairs;
 # train_clean_view boards-distance; rule H), the spread of V-修 and V-判别 (MMD squared, energy distance); its smoke checks: V-修's
 # recipe on the new code (fold 0's step-0 validation loss the same as the run's, its first four losses beside), the discriminator
-# never saved, the boards read back (in the builder).  Unattended; a step whose marker is in $R is skipped.
+# never saved, the boards read back (in the builder).  RUN=disc (plan 判别器调强, in paper2_clean_disc_strong20261121): V-判别-10 and
+# V-判别-100, V-判别 with the discriminator at 1e-5 and 1e-4 (train_clean_view --discriminator-lr), read, measured and scored against
+# V-修 on 97.5 % intervals; its smoke checks: the configuration differs from the sixth round's V-判别 in the rate and the output alone,
+# the new code at 1e-6 beside the sixth round's first four steps, ten steps of each rate, no discriminator in a saved adapter.
+# Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -27,7 +31,8 @@ O=/home/zsh/hme/outputs; N=$O/paper2_clean; B=${N}_covered_view20261121; PART=${
 case "$PART" in main) TAG=; P_STEPS=2000; P_EVAL=50; LIMIT=(); READ=(0 1 2 3 4); FIX_FOLDS=(0 1 2 3 4) ;;
     smoke) TAG=_smoke; P_STEPS=10; P_EVAL=10; LIMIT=(--limit 8); READ=(0); FIX_FOLDS=(0 1 2 3 4) ;;
     *) echo "PART is main or smoke"; exit 2 ;; esac
-FIX=$B$TAG; R=$FIX; [ "${RUN:-}" != maa ] || R=${N}_maa_view20261121$TAG; mkdir -p "$R/checks"
+FIX=$B$TAG; R=$FIX; MAA=${N}_maa_view20261121$TAG
+case "${RUN:-}" in maa) R=$MAA ;; disc) R=${N}_disc_strong20261121$TAG ;; esac; mkdir -p "$R/checks"
 P2=${N}_nafnet_folds20261119; V=${N}_revision_folds_human_masked20261117b_views; EV=${P2}_erased_views; RAWV=${P2}_raw_views
 P4=${N}_privileged_view20261120; SYN=${P4}_synth; COV=${B}_covered; SH=${P2}_reader_shared_f; SHARES=$FIX/checks/strike_shares.json
 MODEL=/home/zsh/hme/models/Qwen3-VL-8B-Instruct
@@ -142,6 +147,57 @@ PY
             --output-dir "$R/hint" > "$R/hint.log" 2>&1
         mark score; fi
     touch "$R/COMPLETE"; stamp "$PART maa complete"; exit 0
+fi
+
+if [ "${RUN:-}" = disc ]; then
+    mine() { echo "${R}_view_$1_f$2"; }; declare -A RATE=([disc10]=1e-5 [disc100]=1e-4)
+    if ! done_ plugins; then
+        if [ "$PART" = smoke ]; then   # the new code at the sixth round's 1e-6, on the run's schedule: its first four steps beside the record
+            [ -e "$R/check_replay/complete.json" ] || { place 12000 0 plugin "$R/check_replay" 0 --discriminator --discriminator-lr 1e-6 --steps 2000 --stop-after 4; wait; }
+            "$PY" -c 'import json,sys; read=lambda p:[json.loads(l) for l in open(p)][:5]; a,b=read(sys.argv[1]),read(sys.argv[2]); keys=("loss","align","adversarial","discriminator"); r={"step0":[a[0]["val_loss"],b[0]["val_loss"]],"new":[{k:x[k] for k in keys} for x in a[1:]],"sixth_round":[{k:x[k] for k in keys} for x in b[1:]],"step1_same":a[1]["loss"]==b[1]["loss"]}; json.dump(r,open(sys.argv[3],"w"),indent=2); print(json.dumps(r))' \
+                "$R/check_replay/train_log.jsonl" "${N}_maa_view20261121_view_disc_f0/train_log.jsonl" "$R/checks/check_replay.json"
+        fi
+        for arm in disc10 disc100; do for k in "${READ[@]}"; do place 12000 0 plugin "$(mine $arm "$k")" "$k" --discriminator --discriminator-lr "${RATE[$arm]}"; done; done; wait
+        for arm in disc10 disc100; do for k in "${READ[@]}"; do test -e "$(mine $arm "$k")/student/adapter_config.json"; done; done
+        "$PY" - "$(mine disc10 "${READ[0]}")" "$(mine disc100 "${READ[0]}")" "${N}_maa_view20261121${TAG}_view_disc_f${READ[0]}" "$(view fix "${READ[0]}")/student" "$R/checks/check_config_and_saved.json" <<'PY'
+import json, sys
+from safetensors import safe_open
+runs, old, fix, out = sys.argv[1:3], sys.argv[3], sys.argv[4], sys.argv[5]
+config = lambda d: json.load(open(d+'/run_manifest.json'))['config']
+keys = lambda d: sorted(safe_open(d+'/adapter_model.safetensors', 'pt').keys())
+r = {}
+for run in runs:
+    a, b = config(run), config(old)
+    r[run] = {'config_differs_in': sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k)), 'lr': a.get('discriminator_lr'),
+              'saved_keys_as_V-修': keys(run+'/student') == keys(fix), 'non_lora_tensors': [k for k in keys(run+'/student') if 'lora_' not in k]}
+r['passed'] = all(set(v['config_differs_in']) <= {'discriminator_lr', 'output_dir'} and v['saved_keys_as_V-修'] and not v['non_lora_tensors'] for v in r.values())
+json.dump(r, open(out, 'w'), indent=2); print(json.dumps(r)); sys.exit(0 if r['passed'] else 'the configuration or the saved adapter is not as planned')
+PY
+        mark plugins; fi
+    if ! done_ reads; then
+        for arm in disc10 disc100; do for k in "${READ[@]}"; do
+            place 22000 1 read_with "$R/read_${arm}_f$k" "$RAWV" "${SH}$k/adapter" "$k" "${LIMIT[@]}" --view-student "$(mine $arm "$k")/student" --student-images 2 3
+        done; done; wait
+        for arm in disc10 disc100; do for k in "${READ[@]}"; do test -e "$R/read_${arm}_f$k/complete.json"; done; done
+        mark reads; fi
+    if ! done_ measures; then
+        for arm in disc10 disc100; do for k in "${READ[@]}"; do place 6000 0 distance "$R/distance_${arm}_f$k" "$(mine $arm "$k")/student" "$k"; done; done
+        [ -e "$R/spread.json" ] || place 12000 1 job "$R/spread.json" -- "$PY" -m revrender.train_clean_view spread --model "$MODEL" --pack "$V" \
+            --student "V-修=${B}${TAG}_view_fix_f{fold}/student" --student "V-判别=${N}_maa_view20261121${TAG}_view_disc_f{fold}/student" \
+            --student "V-判别-10=${R}_view_disc10_f{fold}/student" --student "V-判别-100=${R}_view_disc100_f{fold}/student" --folds "${READ[@]}" --output "$R/spread.json"; wait
+        for arm in disc10 disc100; do for k in "${READ[@]}"; do test -e "$R/distance_${arm}_f$k/distances.jsonl"; done; done; test -e "$R/spread.json"
+        mark measures; fi
+    if ! done_ score; then
+        ARMS_=(--arm "V-判别-10=$(dirs "$R/read_disc10")" --arm "V-判别-100=$(dirs "$R/read_disc100")" --arm "V-修=$(dirs "$FIX/read_fix")" --arm "V-判别=$(dirs "$MAA/read_disc")"
+               --arm "V-真+合=$(dirs "$P4/read_V-synth")" --arm "X=$(dirs "$P4/read_X")" --arm "E-NAFNet=$(dirs "$P2/read_E-NAFNet")" --arm "R0=$(dirs "$P2/read_R0")" --arm "H=$(dirs "$P2/read_H")")
+        REFS=(V-修 V-判别 V-真+合 H R0 X E-NAFNet)
+        for ref in "${REFS[@]}"; do [ -e "$R/scores_vs_$ref.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" "${ARMS_[@]}" --reference "$ref" \
+            $([ "$ref" != V-修 ] || echo --readings "$R/readings.jsonl") --output "$R/scores_vs_$ref.json" > "$R/scores_vs_$ref.log" 2>&1; done
+        [ -e "$R/analysis/analysis.json" ] || "$PY" -m revrender.eval.privileged analyse --pack "$V" "${ARMS_[@]}" --shares "$SHARES" \
+            $(for ref in "${REFS[@]}"; do echo --scores "$ref=$R/scores_vs_$ref.json"; done) \
+            --distances "V-判别-10=$(dirs "$R/distance_disc10")" --distances "V-判别-100=$(dirs "$R/distance_disc100")" --output-dir "$R/analysis" > "$R/analysis.log" 2>&1
+        mark score; fi
+    touch "$R/COMPLETE"; stamp "$PART disc complete"; exit 0
 fi
 
 # CPU: the strike shares (checked against the planning session's), the covered regions (check 3), the subsets (check 4).
