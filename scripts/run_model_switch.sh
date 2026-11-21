@@ -90,7 +90,8 @@ step0() {   # LOG REFERENCE TOLERANCE OUT: an adapter's step-0 validation loss a
 # How each part is computed (revisions four and five; tools.compute_probe): the worst batch of each part, one job at a time on card 1
 # (cards 1 and 2 for a split model).  InternVL: per tile count 12 -> 6 -> 4, the adapter with checkpointing in one piece then two, the
 # reader one sample at a time (the same loss as two a batch) on one card then two, reading 8 -> 4 -> 2 -> 1 regions a batch on one card
-# then two.  Qwen3.5 (no tiles; its adapter as it is): the reader one sample at a time, reading 8 -> 1, on one card.  The first setting
+# then two.  Qwen3.5 (no tiles): the adapter as it is, then with checkpointing in one piece and two; the reader one sample at a time,
+# reading 8 -> 1, on one card.  The first setting
 # all three fit at whose estimated whole run (10 readers, 5 adapters, 15 readings, from the measured step times) is at most eight hours.
 if [ "$PART" = probe ]; then
     "$X" - "$R" "$ROOT" "$M" "$V" "$RAWV" "${ALL_CARDS[1]}" "${ALL_CARDS[2]}" "$SLUG" <<'PY'
@@ -112,7 +113,9 @@ first = lambda tries: next((r for r in tries if r['fitted']), None)
 chosen = None
 for t in ((12, 6, 4) if intern else (None,)):
     tag = f't{t}_' if t else ''
-    plugins = ((probe(f'{tag}plugin_ckpt_p{n}', t, 'plugin', checkpointing=True, plugin_pieces=n) for n in (1, 2)) if intern else (probe('plugin_as_is', t, 'plugin') for _ in (0,)))
+    plugins = (probe(f'{tag}plugin_ckpt_p{n}', t, 'plugin', checkpointing=True, plugin_pieces=n) for n in (1, 2))
+    if not intern:                                  # Qwen3.5: as it is first, then the same two
+        plugins = (r for g in ((probe('plugin_as_is', t, 'plugin'),), plugins) for r in g)
     plugin = first(plugins)
     if plugin is None: continue
     splits = (False, True) if intern else (False,)
