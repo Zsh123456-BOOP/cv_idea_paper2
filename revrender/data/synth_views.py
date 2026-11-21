@@ -28,7 +28,8 @@ short stretch of clean writing (``SHORT`` ink pixels at most, ``LEAST`` at least
 the writing the material struck, ``matching_stretch``) cut from the host boxes of ``data.synthesis paste``
 (``--synth``, its regions' ``host_page`` and ``box_on_page``; ``HOSTS`` of them in sha256 order, no test-page writer), the page as
 ``clean_pages.review_clean`` leaves it.  The layer is scaled by the ratio of the host's writing height to the height of the writing
-it struck (times 1 +- ``SCALE``), its writing's centre put on the host's (moved by up to ``SHIFT`` heights), the opacity brought
+it struck (times 1 +- ``SCALE``), its writing's centre put on the host's and moved to where it covers the host's writing most
+(``covered_try``: a grid of moves of up to ``REACH`` heights), the opacity brought
 back to its own (``one_stroke.renormed``) and drawn in the host's ink a little varied (``paste_strikes.host_level``,
 ``restoration_pairs.draw_pair``: the target is the host as it was).  The box: the host's writing and the strike, ``BOX_MARGIN``
 heights round.  A region is kept when at least ``COVER`` of its writing lies within two pixels of its strike.  ``TRIES`` tries per
@@ -57,8 +58,9 @@ from .restoration_pairs import SIZE
 PREFIX = 'synthetic'
 HEAVY = .40            # a material region's strike holds at least this share of its ink (or it keeps its writing)
 SHORT, LEAST = 300, 40  # a host stretch's ink pixels
-COVER = .5             # a covered region has at least this share of its writing within two pixels of the strike
-SCALE, SHIFT = .15, .05
+COVER = .55            # a covered region has at least this share of its writing within two pixels of the strike
+SCALE = .15            # the layer's scale drawn within 1 +- this
+REACH, GRID = .25, 5   # the moves tried: a GRID x GRID grid of up to REACH writing heights each way
 TRIES = 80
 HOSTS = 1500
 
@@ -228,10 +230,14 @@ def matching_stretch(crop, stretches, writing):
 
 
 def covered_try(material, page, box, stretch, rng):
-    """One try: (box on page, opacity in the box, ink level) or None.  ``material``: (opacity, writing box (t, l, b, r))."""
+    """One try: (box on page, opacity in the box, ink level) or None.  ``material``: (opacity, writing box (t, l, b, r)).  The layer,
+    scaled once (the try's own draw), is put at each of ``GRID`` x ``GRID`` moves of up to ``REACH`` heights round the host's
+    writing's centre and drawn; the move that leaves the most of the writing within two pixels of the strike is taken (the first of
+    equals): a real strike was drawn over its own writing, and over another's it has to be put where it lies over it."""
     from scipy import ndimage
     from .one_stroke import BOX_MARGIN, renormed
     from .paste_strikes import host_level
+    from .restoration_pairs import draw_pair
     alpha, (wt, wl, wb, wr) = material; L, T, R, B = box
     crop = page[T:B, L:R]; c0, c1 = stretch; ys, xs = np.nonzero(crop[:, c0:c1] < 200)
     ht, hb, hl, hr = T+ys.min(), T+ys.max()+1, L+c0+xs.min(), L+c0+xs.max()+1; h = hb-ht
@@ -239,19 +245,27 @@ def covered_try(material, page, box, stretch, rng):
         return None
     k = h/max(1, wb-wt)*(1+rng.uniform(-SCALE, SCALE))
     scaled = renormed(np.clip(ndimage.zoom(alpha, k, order=1), 0, 1).astype(np.float32), alpha)
+    level = host_level(page[ht:hb, hl:hr], rng)
     cy, cx = (wt+wb)/2*k, (wl+wr)/2*k
-    y0 = int(round((ht+hb)/2+rng.uniform(-SHIFT, SHIFT)*h-cy)); x0 = int(round((hl+hr)/2+rng.uniform(-SHIFT, SHIFT)*h-cx))
     ys, xs = np.nonzero(scaled >= .3)
     if not len(ys):
         return None
-    m = max(2, int(round(BOX_MARGIN*h)))
-    t, l = min(ht, y0+ys.min())-m, min(hl, x0+xs.min())-m; b, r = max(hb, y0+ys.max()+1)+m, max(hr, x0+xs.max()+1)+m
-    if t < 0 or l < 0 or b > page.shape[0] or r > page.shape[1]:
-        return None
-    canvas = np.zeros((b-t, r-l), np.float32); sh, sw = scaled.shape
-    ty, tx = y0-t, x0-l; a0, b0 = max(0, -ty), max(0, -tx); a1, b1 = min(sh, canvas.shape[0]-ty), min(sw, canvas.shape[1]-tx)
-    canvas[ty+a0:ty+a1, tx+b0:tx+b1] = scaled[a0:a1, b0:b1]
-    return [int(l), int(t), int(r), int(b)], canvas, host_level(page[t:b, l:r], rng)
+    m = max(2, int(round(BOX_MARGIN*h))); best = None
+    for dy in np.linspace(-REACH, REACH, GRID):
+        for dx in np.linspace(-REACH, REACH, GRID):
+            y0, x0 = int(round((ht+hb)/2+dy*h-cy)), int(round((hl+hr)/2+dx*h-cx))
+            t, l = min(ht, y0+ys.min())-m, min(hl, x0+xs.min())-m; b, r = max(hb, y0+ys.max()+1)+m, max(hr, x0+xs.max()+1)+m
+            if t < 0 or l < 0 or b > page.shape[0] or r > page.shape[1]:
+                continue
+            canvas = np.zeros((b-t, r-l), np.float32); sh, sw = scaled.shape
+            ty, tx = y0-t, x0-l; a0, b0 = max(0, -ty), max(0, -tx); a1, b1 = min(sh, canvas.shape[0]-ty), min(sw, canvas.shape[1]-tx)
+            canvas[ty+a0:ty+a1, tx+b0:tx+b1] = scaled[a0:a1, b0:b1]
+            image = draw_pair(page[t:b, l:r], canvas, level)[0]
+            ink = image < 200; strike = (page[t:b, l:r].astype(np.int16)-image > 51) & ink; kept = ink & ~strike
+            cover = (kept & ndimage.binary_dilation(strike, iterations=2)).sum()/max(1, kept.sum())
+            if best is None or cover > best[0]:
+                best = (cover, [int(l), int(t), int(r), int(b)], canvas)
+    return None if best is None else (best[1], best[2], level)
 
 
 def covered(args):
@@ -348,6 +362,9 @@ def covered(args):
         banned = fold_writers[k] | tests
         summary['folds'][k] = {'eligible': len(made)-sum(left[k].values()), 'kept': len(ids), 'left_out': dict(left[k]),
                                'materials_used': len({made[i]['material'] for i in ids}),
+                               'uses_per_material': {'max': max(Counter(made[i]['material'] for i in ids).values()), 'median': float(np.median(list(Counter(made[i]['material'] for i in ids).values())))},
+                               'covered_quantiles': {str(q): float(np.percentile([x['covered'] for x in st], q)) for q in (10, 25, 50, 75, 90)},
+                               'covered_at_least_0.7': float(np.mean([x['covered'] >= .7 for x in st])),
                                'covered_min': min(x['covered'] for x in st), 'covered_median': median([x['covered'] for x in st]),
                                'strike_share_median': median([x['strike_share'] for x in st]), 'writing_ink_median': median([x['kept'] for x in st]),
                                'dark_auc_folded_median': median([x['dark_auc_folded'] for x in st]),
@@ -361,7 +378,7 @@ def covered(args):
                    for r in sorted((r for r in rows if r['mode'] == 'keep'), key=lambda r: order_key(r['id']))[:12]])
     write_json(out/'summary.json', summary)
     write_manifest(out, config={k: str(v) for k, v in vars(args).items() if k != 'command'}, constants={'HEAVY': HEAVY, 'SHORT': SHORT, 'LEAST': LEAST, 'COVER': COVER,
-                   'SCALE': SCALE, 'SHIFT': SHIFT, 'TRIES': TRIES, 'HOSTS': HOSTS},
+                   'SCALE': SCALE, 'REACH': REACH, 'GRID': GRID, 'TRIES': TRIES, 'HOSTS': HOSTS},
                    inputs={str(p): digest(p) for p in (args.pack/'pack.json', args.synth/'regions.json', args.same_student, args.dataset, args.test_halves)}, **summary)
     print(json.dumps({k: v for k, v in summary.items() if k != 'folds'} | {'folds': {k: {x: v[x] for x in ('kept', 'covered_median', 'strike_share_median', 'writing_ink_median', 'dark_auc_folded_median', 'accepted')} for k, v in summary['folds'].items()}}), flush=True)
 
