@@ -316,7 +316,9 @@ def main(argv=None):
                                          generator=generator, drop_last=True, persistent_workers=args.workers > 0)
     val_loader = torch.utils.data.DataLoader(val_set, batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
     require(not (args.init_adapter and args.layer_map), '--init-adapter with --layer-map is not supported')
-    model = lora_model(args.model, args.rank, args.alpha, args.dropout, args.layer_map, args.init_adapter).to('cuda')
+    from .models import internvl
+    model = lora_model(args.model, args.rank, args.alpha, args.dropout, args.layer_map, args.init_adapter)
+    model = model if internvl.SPLIT and internvl.is_internvl(args.model) else model.to('cuda')     # a split InternVL is placed already
     students, adapters = None, {f'fold{j}': Path(args.view_students.format(fold=j)) for j in folds_used}
     if args.view_students:
         from .models.vlm_tokens import install_students

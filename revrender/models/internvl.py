@@ -16,11 +16,13 @@ it is off anyway).  The bundled code runs with ``recognize_ocr.safeguards`` set 
 
     python -m revrender.models.internvl memory --model DIR --clean-pack VIEWS --scan-pack RAW_VIEWS --part reader|plugin|read --output-dir OUT
 
-``memory`` (the rule on the tiles, run at each ``INTERNVL_MAX_TILES`` before anything is read): the worst batch of one part -- the
-regions with the most tiles -- on a card: ``reader`` one training step of the reader (H's context_revision, two regions, checkpointing,
-as ``train_reader``), ``plugin`` one training step of the tower adapter (eight regions' windows and lines, teacher and student, as
-``train_clean_view train``), ``read`` one batch of eight read as V (an untaught adapter on the second and third images).  OUT.json: the
-peak memory allocated and reserved, the seconds, and whether it fitted (OUT/result.json).
+``memory`` (the rule on the tiles and on how a part is computed, revisions two and four; run before anything is read): the worst batch
+of one part -- the regions with the most tiles -- then the time of a batch of the median size: ``reader`` a training micro-step of the
+reader (H's context_revision, ``--reader-batch`` regions, checkpointing, as ``train_reader``; an update is 16 regions), ``plugin``
+one training step of the tower adapter (eight regions' windows and lines in ``--plugin-pieces`` pieces, ``--checkpointing``, as
+``train_clean_view train``; and a validation pass's time per region), ``read`` one batch of ``--read-batch`` read as V (an untaught
+adapter on the second and third images); ``INTERNVL_SPLIT=1`` the whole model over two cards.  OUT/result.json: the peak memory on each
+card, whether it fitted, the times.
 """
 import json
 import os
@@ -33,6 +35,9 @@ TILE, TOKENS = 448, 256
 MAX_TILES = int(os.environ.get('INTERNVL_MAX_TILES', '12'))
 if MAX_TILES not in (12, 6, 4):
     raise ValueError('INTERNVL_MAX_TILES is 12, 6 or 4')
+# the whole model over the two visible cards (accelerate's balanced map) when one card cannot hold a reader's training or reading:
+# how it is computed, not what (the planning session's revision four)
+SPLIT = os.environ.get('INTERNVL_SPLIT') == '1'
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 
 
@@ -46,7 +51,7 @@ def processing(model_dir):
         return None
     card = json.loads((Path(model_dir)/'config.json').read_text())['vision_config'].get('drop_path_rate')
     return {'tile': TILE, 'max_tiles': MAX_TILES, 'thumbnail': True, 'tokens_per_tile': TOKENS, 'resize': 'bicubic', 'mean': MEAN, 'std': STD,
-            'vision_drop_path_rate': {'card': card, 'used': 0.}, 'language_attention': 'sdpa (the bundled code falls back to eager without flash-attn)',
+            'vision_drop_path_rate': {'card': card, 'used': 0.}, 'whole_model_cards': 2 if SPLIT else 1, 'language_attention': 'sdpa (the bundled code falls back to eager without flash-attn)',
             'images_in_words': '<image> before the words; several: Image-1: <image> ... (the card)',
             'tower_alone_checkpointing': 'off (the bundled encoder hard-codes it on; compute only, the adapter needs it off to learn)'}
 
@@ -173,7 +178,8 @@ def whole(model_dir):
     from transformers import AutoConfig, AutoModel
     bundled(model_dir, 'modeling_internvl_chat.InternVLChatModel')          # the safeguards, before the bundled code loads
     config = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=True); config.vision_config.drop_path_rate = 0.
-    model = AutoModel.from_pretrained(str(model_dir), config=config, torch_dtype=torch.bfloat16, trust_remote_code=True, use_flash_attn=False, low_cpu_mem_usage=True)
+    model = AutoModel.from_pretrained(str(model_dir), config=config, torch_dtype=torch.bfloat16, trust_remote_code=True, use_flash_attn=False, low_cpu_mem_usage=True,
+                                      **({'device_map': 'balanced'} if SPLIT else {}))
     model.language_model.config._attn_implementation = 'sdpa'
     return model
 
@@ -195,7 +201,7 @@ def embedded(model, input_ids, pixel_values, features=None):
     place = input_ids == model.img_context_token_id
     if int(place.sum()) != vit.shape[0]:
         raise ValueError(f'{int(place.sum())} image tokens for {vit.shape[0]} features')
-    return embeds.masked_scatter(place[..., None], vit.to(embeds.dtype))
+    return embeds.masked_scatter(place[..., None], vit.to(embeds.device, embeds.dtype))
 
 
 def training_model(model_dir):
@@ -242,7 +248,9 @@ class Reader:
         if adapter:
             from peft import PeftModel
             self.model = PeftModel.from_pretrained(self.model, str(adapter)).merge_and_unload()
-        self.model = self.model.to(device).eval()
+        self.model = (self.model if SPLIT else self.model.to(device)).eval()
+        if SPLIT:
+            self.device = 'cuda:0'                                       # the inputs go to the first card; accelerate's hooks carry them on
         self.image_token = self.model.img_context_token_id = self.processor.tokenizer.convert_tokens_to_ids('<IMG_CONTEXT>')
         self.students = install_students(self.model, {'default': student}, student_off, tower=view_of(self.model), attribute='extract_feature',
                                          route=tile_features) if student else None
@@ -284,43 +292,72 @@ def memory(args):
     rows = {r['id']: r for r in json.loads((clean/'pack.json').read_text())['rows']}; scans = {r['id']: r for r in json.loads((scan/'pack.json').read_text())['rows']}
     count = lambda path: len(tiles(Image.open(path).convert('RGB')))
     size = {k: sum(count(clean/r['images'][key]) for key in ('raw', 'erased', 'context')) for k, r in rows.items()}
-    worst = sorted(rows, key=lambda k: -size[k])
+    worst = sorted(rows, key=lambda k: -size[k]); middle = worst[len(worst)//2-8:len(worst)//2+8]          # the largest, and sixteen of the median size
     opened = lambda pack, row, key: Image.open(pack/row['images'][key]).convert('RGB')
-    torch.cuda.reset_peak_memory_stats(); started = time.time(); fitted, error = True, None
+    started = time.time(); fitted, error, timing = True, None, {}
+
+    def timed(run, repeats):
+        torch.cuda.synchronize(); t = time.time()
+        for _ in range(repeats): run()
+        torch.cuda.synchronize(); return (time.time()-t)/repeats
     try:
         if args.part == 'reader':
             from ..recognize_lines import prompt
             from ..train_reader import Collate, answer_loss, lora_model
             processor = Processor(args.model); processor.tokenizer.padding_side = 'right'
-            model = lora_model(args.model, 16, 32, .05).to('cuda')
+            model = lora_model(args.model, 16, 32, .05); model = model if SPLIT else model.to('cuda'); timing['load_seconds'] = round(time.time()-started, 1)
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False}); model.enable_input_require_grads(); model.train()
-            chosen = [rows[k] for k in worst[:2]]
-            batch = Collate(processor, '')([([opened(clean, r, key) for key in ('raw', 'erased', 'context')], r['text'] or '', None, prompt('context_revision', r), None) for r in chosen])
-            batch = {k: v.to('cuda') for k, v in batch.items()}; batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
-            answer_loss(model, batch).backward()
+            def step(chosen):
+                batch = Collate(processor, '')([([opened(clean, r, key) for key in ('raw', 'erased', 'context')], r['text'] or '', None, prompt('context_revision', r), None) for r in chosen])
+                batch = {k: v.to('cuda') for k, v in batch.items()}; batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
+                answer_loss(model, batch).backward()
+            step([rows[k] for k in worst[:args.reader_batch]])
+            micro = timed(lambda: step([rows[k] for k in middle[:args.reader_batch]]), 3)
+            timing.update({'micro_step_seconds': round(micro, 2), 'update_seconds': round(micro*16/args.reader_batch, 1)})
         elif args.part == 'plugin':
-            from ..train_clean_view import encode, levels, pair_loss, with_student
-            student = with_student(tower(args.model).to('cuda')); student.train(); processor = Processor(args.model)
-            pairs = [(opened(scan, scans[k], key), opened(clean, rows[k], key)) for k in sorted(rows, key=lambda k: -(count(clean/rows[k]['images']['erased'])+count(clean/rows[k]['images']['context'])))[:8]
-                     for key in ('erased', 'context')]
-            xs, gs = encode(processor, [a for a, _ in pairs], 'cuda'); xc, gc = encode(processor, [b for _, b in pairs], 'cuda')
-            with torch.no_grad(), student.disable_adapter():
-                teacher = levels(student, xc, gc)
-            pair_loss(levels(student, xs, gs), teacher).backward()
+            from ..train_clean_view import accumulated, checkpoint_layers, encode, levels, regions_of, validation_writers, with_student
+            student = with_student(tower(args.model).to('cuda')); student.train(); processor = Processor(args.model); timing['load_seconds'] = round(time.time()-started, 1)
+            if args.checkpointing:
+                checkpoint_layers(student.base_model.model)
+            def views(piece):
+                pairs = [(opened(scan, scans[k], key), opened(clean, rows[k], key)) for k in piece for key in ('erased', 'context')]
+                xs, gs = encode(processor, [a for a, _ in pairs], 'cuda'); xc, gc = encode(processor, [b for _, b in pairs], 'cuda'); return xs, gs, xc, gc
+            def teacher_of(piece):
+                _, _, xc, gc = views(piece)
+                with student.disable_adapter():
+                    return levels(student, xc, gc)
+            def step(chosen):
+                size_ = -(-len(chosen)//args.plugin_pieces)
+                accumulated(lambda piece: levels(student, *views(piece)[:2]), teacher_of, [chosen[i:i+size_] for i in range(0, len(chosen), size_)])
+                student.zero_grad(set_to_none=True)
+            by_window = sorted(rows, key=lambda k: -(count(clean/rows[k]['images']['erased'])+count(clean/rows[k]['images']['context'])))
+            step(by_window[:8])
+            timing['step_seconds'] = round(timed(lambda: step(middle[:8]), 2), 2)
+            def validate_one():
+                with torch.no_grad():
+                    for k in middle[:8]: teacher_of([k]); levels(student, *views([k])[:2])
+            timing['validation_seconds_per_region'] = round(timed(validate_one, 1)/8, 3)
+            real = regions_of(clean, scan, lambda r: r['fold'] != 0); held = validation_writers(real)
+            timing['validation_regions'] = sum(r[1] in held for r in real)
         else:
             from ..recognize_lines import SYSTEM, prompt
             from ..train_clean_view import with_student
             fresh = out/'untaught_adapter'; with_student(tower(args.model)).save_pretrained(str(fresh))
-            reader = Reader(args.model, student=fresh/'default' if (fresh/'default').exists() else fresh)
-            chosen = [scans[k] for k in worst[:8]]
-            reader.read([([opened(scan, r, key) for key in ('raw', 'erased', 'context')], prompt('context_revision', r), None, 0.) for r in chosen], SYSTEM, 256,
-                        loop_limit=4, students=[[False, True, True] for _ in chosen])
+            reader = Reader(args.model, student=fresh); timing['load_seconds'] = round(time.time()-started, 1)
+            def read(ks):
+                chosen = [scans[k] for k in ks]
+                reader.read([([opened(scan, r, key) for key in ('raw', 'erased', 'context')], prompt('context_revision', r), None, 0.) for r in chosen], SYSTEM, 256,
+                            loop_limit=4, students=[[False, True, True] for _ in chosen])
+            read(worst[:args.read_batch])
+            timing['seconds_per_region'] = round(timed(lambda: read(middle[:args.read_batch]), 1)/args.read_batch, 2)
     except torch.cuda.OutOfMemoryError as e:
         fitted, error = False, str(e).splitlines()[0]
     gib = lambda b: round(b/2**30, 2)
-    result = {'part': args.part, 'max_tiles': MAX_TILES, 'fitted': fitted, 'error': error, 'peak_allocated_gib': gib(torch.cuda.max_memory_allocated()),
-              'peak_reserved_gib': gib(torch.cuda.max_memory_reserved()), 'card_gib': gib(torch.cuda.get_device_properties(0).total_memory),
-              'seconds': round(time.time()-started, 1), 'worst_tiles_per_region': [size[k] for k in worst[:8]]}
+    peak = [gib(torch.cuda.max_memory_allocated(d)) for d in range(torch.cuda.device_count())]
+    result = {'part': args.part, 'max_tiles': MAX_TILES, 'cards': 2 if SPLIT else 1, 'reader_batch': args.reader_batch, 'read_batch': args.read_batch,
+              'plugin_pieces': args.plugin_pieces, 'checkpointing': args.checkpointing, 'fitted': fitted, 'error': error, 'peak_allocated_gib': peak,
+              'card_gib': gib(torch.cuda.get_device_properties(0).total_memory), 'seconds': round(time.time()-started, 1), **timing,
+              'worst_tiles_per_region': [size[k] for k in worst[:8]], 'median_tiles_per_region': size[middle[0]]}
     write_json(out/'result.json', result); print(json.dumps(result), flush=True)
 
 
@@ -329,7 +366,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0]); sub = p.add_subparsers(dest='command', required=True)
     m = sub.add_parser('memory'); m.add_argument('--model', type=Path, required=True); m.add_argument('--clean-pack', type=Path, required=True)
     m.add_argument('--scan-pack', type=Path, required=True); m.add_argument('--part', choices=('reader', 'plugin', 'read'), required=True)
-    m.add_argument('--output-dir', type=Path, required=True)
+    m.add_argument('--output-dir', type=Path, required=True); m.add_argument('--reader-batch', type=int, default=2)
+    m.add_argument('--read-batch', type=int, default=8); m.add_argument('--plugin-pieces', type=int, default=1); m.add_argument('--checkpointing', action='store_true')
     args = p.parse_args(argv)
     memory(args)
 

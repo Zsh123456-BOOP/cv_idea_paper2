@@ -22,6 +22,7 @@ P2=${N}_nafnet_folds20261119; V=${N}_revision_folds_human_masked20261117b_views;
 SYN=${N}_privileged_view20261120_synth; FIX=${N}_covered_view20261121; SH=${P2}_reader_shared_f; R0R=${P2}_reader_R0_f
 case "$PART" in
     check1) R=${B}_check1 ;;
+    probe) [ "${MODEL:-}" = InternVL3_5-8B ] || { echo 'PART=probe is for MODEL=InternVL3_5-8B'; exit 2; }; X=$HME; SLUG=internvl; M=$MODELS/$MODEL; R=${B}_internvl_probe ;;
     smoke|main) case "${MODEL:-}" in
                     Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;;
                     InternVL3_5-8B) X=$HME; SLUG=internvl ;;
@@ -72,6 +73,53 @@ PY
 step0() {   # LOG REFERENCE TOLERANCE OUT: an adapter's step-0 validation loss against the sixth round's V-修 fold 0
     "$HME" -c 'import json,sys; a=json.loads(open(sys.argv[1]).readline())["val_loss"]; b=json.loads(open(sys.argv[2]).readline())["val_loss"]; t=float(sys.argv[3]); r={"mine":a,"sixth_round":b,"difference":a-b,"tolerance":t,"passed":abs(a-b)<=t}; json.dump(r,open(sys.argv[4],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["passed"] else "step-0 loss off")' "$@"
 }
+
+# InternVL, how each part is computed (revision four): the worst batch of each part, one job at a time on card 1 (cards 1 and 2 for a
+# split model): per tile count 12 -> 6 -> 4, the adapter with checkpointing in one piece then two, the reader one region a micro-step
+# (16 an update) on one card then two, reading 8 -> 4 -> 2 -> 1 regions a batch on one card then two; the first tile count all three fit
+# at whose estimated whole run (10 readers, 5 adapters, 15 readings, from the measured step times) is at most eight hours.
+if [ "$PART" = probe ]; then
+    "$HME" - "$R" "$ROOT" "$M" "$V" "$RAWV" "${ALL_CARDS[1]}" "${ALL_CARDS[2]}" <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+R, root, model, clean, scan, c1, c2 = Path(sys.argv[1]), *sys.argv[2:]
+log = []
+def probe(name, tiles, part, split=False, **opt):
+    out = R/name
+    if not (out/'result.json').exists():
+        flags = [f'--{k.replace("_", "-")}' if v is True else f'--{k.replace("_", "-")}={v}' for k, v in opt.items() if v is not False]
+        env = {**os.environ, 'INTERNVL_MAX_TILES': str(tiles), 'INTERNVL_SPLIT': '1' if split else '0'}
+        subprocess.run(['bash', f'{root}/scripts/launch_gpu_job.sh', f'{c1},{c2}' if split else c1, '0', str(out), '--', sys.executable, '-m', 'revrender.models.internvl',
+                        'memory', '--model', model, '--clean-pack', clean, '--scan-pack', scan, '--part', part, '--output-dir', str(out), *flags],
+                       env=env, stdout=open(f'{out}.log', 'w'), stderr=subprocess.STDOUT, check=True)
+    r = json.loads((out/'result.json').read_text()); log.append({'name': name, **r}); print(json.dumps({'name': name, 'fitted': r['fitted'], 'peak': r['peak_allocated_gib']}), flush=True)
+    return r
+chosen = None
+for t in (12, 6, 4):
+    plugin = next((r for pieces in (1, 2) if (r := probe(f't{t}_plugin_ckpt_p{pieces}', t, 'plugin', checkpointing=True, plugin_pieces=pieces))['fitted']), None)
+    if plugin is None: continue
+    reader = next((r for split in (False, True) if (r := probe(f't{t}_reader_b1_{"split" if split else "one"}', t, 'reader', split, reader_batch=1))['fitted']), None)
+    if reader is None: continue
+    read = next((r for split in (False, True) for b in (8, 4, 2, 1) if (r := probe(f't{t}_read_b{b}_{"split" if split else "one"}', t, 'read', split, read_batch=b))['fitted']), None)
+    if read is None: continue
+    load = lambda r: r.get('load_seconds', 120)
+    hours = {'readers': 10*(100*reader['update_seconds']+load(reader))/3600,
+             'adapters': 5*(2000*plugin['step_seconds']+40*plugin['validation_regions']*plugin['validation_seconds_per_region']+load(plugin))/3600,
+             'readings': 15*(122*read['seconds_per_region']+load(read))/3600}
+    wall = hours['adapters']/2+(hours['readers'] if reader['cards'] == 2 else hours['readers']/2)+(hours['readings'] if read['cards'] == 2 else hours['readings']/2)
+    estimate = {'tiles': t, 'hours_by_part_one_job_at_a_time': {k: round(v, 2) for k, v in hours.items()}, 'wall_hours_on_two_cards': round(wall, 2), 'within_eight_hours': wall <= 8,
+                'plugin': {k: plugin[k] for k in ('plugin_pieces', 'checkpointing', 'cards', 'peak_allocated_gib', 'step_seconds')},
+                'reader': {k: reader[k] for k in ('reader_batch', 'cards', 'peak_allocated_gib', 'update_seconds')},
+                'read': {k: read[k] for k in ('read_batch', 'cards', 'peak_allocated_gib', 'seconds_per_region')}}
+    log.append({'estimate': estimate}); print(json.dumps(estimate), flush=True)
+    if wall <= 8: chosen = estimate; break
+(R/'checks').mkdir(exist_ok=True)
+(R/'checks'/'compute.json').write_text(json.dumps({'chosen': chosen, 'tried': log}, indent=2))
+if chosen: (R/'checks'/'max_tiles').write_text(str(chosen['tiles']))
+sys.exit(0 if chosen else 'no combination fits within the rule: stop and ask')
+PY
+    touch "$R/COMPLETE"; stamp "probe complete"; exit 0
+fi
 
 if [ "$PART" = check1 ]; then
     for env in new hme; do py=$NEW; [ $env = new ] || py=$HME

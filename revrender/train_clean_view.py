@@ -164,6 +164,36 @@ class Totals:
         return float(np.mean([c/max(1, n)+q/max(1e-12, t) for c, n, q, t in zip(self.cos, self.tokens, self.sq, self.t2)]))
 
 
+def checkpoint_layers(tower):
+    """Each block of the tower (Qwen's ``blocks``, InternViT's ``encoder.layers``) recomputed in the backward pass instead of kept --
+    torch's non-reentrant checkpoint, which leaves the gradients as they are -- whenever gradients are being taken (``--checkpointing``)."""
+    import torch
+    from torch.utils.checkpoint import checkpoint
+    layers = tower.blocks if hasattr(tower, 'blocks') else tower.vision_model.encoder.layers
+    for layer in layers:
+        plain = layer.forward
+        layer.forward = (lambda plain: lambda *a, **k: checkpoint(plain, *a, use_reentrant=False, **k) if torch.is_grad_enabled() else plain(*a, **k))(plain)
+
+
+def accumulated(student_of, teacher_of, pieces):
+    """The step's ``pair_loss`` over the whole batch, its gradients taken a piece of the batch at a time (``--accumulate``): per level
+    the batch's sum of 1 - cosine over the batch's token count plus the batch's squared error over the batch's teacher square -- the
+    teacher's levels of every piece first (no gradients), so the counts and squares are the whole batch's, then each piece's student
+    and its share of the loss, back-propagated.  The shares add up to ``pair_loss`` of the batch in one piece.  Returns the loss."""
+    import torch
+    with torch.no_grad():
+        teachers = [teacher_of(piece) for piece in pieces]
+    tokens = [sum(t[k].shape[0] for t in teachers) for k in range(len(teachers[0]))]
+    squares = [sum(float((t[k]**2).sum()) for t in teachers) for k in range(len(teachers[0]))]
+    total = 0.
+    for piece, teacher in zip(pieces, teachers):
+        student = student_of(piece)
+        share = torch.stack([(1-torch.nn.functional.cosine_similarity(s, t, dim=-1)).sum()/n+((s-t)**2).sum()/max(q, 1e-12)
+                             for s, t, n, q in zip(student, teacher, tokens, squares)]).mean()
+        share.backward(); total += float(share)
+    return total
+
+
 def pair_loss(student, teacher):
     import torch
     parts = [(1-torch.nn.functional.cosine_similarity(s, t, dim=-1)).mean()+((s-t)**2).mean()/(t**2).mean().clamp_min(1e-12) for s, t in zip(student, teacher)]
@@ -247,7 +277,10 @@ def train(args):
     out = make_output_dir(args.output_dir)
     torch.manual_seed(SEED); rng = random.Random(SEED)
     processor = processor_for(args.model)
+    require(args.accumulate == 1 or not args.discriminator, '--accumulate with --discriminator is not supported')
     model = with_student(vision_tower(args.model).to('cuda'), args.rank, args.alpha, args.dropout)
+    if args.checkpointing:
+        checkpoint_layers(model.base_model.model)
     params = [q for q in model.parameters() if q.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0., betas=(.9, .999))
     judge = None
@@ -301,6 +334,28 @@ def train(args):
         else:                                      # as in the fourth round (the random stream unchanged)
             drawn = [('synthetic' if bool(synthetic) and rng.random() < .5 else 'real') for _ in range(args.batch_size)]
             chosen = [rng.choice(synthetic) if d == 'synthetic' else rng.choice(real) for d in drawn]
+        if args.accumulate > 1:                  # the same step's loss, its gradients taken a piece of the batch at a time
+            size = math.ceil(len(chosen)/args.accumulate); pieces = [chosen[i:i+size] for i in range(0, len(chosen), size)]
+            def views(piece):
+                scans, cleans = pairs_of(piece); xs, gs = encode(processor, scans, 'cuda'); xc, gc = encode(processor, cleans, 'cuda')
+                require(torch.equal(gs, gc), 'a scan and its clean twin give different grids'); return xs, gs, xc, gc
+            def teacher_of(piece):
+                _, _, xc, gc = views(piece)
+                with model.disable_adapter():
+                    return levels(model, xc, gc)
+            loss = accumulated(lambda piece: levels(model, *views(piece)[:2]), teacher_of, pieces)
+            torch.nn.utils.clip_grad_norm_(params, 1.); optimizer.step(); optimizer.zero_grad(set_to_none=True)
+            row = {'step': step+1, 'loss': loss, 'lr': optimizer.param_groups[0]['lr'], 'synthetic': drawn.count('synthetic'), 'covered': drawn.count('covered'),
+                   'seconds': round(time.monotonic()-started, 1)}
+            if (step+1) % args.eval_every == 0 or step+1 == args.steps:
+                row['val_loss'] = validate()
+                if row['val_loss'] < best[0]:
+                    best = (row['val_loss'], step+1)
+                    if (out/'student').exists():
+                        import shutil; shutil.rmtree(out/'student')
+                    model.save_pretrained(out/'student')
+            stream.write(json.dumps(row)+'\n'); stream.flush(); print(json.dumps(row), flush=True)
+            continue
         student, teacher = forward(*pairs_of(chosen))
         extra = {}
         if judge is not None:                    # MAA's order: the discriminator first, then the adapter fooling it
@@ -611,6 +666,8 @@ def main(argv=None):
     t.add_argument('--discriminator', action='store_true', help="MAA's token discriminator on the merged tokens (V-判别)")
     t.add_argument('--discriminator-lr', type=float, default=DISCRIMINATOR_LR, help="the discriminator's learning rate (MAA's 1e-6 by default)")
     t.add_argument('--stop-after', type=int, help='stop after this many steps of the --steps schedule (a check)')
+    t.add_argument('--accumulate', type=int, default=1, help='the batch in this many pieces, the same loss (accumulated), for memory')
+    t.add_argument('--checkpointing', action='store_true', help="the tower's blocks recomputed in the backward pass (non-reentrant), for memory")
     t.add_argument('--steps', type=int, default=600); t.add_argument('--batch-size', type=int, default=8, help='regions a step (each a window and a line)')
     t.add_argument('--eval-every', type=int, default=50); t.add_argument('--rank', type=int, default=16); t.add_argument('--alpha', type=int, default=32)
     t.add_argument('--dropout', type=float, default=.05); t.add_argument('--lr', type=float, default=1e-4); t.add_argument('--warmup', type=int, default=30)
