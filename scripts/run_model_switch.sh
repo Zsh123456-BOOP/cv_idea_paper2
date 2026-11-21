@@ -22,7 +22,8 @@ P2=${N}_nafnet_folds20261119; V=${N}_revision_folds_human_masked20261117b_views;
 SYN=${N}_privileged_view20261120_synth; FIX=${N}_covered_view20261121; SH=${P2}_reader_shared_f; R0R=${P2}_reader_R0_f
 case "$PART" in
     check1) R=${B}_check1 ;;
-    probe) [ "${MODEL:-}" = InternVL3_5-8B ] || { echo 'PART=probe is for MODEL=InternVL3_5-8B'; exit 2; }; X=$HME; SLUG=internvl; M=$MODELS/$MODEL; R=${B}_internvl_probe ;;
+    probe) case "${MODEL:-}" in Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;; InternVL3_5-8B) X=$HME; SLUG=internvl ;; *) echo 'MODEL is Qwen3.5-9B or InternVL3_5-8B'; exit 2 ;; esac
+           M=$MODELS/$MODEL; R=${B}_${SLUG}_probe ;;
     smoke|main) case "${MODEL:-}" in
                     Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;;
                     InternVL3_5-8B) X=$HME; SLUG=internvl ;;
@@ -40,19 +41,31 @@ trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
 place() { place_on_cards "$@"; }
 job() { local out="$1"; shift 2; bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1; }
+# how each part is computed, as the model's probe chose it (revisions four and five): the reader one sample at a time, the reading batch,
+# the adapter's checkpointing and pieces; none for Qwen3-VL-8B (check1)
+TEACH_MORE=(); READ_BATCH=8; PLUGIN_MORE=()
+if [ -n "${SLUG:-}" ] && [ "$PART" != probe ]; then
+    COMPUTE=${B}_${SLUG}_probe/checks/compute.json
+    test -e "$COMPUTE" || { echo "the probe's choice is missing: run PART=probe MODEL=$MODEL first"; exit 2; }
+    read -r ONE RB PIECES CKPT SPLIT_R SPLIT_B <<< "$("$HME" -c 'import json,sys; c=json.load(open(sys.argv[1]))["chosen"]; print(int(c["reader"]["one_at_a_time"]), c["read"]["read_batch"], c["plugin"]["plugin_pieces"], int(c["plugin"]["checkpointing"]), c["reader"]["cards"], c["read"]["cards"])' "$COMPUTE")"
+    [ "$SPLIT_R$SPLIT_B" = 11 ] || { echo 'a split model is chosen: the two-card placement is not written yet'; exit 2; }
+    [ "$ONE" = 1 ] && TEACH_MORE=(--one-at-a-time); READ_BATCH=$RB
+    [ "$PIECES" = 1 ] || PLUGIN_MORE+=(--accumulate "$PIECES"); [ "$CKPT" = 1 ] && PLUGIN_MORE+=(--checkpointing)
+    stamp "compute: reader ${TEACH_MORE[*]:-as a batch}, reading $READ_BATCH a batch, adapter ${PLUGIN_MORE[*]:-as it is}"
+fi
 teach() {   # OUT PYTHON MODEL CONDITION PACK FOLD: a reader taught on every region of the other folds (the second round's recipe)
     [ -e "$1/complete.json" ] || job "$1" -- "$2" -m revrender.train_reader --pack "$5" --condition "$4" --fold "$6" --all-rest --model "$3" --steps "$STEPS" \
-        --batch-size 2 --accumulate 8 --warmup 10 --eval-every 10 --checkpointing --workers 2 --answer latex --output-dir "$1"
+        --batch-size 2 --accumulate 8 --warmup 10 --eval-every 10 --checkpointing --workers 2 --answer latex "${TEACH_MORE[@]}" --output-dir "$1"
 }
 plugin() {   # OUT PYTHON MODEL FOLD [MORE...]: a tower adapter, V-修's recipe
     local out="$1" py="$2" model="$3" fold="$4"; shift 4
     [ -e "$out/complete.json" ] || job "$out" -- "$py" -m revrender.train_clean_view train --model "$model" --pack "$V" --scan-pack "$RAWV" --fold "$fold" \
-        --synthetic "$SYN" --steps "$P_STEPS" --eval-every "$P_EVAL" "$@" --output-dir "$out"
+        --synthetic "$SYN" --steps "$P_STEPS" --eval-every "$P_EVAL" "${PLUGIN_MORE[@]}" "$@" --output-dir "$out"
 }
 read_with() {   # OUT PYTHON MODEL CONDITION PACK ADAPTER FOLD [MORE...]: the fold read, loops stopped
     local out="$1" py="$2" model="$3" cond="$4" pack="$5" adapter="$6" fold="$7"; shift 7
     [ -e "$out/complete.json" ] || job "$out" -- "$py" -m revrender.recognize_lines --pack "$pack" --model "$model" --backend hf --adapter "$adapter" \
-        --batch-size 8 --conditions "$cond" --fold "$fold" --loop-limit 4 "${LIMIT[@]}" "$@" --output-dir "$out"
+        --batch-size "$READ_BATCH" --conditions "$cond" --fold "$fold" --loop-limit 4 "${LIMIT[@]}" "$@" --output-dir "$out"
 }
 distance() {   # OUT PYTHON MODEL STUDENT FOLD
     [ -e "$1/distances.jsonl" ] || job "$1" -- "$2" -m revrender.train_clean_view distance --model "$3" --student "$4" --pack "$V" --raw-pack "$RAWV" \
@@ -74,33 +87,38 @@ step0() {   # LOG REFERENCE TOLERANCE OUT: an adapter's step-0 validation loss a
     "$HME" -c 'import json,sys; a=json.loads(open(sys.argv[1]).readline())["val_loss"]; b=json.loads(open(sys.argv[2]).readline())["val_loss"]; t=float(sys.argv[3]); r={"mine":a,"sixth_round":b,"difference":a-b,"tolerance":t,"passed":abs(a-b)<=t}; json.dump(r,open(sys.argv[4],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["passed"] else "step-0 loss off")' "$@"
 }
 
-# InternVL, how each part is computed (revision four): the worst batch of each part, one job at a time on card 1 (cards 1 and 2 for a
-# split model): per tile count 12 -> 6 -> 4, the adapter with checkpointing in one piece then two, the reader one region a micro-step
-# (16 an update) on one card then two, reading 8 -> 4 -> 2 -> 1 regions a batch on one card then two; the first tile count all three fit
-# at whose estimated whole run (10 readers, 5 adapters, 15 readings, from the measured step times) is at most eight hours.
+# How each part is computed (revisions four and five; tools.compute_probe): the worst batch of each part, one job at a time on card 1
+# (cards 1 and 2 for a split model).  InternVL: per tile count 12 -> 6 -> 4, the adapter with checkpointing in one piece then two, the
+# reader one sample at a time (the same loss as two a batch) on one card then two, reading 8 -> 4 -> 2 -> 1 regions a batch on one card
+# then two.  Qwen3.5 (no tiles; its adapter as it is): the reader one sample at a time, reading 8 -> 1, on one card.  The first setting
+# all three fit at whose estimated whole run (10 readers, 5 adapters, 15 readings, from the measured step times) is at most eight hours.
 if [ "$PART" = probe ]; then
-    "$HME" - "$R" "$ROOT" "$M" "$V" "$RAWV" "${ALL_CARDS[1]}" "${ALL_CARDS[2]}" <<'PY'
+    "$X" - "$R" "$ROOT" "$M" "$V" "$RAWV" "${ALL_CARDS[1]}" "${ALL_CARDS[2]}" "$SLUG" <<'PY'
 import json, os, subprocess, sys
 from pathlib import Path
-R, root, model, clean, scan, c1, c2 = Path(sys.argv[1]), *sys.argv[2:]
-log = []
+R, root, model, clean, scan, c1, c2, slug = Path(sys.argv[1]), *sys.argv[2:]
+log, intern = [], slug == 'internvl'
 def probe(name, tiles, part, split=False, **opt):
     out = R/name
     if not (out/'result.json').exists():
         flags = [f'--{k.replace("_", "-")}' if v is True else f'--{k.replace("_", "-")}={v}' for k, v in opt.items() if v is not False]
-        env = {**os.environ, 'INTERNVL_MAX_TILES': str(tiles), 'INTERNVL_SPLIT': '1' if split else '0'}
-        subprocess.run(['bash', f'{root}/scripts/launch_gpu_job.sh', f'{c1},{c2}' if split else c1, '0', str(out), '--', sys.executable, '-m', 'revrender.models.internvl',
-                        'memory', '--model', model, '--clean-pack', clean, '--scan-pack', scan, '--part', part, '--output-dir', str(out), *flags],
+        env = {**os.environ, 'INTERNVL_MAX_TILES': str(tiles or 12), 'INTERNVL_SPLIT': '1' if split else '0'}
+        subprocess.run(['bash', f'{root}/scripts/launch_gpu_job.sh', f'{c1},{c2}' if split else c1, '0', str(out), '--', sys.executable, '-m', 'revrender.tools.compute_probe',
+                        '--model', model, '--clean-pack', clean, '--scan-pack', scan, '--part', part, '--output-dir', str(out), *flags],
                        env=env, stdout=open(f'{out}.log', 'w'), stderr=subprocess.STDOUT, check=True)
     r = json.loads((out/'result.json').read_text()); log.append({'name': name, **r}); print(json.dumps({'name': name, 'fitted': r['fitted'], 'peak': r['peak_allocated_gib']}), flush=True)
     return r
+first = lambda tries: next((r for r in tries if r['fitted']), None)
 chosen = None
-for t in (12, 6, 4):
-    plugin = next((r for pieces in (1, 2) if (r := probe(f't{t}_plugin_ckpt_p{pieces}', t, 'plugin', checkpointing=True, plugin_pieces=pieces))['fitted']), None)
+for t in ((12, 6, 4) if intern else (None,)):
+    tag = f't{t}_' if t else ''
+    plugins = ((probe(f'{tag}plugin_ckpt_p{n}', t, 'plugin', checkpointing=True, plugin_pieces=n) for n in (1, 2)) if intern else (probe('plugin_as_is', t, 'plugin') for _ in (0,)))
+    plugin = first(plugins)
     if plugin is None: continue
-    reader = next((r for split in (False, True) if (r := probe(f't{t}_reader_b1_{"split" if split else "one"}', t, 'reader', split, reader_batch=1))['fitted']), None)
+    splits = (False, True) if intern else (False,)
+    reader = first(probe(f'{tag}reader_one_at_a_time_{"split" if sp else "one"}', t, 'reader', sp, one_at_a_time=True) for sp in splits)
     if reader is None: continue
-    read = next((r for split in (False, True) for b in (8, 4, 2, 1) if (r := probe(f't{t}_read_b{b}_{"split" if split else "one"}', t, 'read', split, read_batch=b))['fitted']), None)
+    read = first(probe(f'{tag}read_b{b}_{"split" if sp else "one"}', t, 'read', sp, read_batch=b) for sp in splits for b in (8, 4, 2, 1))
     if read is None: continue
     load = lambda r: r.get('load_seconds', 120)
     hours = {'readers': 10*(100*reader['update_seconds']+load(reader))/3600,
@@ -109,14 +127,14 @@ for t in (12, 6, 4):
     wall = hours['adapters']/2+(hours['readers'] if reader['cards'] == 2 else hours['readers']/2)+(hours['readings'] if read['cards'] == 2 else hours['readings']/2)
     estimate = {'tiles': t, 'hours_by_part_one_job_at_a_time': {k: round(v, 2) for k, v in hours.items()}, 'wall_hours_on_two_cards': round(wall, 2), 'within_eight_hours': wall <= 8,
                 'plugin': {k: plugin[k] for k in ('plugin_pieces', 'checkpointing', 'cards', 'peak_allocated_gib', 'step_seconds')},
-                'reader': {k: reader[k] for k in ('reader_batch', 'cards', 'peak_allocated_gib', 'update_seconds')},
+                'reader': {k: reader[k] for k in ('one_at_a_time', 'cards', 'peak_allocated_gib', 'update_seconds')},
                 'read': {k: read[k] for k in ('read_batch', 'cards', 'peak_allocated_gib', 'seconds_per_region')}}
     log.append({'estimate': estimate}); print(json.dumps(estimate), flush=True)
     if wall <= 8: chosen = estimate; break
 (R/'checks').mkdir(exist_ok=True)
 (R/'checks'/'compute.json').write_text(json.dumps({'chosen': chosen, 'tried': log}, indent=2))
-if chosen: (R/'checks'/'max_tiles').write_text(str(chosen['tiles']))
-sys.exit(0 if chosen else 'no combination fits within the rule: stop and ask')
+if chosen and chosen['tiles']: (R/'checks'/'max_tiles').write_text(str(chosen['tiles']))
+sys.exit(0 if chosen else 'no setting fits within the rule: stop and ask')
 PY
     touch "$R/COMPLETE"; stamp "probe complete"; exit 0
 fi
@@ -136,25 +154,9 @@ if [ "$PART" = check1 ]; then
     touch "$R/COMPLETE"; stamp "check1 complete"; exit 0
 fi
 
-# InternVL: the most tiles an image, set by memory alone before anything is read (the planning session's rule): the worst batch of each
-# part (reader training, adapter training, reading) at 12, then 6, then 4 tiles; the largest that fits for all three, one value for
-# all; the main run takes the smoke's.
-probe() {   # OUT TILES PART
-    [ -e "$1/result.json" ] || INTERNVL_MAX_TILES=$2 job "$1" -- "$X" -m revrender.models.internvl memory --model "$M" --clean-pack "$V" --scan-pack "$RAWV" \
-        --part "$3" --output-dir "$1"
-}
+# InternVL: the most tiles an image, as its probe chose it (PART=probe), for every part of the smoke and the main run.
 if [ "${SLUG:-}" = internvl ]; then
-    if [ "$PART" = smoke ] && ! done_ tiles; then
-        for t in 12 6 4; do
-            for part in reader plugin read; do place 23000 1 probe "$R/memory_${t}_$part" "$t" "$part"; done; wait
-            for part in reader plugin read; do test -e "$R/memory_${t}_$part/result.json"; done   # a probe that broke stops the run (only memory lowers the tiles)
-            if "$HME" -c 'import json,sys; sys.exit(0 if all(json.load(open(f"{sys.argv[1]}/memory_{sys.argv[2]}_{p}/result.json"))["fitted"] for p in ("reader","plugin","read")) else 1)' "$R" "$t"; then
-                echo "$t" > "$R/checks/max_tiles"; break; fi
-        done
-        test -s "$R/checks/max_tiles"
-        mark tiles; fi
-    TILES_FROM=$R; [ "$PART" = smoke ] || TILES_FROM=${B}_internvl_smoke
-    export INTERNVL_MAX_TILES=$(cat "$TILES_FROM/checks/max_tiles"); stamp "InternVL at most $INTERNVL_MAX_TILES tiles an image"
+    export INTERNVL_MAX_TILES=$(cat "${B}_internvl_probe/checks/max_tiles"); stamp "InternVL at most $INTERNVL_MAX_TILES tiles an image"
 fi
 
 # The CPU checks: 5 the paired images' token grids alike (every region, the model's processor), 4 the folds and the validation writers.

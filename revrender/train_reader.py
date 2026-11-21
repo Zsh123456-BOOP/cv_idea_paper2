@@ -222,6 +222,28 @@ def answer_loss(model, batch):
     return torch.nn.functional.cross_entropy(logits[:, :-1].float().flatten(0, 1), labels[:, labels.shape[1]-keep+1:].flatten(), ignore_index=-100)
 
 
+def as_list(items):
+    """The samples of a group as they are (``--one-at-a-time`` collates each alone)."""
+    return items
+
+
+def one_at_a_time(model, singles, accumulate, students=None):
+    """A group's loss as ``answer_loss`` of the group in one batch -- the cross-entropy summed over every answer token of the group over
+    the group's answer-token count -- its gradients taken one sample at a time (``--one-at-a-time``): each sample's summed
+    cross-entropy over the whole group's token count, back-propagated (divided by ``accumulate``, as a batch is).  ``singles``: the group's
+    samples each collated alone.  Returns the group's loss."""
+    import torch
+    counts = [int((b['labels'] != -100).sum()) for b in singles]; total = 0.
+    for b, n in zip(singles, counts):
+        if students is not None:
+            students.flags = b.pop('students')
+        b = {k: v.to('cuda') for k, v in b.items() if k != 'students'}
+        b['pixel_values'] = b['pixel_values'].to(torch.bfloat16)
+        share = answer_loss(model, b)*n/sum(counts)
+        (share/accumulate).backward(); total += float(share)
+    return total
+
+
 def evaluate(model, loader, device):
     import torch
     model.eval()
@@ -254,6 +276,7 @@ def main(argv=None):
     p.add_argument('--student-images', type=int, nargs='+', default=[], help='with --view-students: the places (1-based) of the images the adapters see')
     p.add_argument('--student-off', action='store_true', help='with --view-students: those images go the adapters\' way with the adapters disabled')
     p.add_argument('--stop-after', type=int, help='stop after this many steps of the --steps schedule (the trajectory check)')
+    p.add_argument('--one-at-a-time', action='store_true', help='each group of --batch-size samples one sample at a time, the same loss and gradients (for memory)')
     p.add_argument('--counterfactual', type=float, nargs=2, default=(0., 0.), metavar=('STRIKE_OFF', 'WRITING_OFF'),
                    help='with --pack: the probabilities a readable training row is shown with its strike, or its struck writing, taken off')
     p.add_argument('--pages', type=Path, action='append', help='with --corpus: a folder of scans <image_id>.jpg (repeatable)')
@@ -312,9 +335,9 @@ def main(argv=None):
         collate = Collate(processor, prompt('raw_final' if args.words == 'final' else 'raw_neutral', {'boxes': []}))
         train_set, val_set = Samples(train_rows, crops, args.blank), Samples(val_rows, crops, args.blank)
     generator = torch.Generator().manual_seed(SEED)
-    loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=args.workers,
-                                         generator=generator, drop_last=True, persistent_workers=args.workers > 0)
-    val_loader = torch.utils.data.DataLoader(val_set, batch_size=args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
+    loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, collate_fn=as_list if args.one_at_a_time else collate,
+                                         num_workers=args.workers, generator=generator, drop_last=True, persistent_workers=args.workers > 0)
+    val_loader = torch.utils.data.DataLoader(val_set, batch_size=1 if args.one_at_a_time else args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
     require(not (args.init_adapter and args.layer_map), '--init-adapter with --layer-map is not supported')
     from .models import internvl
     model = lora_model(args.model, args.rank, args.alpha, args.dropout, args.layer_map, args.init_adapter)
@@ -340,6 +363,7 @@ def main(argv=None):
                    trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds, lora_targets=LANGUAGE_TARGETS,
                    lora_modules=sorted({n.split('.lora_')[0].rsplit('.', 1)[-1] for n, q in model.named_parameters() if q.requires_grad and '.lora_' in n}),
                    model_processing=processing(args.model),
+                   **({'one_at_a_time': f'the reader taught one sample at a time, mathematically {args.batch_size} a batch x {args.accumulate} accumulated (the group loss over the group token count)'} if args.one_at_a_time else {}),
                    **({'students': {k: str(v) for k, v in adapters.items()}, 'student_off': args.student_off,
                        'students_used': {f'fold{j}': sum(r['fold'] == j for r in train_rows) for j in folds_used},
                        'student_adapter_files': {str(w): digest(w) for v in adapters.values() for w in sorted(v.glob('*.safetensors'))}} if students else {}))
@@ -356,6 +380,9 @@ def main(argv=None):
             group['lr'] = group['base']*schedule(step)
         total, tokens = 0., 0
         for _ in range(args.accumulate):
+            if args.one_at_a_time:                       # the same group as a batch would be, its samples one at a time
+                total += one_at_a_time(model, [collate([item]) for item in next(iterator)], args.accumulate, students)
+                continue
             batch = next(iterator)
             if students is not None:
                 students.flags = batch.pop('students')
