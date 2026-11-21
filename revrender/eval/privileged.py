@@ -223,7 +223,7 @@ def analyse(args):
                                     ensure_ascii=False)+'\n')
     write_manifest(out, config={k: [str(x) for x in v] if isinstance(v, list) else str(v) for k, v in vars(args).items() if k != 'command'},
                    inputs={str(p): digest(p) for p in [args.pack/'pack.json', *(Path(s.partition('=')[2]) for s in args.scores)]})
-    print(json.dumps({k: v.get('verdict', v.get('next_version')) for k, v in rules.items() if k != 'reported'}, ensure_ascii=False), flush=True)
+    print(json.dumps({k: v.get('verdict', v.get('next_version')) for k, v in rules.items() if k not in ('reported', 'learning_curve')}, ensure_ascii=False), flush=True)
 
 
 def main(argv=None):
