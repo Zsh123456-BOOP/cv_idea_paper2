@@ -29,6 +29,7 @@ case "$PART" in
                 M=$MODELS/$MODEL; R=${B}_$SLUG; [ "$PART" = main ] || R=${R}_smoke ;;
     *) echo "PART is check1, smoke or main"; exit 2 ;; esac
 case "$PART" in main) STEPS=100; P_STEPS=2000; P_EVAL=50; LIMIT=(); READ=(0 1 2 3 4) ;; *) STEPS=10; P_STEPS=10; P_EVAL=10; LIMIT=(--limit 8); READ=(0) ;; esac
+[ "$PART" != check1 ] || LIMIT=()      # check1 reads the whole of fold 0, as the readings it is held against
 mkdir -p "$R/checks"
 exec 8>"$R/lock"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
 stamp() { echo "$* $(date -u +%FT%TZ)"; }
@@ -65,10 +66,11 @@ mine, theirs = read(sys.argv[1]), read(sys.argv[2]); ids = sorted(mine)
 differ = [{'id': k, 'mine': mine[k]['text'], 'theirs': theirs[k]['text']} for k in ids if mine[k]['text'] != theirs[k]['text']]
 r = {'regions': len(ids), 'differ': len(differ), 'share': len(differ)/len(ids), 'limit': float(sys.argv[4]), 'passed': len(differ)/len(ids) <= float(sys.argv[4]), 'readings': differ}
 Path(sys.argv[3]).write_text(json.dumps(r, ensure_ascii=False, indent=2)); print(json.dumps({k: r[k] for k in ('regions', 'differ', 'share', 'passed')}))
+sys.exit(0 if r['passed'] else f'{sys.argv[3]}: more readings differ than allowed')
 PY
 }
 step0() {   # LOG REFERENCE TOLERANCE OUT: an adapter's step-0 validation loss against the sixth round's V-修 fold 0
-    "$HME" -c 'import json,sys; a=json.loads(open(sys.argv[1]).readline())["val_loss"]; b=json.loads(open(sys.argv[2]).readline())["val_loss"]; t=float(sys.argv[3]); r={"mine":a,"sixth_round":b,"difference":a-b,"tolerance":t,"passed":abs(a-b)<=t}; json.dump(r,open(sys.argv[4],"w"),indent=2); print(json.dumps(r))' "$@"
+    "$HME" -c 'import json,sys; a=json.loads(open(sys.argv[1]).readline())["val_loss"]; b=json.loads(open(sys.argv[2]).readline())["val_loss"]; t=float(sys.argv[3]); r={"mine":a,"sixth_round":b,"difference":a-b,"tolerance":t,"passed":abs(a-b)<=t}; json.dump(r,open(sys.argv[4],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["passed"] else "step-0 loss off")' "$@"
 }
 
 if [ "$PART" = check1 ]; then
