@@ -98,7 +98,7 @@ if [ "${RUN:-}" = maa ]; then
         mark data; fi
     if ! done_ plugins; then
         if [ "$PART" = smoke ]; then   # V-修's recipe on the new code: fold 0's step-0 validation loss as the run's, its first four losses beside
-            place 12000 0 plugin "$R/check_replay" 0 --stop-after 4; wait
+            place 12000 0 plugin "$R/check_replay" 0 --steps 2000 --stop-after 4; wait     # the run's schedule
             "$PY" -c 'import json,sys; read=lambda p:[json.loads(l) for l in open(p)][:5]; a,b=read(sys.argv[1]),read(sys.argv[2]); r={"step0":[a[0]["val_loss"],b[0]["val_loss"]],"losses_new":[x["loss"] for x in a[1:]],"losses_run":[x["loss"] for x in b[1:]],"step0_same":a[0]["val_loss"]==b[0]["val_loss"]}; json.dump(r,open(sys.argv[3],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["step0_same"] else "the step-0 validation loss moved")' \
                 "$R/check_replay/train_log.jsonl" "${B}_view_fix_f0/train_log.jsonl" "$R/checks/check_replay.json"
         fi
