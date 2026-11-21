@@ -99,7 +99,7 @@ import hashlib, json, sys
 from pathlib import Path
 R = Path(sys.argv[1]); pack = json.loads((R/'check_pack'/'pack.json').read_text())['rows']; sha = {r['id']: hashlib.sha256((R/'check_pack'/r['images']['raw']).read_bytes()).hexdigest() for r in pack}
 out = {}
-for d in sorted(R.glob('check_read_*')):
+for d in sorted(x for x in R.glob('check_read_*') if x.is_dir()):
     rows = [json.loads(l) for l in (d/'predictions.jsonl').read_text().splitlines()]
     out[d.name] = {'readings': {r['id']: {'raw': r['raw'], 'text': r['text'], 'finish': r['finish_reason']} for r in rows},
                    'images_unchanged': all(r['image_sha256'] == sha[r['id']] for r in rows), 'all_read': len(rows) == len(pack)}
@@ -116,7 +116,7 @@ if ! done_ reads; then
     done
     place 22000 1 qwen "$R/read_q_neutral" "$V" raw_neutral; place 22000 1 qwen "$R/read_q_neutral_erased" "$V" erased_neutral
     place 22000 1 qwen "$R/read_q_revision" "$V" raw_revision; place 22000 1 qwen "$R/read_q_context" "$RAWV" raw_context_revision; wait
-    for d in "$R"/read_*; do test -e "$d/predictions.jsonl"; done
+    for d in "$R"/read_*/; do test -e "$d/predictions.jsonl"; done
     # checks 2 and 3: the images given are the pack's files; every reading there, why each stopped
     "$HME" - "$R" "$V" <<'PY'
 import collections, hashlib, json, sys
@@ -124,7 +124,7 @@ from pathlib import Path
 R, V = Path(sys.argv[1]), Path(sys.argv[2]); rows = json.loads((V/'pack.json').read_text())['rows']
 sha = {(r['id'], k): hashlib.sha256((V/r['images'][k]).read_bytes()).hexdigest() for r in rows for k in ('raw', 'erased')}
 out = {}
-for d in sorted(R.glob('read_*')):
+for d in sorted(x for x in R.glob('read_*') if x.is_dir()):
     got = [json.loads(l) for l in (d/'predictions.jsonl').read_text().splitlines()]
     entry = {'readings': len(got), 'finish': dict(collections.Counter(g.get('finish_reason') for g in got))}
     if 'image_sha256' in got[0]:
