@@ -170,7 +170,7 @@ def distances(spec, rng):
     for view in ('window', 'line'):
         out[view] = {}
         for level in LEVELS:
-            got = {r['id']: r[view][level] for r in rows if r[view][level] is not None}
+            got = {r['id']: r[view][level] for r in rows if r[view].get(level) is not None}      # Qwen3.5, InternVL: the merged level alone
             if not got: out[view][level] = None; continue
             part = lambda f: {k: f(v) for k, v in got.items()}
             out[view][level] = {**{name: mean_interval(part(lambda v, n=name: v[n]), writers, rng) for name in ('raw', 'nafnet', 'student')},
