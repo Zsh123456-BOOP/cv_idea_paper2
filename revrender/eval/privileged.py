@@ -14,10 +14,12 @@ region against another count (the planning session's ``strike_share``): the larg
 The sixth round's update: rule G (in ``analyse``) V-判别 against V-修 written as rule A (``rule_a``: the heavier half the main
 measure, the whole and the lighter half its floor; the four grades of the whole beside).  ``hint``: rule H from the board distances
 (``train_clean_view boards-distance``) of the control adapters C (blank boards) and the hinted ones T (the answer; also the wrong
-answer and a blank board): on the readable heavier-half regions whose answer board is not blank, the mean of T's merged-level cosine
-with the answer minus C's with a blank board and its writer-resampled 95 % interval (``mean_interval``); at least +0.03 and the
-lower end above 0: the premise holds.  Reported: the other levels, the lighter half and the whole, T with the wrong answer (where one
-is made) and with a blank board against C.
+answer and a blank board), as revised (the update's section eight: a board alone moves the frozen tower's cosine): each region's
+gain of T on the answer board over the frozen tower on that board, minus C's on a blank board over the frozen tower on it; on the
+readable heavier-half regions whose answer board is not blank, its mean and writer-resampled 95 % interval (``mean_interval``); at
+least +0.03 and the lower end above 0: the premise holds.  Reported: the first measure (T - C, the board's own difference in it),
+the other levels, the lighter half and the whole, T with the wrong answer (where one is made) and with a blank board, each less the
+frozen tower on its board, and the touched tokens under each board.
 
     python -m revrender.eval.privileged analyse --pack VIEWS --arm NAME=DIR[,DIR...] [...] --scores REF=FILE [...]
         [--distances NAME=DIR[,DIR...] ...] [--teacher FILE ...] --output-dir OUT
@@ -115,25 +117,32 @@ def shares(args):
 
 
 def hint(args):
-    """Rule H of the sixth round's update (see the module's words)."""
+    """Rule H of the sixth round's update as revised (its section eight; see the module's words)."""
     load = lambda spec: {r['id']: r for folder in spec.split(',') for r in map(json.loads, (Path(folder)/'distances.jsonl').read_text().splitlines())}
     control, hinted = load(args.control), load(args.hinted); half = {k: v.get('half') for k, v in json.loads(args.shares.read_text())['regions'].items()}
     writers = {k: r['writer'] for k, r in hinted.items()}; rng = np.random.default_rng(SEED); result = {}
-    def compare(kind, part, level='merged', need=lambda r: not r['answer']['board_blank']):
+    gain = lambda entry, level: entry[level]['student']-entry[level]['raw']
+    def compare(kind, part, level='merged', need=lambda r: not r['answer']['board_blank'], net=True):
         values = {}
         for k, t in hinted.items():
             c = control.get(k)
             if not (c and t['readable'] and need(t) and (part == 'whole' or half.get(k) == part) and t[kind][level] and c['blank'][level]): continue
-            values[k] = t[kind][level]['student']-c['blank'][level]['student']
+            values[k] = (gain(t[kind], level)-gain(c['blank'], level)) if net else (t[kind][level]['student']-c['blank'][level]['student'])
         return mean_interval(values, writers, rng) if values else None
     main_ = compare('answer', 'heavy')
-    result['ruleH'] = {**main_, 'verdict': 'premise_holds' if main_['mean'] >= .03 and main_['interval'][0] > 0 else 'premise_does_not_hold'}
+    result['ruleH'] = {**main_, 'measure': "(T on the answer board - the frozen tower on it) - (C on a blank board - the frozen tower on it), merged level",
+                       'verdict': 'premise_holds' if main_['mean'] >= .03 and main_['interval'][0] > 0 else 'premise_does_not_hold'}
+    result['first_measure_with_the_board'] = {'note': 'T - C without the frozen tower taken off: holds the board\'s own difference; not judged',
+                                             **compare('answer', 'heavy', net=False)}
     result['reported'] = {f'{kind}_{part}_{level}': compare(kind, part, level, need) for kind, need in (('answer', lambda r: not r['answer']['board_blank']),
                           ('wrong', lambda r: not r['wrong']['board_blank']), ('blank', lambda r: not r['answer']['board_blank']))
                           for part in ('heavy', 'light', 'whole') for level in LEVELS}
-    means = lambda d, kind, ks: float(np.mean([d[k][kind]['merged']['student'] for k in ks])) if ks else None
-    heavy_ids = [k for k, t in hinted.items() if t['readable'] and half.get(k) == 'heavy' and not t['answer']['board_blank'] and k in control and t['answer']['merged'] and control[k]['blank']['merged']]
-    result['means_heavy_merged'] = {'C_blank': means(control, 'blank', heavy_ids), 'T_answer': means(hinted, 'answer', heavy_ids), 'raw_answer_board': float(np.mean([hinted[k]['answer']['merged']['raw'] for k in heavy_ids]))}
+    ids = [k for k, t in hinted.items() if t['readable'] and half.get(k) == 'heavy' and not t['answer']['board_blank'] and k in control and t['answer']['merged'] and control[k]['blank']['merged']]
+    mean = lambda f: float(np.mean([f(k) for k in ids])) if ids else None
+    result['means_heavy_merged'] = {'regions': len(ids), 'T_answer': mean(lambda k: hinted[k]['answer']['merged']['student']), 'frozen_answer': mean(lambda k: hinted[k]['answer']['merged']['raw']),
+                                    'C_blank': mean(lambda k: control[k]['blank']['merged']['student']), 'frozen_blank': mean(lambda k: control[k]['blank']['merged']['raw']),
+                                    'touched_answer': mean(lambda k: hinted[k]['answer']['touched']), 'touched_blank': mean(lambda k: control[k]['blank']['touched']),
+                                    'per_token_values_stored': False}
     out = make_output_dir(args.output_dir); write_json(out/'hint.json', result)
     write_manifest(out, config={k: str(v) for k, v in vars(args).items() if k != 'command'}, inputs={str(args.shares): digest(args.shares)})
     print(json.dumps({'ruleH': result['ruleH']}), flush=True)
