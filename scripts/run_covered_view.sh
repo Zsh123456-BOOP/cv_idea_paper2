@@ -121,9 +121,9 @@ PY
     if ! done_ measures; then
         for k in "${READ[@]}"; do
             place 6000 0 distance "$R/distance_disc_f$k" "$(mine disc "$k")/student" "$k"
-            place 6000 0 job "$R/boards_c_f$k" -- "$PY" -m revrender.train_clean_view boards-distance --model "$MODEL" --student "$(mine hint_c "$k")/student" --boards "$BOARDS" \
+            [ -e "$R/boards_c_f$k/distances.jsonl" ] || place 6000 0 job "$R/boards_c_f$k" -- "$PY" -m revrender.train_clean_view boards-distance --model "$MODEL" --student "$(mine hint_c "$k")/student" --boards "$BOARDS" \
                 --kinds blank --fold "$k" --output-dir "$R/boards_c_f$k"
-            place 6000 0 job "$R/boards_t_f$k" -- "$PY" -m revrender.train_clean_view boards-distance --model "$MODEL" --student "$(mine hint_t "$k")/student" --boards "$BOARDS" \
+            [ -e "$R/boards_t_f$k/distances.jsonl" ] || place 6000 0 job "$R/boards_t_f$k" -- "$PY" -m revrender.train_clean_view boards-distance --model "$MODEL" --student "$(mine hint_t "$k")/student" --boards "$BOARDS" \
                 --kinds answer wrong blank --fold "$k" --output-dir "$R/boards_t_f$k"
         done
         [ -e "$R/spread.json" ] || place 12000 1 job "$R/spread.json" -- "$PY" -m revrender.train_clean_view spread --model "$MODEL" --pack "$V" \
