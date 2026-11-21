@@ -43,17 +43,7 @@ mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 test -e "$P2/COMPLETE" && test -e "$P4/COMPLETE" && test -e "${B}_inputs/region_stats.json" || { echo 'the second or fourth round, or the planning session'"'"'s strike shares, missing'; exit 2; }
 CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
-place() {   # MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background on card 1 or 2, whichever opens first (twice, ten seconds apart)
-    local mib="$1" whole="$2" c; shift 2
-    while true; do
-        for c in "${CARDS[@]}"; do
-            if one_card_open "$c" "$mib" "$whole" && sleep 10 && one_card_open "$c" "$mib" "$whole"; then
-                ( CARD=$c; NUMA=$(numa_of "$c"); "$@" ) & PLACED_PIDS+=($!); PLACED_CARDS+=("$c"); stamp "placed $1 $2 on ${c:4:8}"; sleep 30; return 0
-            fi
-        done
-        sleep 30
-    done
-}
+place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on card 1 or 2, whichever opens first (_common.sh)
 job() {   # OUT -- COMMAND...: one GPU job on $CARD
     local out="$1"; shift 2
     bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1

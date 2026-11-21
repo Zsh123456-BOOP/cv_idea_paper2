@@ -54,6 +54,18 @@ one_card_place() {   # CARD MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the 
     "$@" & PLACED_PIDS+=($!); PLACED_CARDS+=("$card"); sleep 30
 }
 
+place_on_cards() {   # MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background on the first of $CARDS that is open twice, ten seconds
+    local mib="$1" whole="$2" c; shift 2    # apart (CARD and NUMA set for it); the caller's stamp() logs where
+    while true; do
+        for c in "${CARDS[@]}"; do
+            if one_card_open "$c" "$mib" "$whole" && sleep 10 && one_card_open "$c" "$mib" "$whole"; then
+                ( CARD=$c; NUMA=$(numa_of "$c"); "$@" ) & PLACED_PIDS+=($!); PLACED_CARDS+=("$c"); stamp "placed $1 $2 on ${c:4:8}"; sleep 30; return 0
+            fi
+        done
+        sleep 30
+    done
+}
+
 refuse_card3() {   # $1 = GPU uuid
     case "$1" in *314fdf43*) [ "${ALLOW_GPU3:-0}" = 1 ] || { echo 'GPU 3 is not ours (ALLOW_GPU3=1 only on the user'"'"'s word)'; exit 2; } ;; esac
 }

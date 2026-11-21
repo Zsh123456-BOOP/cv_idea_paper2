@@ -62,3 +62,17 @@ def test_token_discriminator_is_mapped_per_token():
     from revrender.train_clean_view import TokenDiscriminator
     judge = TokenDiscriminator(16, hidden=8, blocks=2)
     assert judge(torch.zeros(5, 16)).shape == (5, 1) and next(judge.parameters()).dtype == torch.float32
+
+
+def test_unlimited_ocr_shell_comes_off():
+    from revrender.recognize_ocr import bare
+    raw = '<PAGE><BLOCK>equation[33, 176, 959, 660]<FORK>$$\nx ^ {2} = 1\n$$<BLOCK>text[20, 156, 970, 760]<FORK>解得 $x = 1$'
+    assert bare('unlimited_ocr', raw) == '$$\nx ^ {2} = 1\n$$\n解得 $x = 1$'
+    assert bare('glm_ocr', '  -2 ') == '-2'
+
+
+def test_grade3():
+    from revrender.eval.ocr_compare import grade3
+    assert grade3({'exact': {'interval': [.01, .1]}}) == 'former_more_accurate'
+    assert grade3({'exact': {'interval': [-.1, -.01]}}) == 'latter_more_accurate'
+    assert grade3({'exact': {'interval': [-.1, .1]}}) == 'cannot_tell'
