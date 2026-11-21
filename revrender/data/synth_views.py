@@ -58,7 +58,7 @@ PREFIX = 'synthetic'
 HEAVY = .40            # a material region's strike holds at least this share of its ink (or it keeps its writing)
 SHORT, LEAST = 300, 40  # a host stretch's ink pixels
 COVER = .5             # a covered region has at least this share of its writing within two pixels of the strike
-SCALE, SHIFT = .15, .1
+SCALE, SHIFT = .15, .05
 TRIES = 80
 HOSTS = 1500
 
