@@ -11,7 +11,7 @@
 # (same-tower), 2 V-修's step-0 validation loss of fold 0 against the fourth round's 0.5101, 3 the covered regions' acceptance (in
 # the builder), 4 the learning-curve subsets (subsets), 5 the reading path with the adapter off against H, 6 the head's inputs (its
 # run manifest).  The strike shares are checked region by region against the planning session's count ($B_inputs/region_stats.json).
-# Cards: 1, and 2 while no one else is on it (the user's word, 2026-11-21: 「可以在多用1张空卡跑」); cards 0 and 3 are not touched,
+# Cards 1 and 2 (the user's word, 2026-11-21: 「那就用两张卡，1，2」); cards 0 and 3 are not touched,
 # ALLOW_GPU3 is not set.  Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
@@ -32,12 +32,11 @@ mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 test -e "$P2/COMPLETE" && test -e "$P4/COMPLETE" && test -e "${B}_inputs/region_stats.json" || { echo 'the second or fourth round, or the planning session'"'"'s strike shares, missing'; exit 2; }
 CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
-free_of_others() { [ "$1" = "${ALL_CARDS[1]}" ] || ! card_users "$1" | grep -qvx "$ME"; }   # card 2 only while no one else is on it
 place() {   # MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background on card 1 or 2, whichever opens first (twice, ten seconds apart)
     local mib="$1" whole="$2" c; shift 2
     while true; do
         for c in "${CARDS[@]}"; do
-            if free_of_others "$c" && one_card_open "$c" "$mib" "$whole" && sleep 10 && free_of_others "$c" && one_card_open "$c" "$mib" "$whole"; then
+            if one_card_open "$c" "$mib" "$whole" && sleep 10 && one_card_open "$c" "$mib" "$whole"; then
                 ( CARD=$c; NUMA=$(numa_of "$c"); "$@" ) & PLACED_PIDS+=($!); PLACED_CARDS+=("$c"); stamp "placed $1 $2 on ${c:4:8}"; sleep 30; return 0
             fi
         done
