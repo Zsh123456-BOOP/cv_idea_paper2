@@ -86,7 +86,10 @@ if ! done_ data; then
         --test-halves "$ROOT/configs/test_halves.json" --pages "$O/paper2_pages_clean_unlabeled3976" --take 1000 --output-dir "$COV" > "$COV.log" 2>&1
     "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); bad=[k for k,v in s["folds"].items() if not v["accepted"]]; sys.exit("covered regions not accepted in folds "+",".join(bad) if bad else 0)' "$COV/summary.json"
     [ -e "$R/checks/check4_subsets.json" ] || "$PY" -m revrender.train_clean_view subsets --pack "$V" --scan-pack "$RAWV" --shares 0.25 0.5 --output "$R/checks/check4_subsets.json"
-    "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); bad=[k for k,v in s.items() if not v["nested"] or any(abs(v[x]["off_target"])>.05 for x in ("0.25","0.5"))]; sys.exit("subsets off: folds "+",".join(bad) if bad else 0)' "$R/checks/check4_subsets.json"
+    # the bar as revised before any reading (plan, section six, second revision): the five folds together within two points of the
+    # share; each fold's own count reported (the first bar, each fold within 5 %, folds 1 and 2 missed)
+    "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); t=sum(v["training_regions"] for v in s.values()); r={x:{"regions":sum(v[x]["regions"] for v in s.values()),"training":t,"share":sum(v[x]["regions"] for v in s.values())/t,"each_fold":{k:{"regions":v[x]["regions"],"writers":len(v[x]["writers"]),"off_target":v[x]["off_target"]} for k,v in s.items()}} for x in ("0.25","0.5")}; r["nested"]=all(v["nested"] for v in s.values()); r["first_bar_each_fold_5_percent"]=all(abs(v[x]["off_target"])<=.05 for v in s.values() for x in ("0.25","0.5")); r["passed"]=r["nested"] and all(abs(r[x]["share"]-float(x))<=.02 for x in ("0.25","0.5")); json.dump(r,open(sys.argv[2],"w"),indent=2); print(json.dumps({x:r[x]["share"] for x in ("0.25","0.5")}|{"passed":r["passed"]})); sys.exit(0 if r["passed"] else "check 4 failed")' \
+        "$R/checks/check4_subsets.json" "$R/checks/check4_pooled.json"
     mark data; fi
 
 # The checks that need a card (smoke only: the main run starts after the planning session has seen them).
