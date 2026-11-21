@@ -24,7 +24,8 @@ OUT/fold_K.json the fold's kept regions in order with their sources and writers;
 ``covered`` (plan of 2026-11-21, 第六轮, section 4.2): regions whose writing is covered by its strike, fold by fold.  The material:
 the whole strike layer (the annotator's erased ink) of the pack's readable regions that keep their writing (mode ``keep``) or whose
 strike holds at least ``HEAVY`` of their ink (``window_stats``), as an opacity in its own ink (``strike_bank.opacity``).  The host: a
-short stretch of clean writing (``SHORT`` ink pixels at most, ``LEAST`` at least) cut from the host boxes of ``data.synthesis paste``
+short stretch of clean writing (``SHORT`` ink pixels at most, ``LEAST`` at least; of a box's stretches the one nearest in shape to
+the writing the material struck, ``matching_stretch``) cut from the host boxes of ``data.synthesis paste``
 (``--synth``, its regions' ``host_page`` and ``box_on_page``; ``HOSTS`` of them in sha256 order, no test-page writer), the page as
 ``clean_pages.review_clean`` leaves it.  The layer is scaled by the ratio of the host's writing height to the height of the writing
 it struck (times 1 +- ``SCALE``), its writing's centre put on the host's (moved by up to ``SHIFT`` heights), the opacity brought
@@ -58,7 +59,7 @@ HEAVY = .40            # a material region's strike holds at least this share of
 SHORT, LEAST = 300, 40  # a host stretch's ink pixels
 COVER = .5             # a covered region has at least this share of its writing within two pixels of the strike
 SCALE, SHIFT = .15, .1
-TRIES = 24
+TRIES = 80
 HOSTS = 1500
 
 
@@ -216,6 +217,16 @@ def host_stretches(clean):
     return out
 
 
+def matching_stretch(crop, stretches, writing):
+    """Of a host box's stretches, the one whose writing is nearest in shape (width over height) to the writing the material struck:
+    scaled to the host's height, the strike then lies over the host's writing as it lay over its own."""
+    wt, wl, wb, wr = writing; want = (wr-wl)/max(1, wb-wt)
+    def shape(stretch):
+        ys, xs = np.nonzero(crop[:, stretch[0]:stretch[1]] < 200)
+        return abs(np.log(max(1, xs.max()-xs.min()+1)/max(1, ys.max()-ys.min()+1)/want))
+    return min(stretches, key=shape)
+
+
 def covered_try(material, page, box, stretch, rng):
     """One try: (box on page, opacity in the box, ink level) or None.  ``material``: (opacity, writing box (t, l, b, r))."""
     from scipy import ndimage
@@ -282,7 +293,7 @@ def covered(args):
             m, h = plan[i]; rng = rng_of(i)                                   # a fresh stream of the try's own (the host was drawn apart)
             L, T, R, B = h['box_on_page']; stretches = host_stretches(grey[T:B, L:R])
             if not stretches: why['no_short_stretch'] += 1; continue
-            got = covered_try((materials[m]['opacity'], materials[m]['writing']), grey, (L, T, R, B), stretches[rng.randrange(len(stretches))], rng)
+            got = covered_try((materials[m]['opacity'], materials[m]['writing']), grey, (L, T, R, B), matching_stretch(grey[T:B, L:R], stretches, materials[m]['writing']), rng)
             if got is None: why['off_the_page_or_small'] += 1; continue
             box, alpha, level = got; l, t, r, b = box; clean = grey[t:b, l:r]
             image, target = draw_pair(clean, alpha, level)
@@ -310,7 +321,7 @@ def covered(args):
         grey = np.asarray(clean_page)
         for i in (i for i in union if made[i]['host']['host_page'] == page_id):
             v = made[i]; m, _ = plan[i]; rng = rng_of(i); L, T, R, B = v['host']['box_on_page']
-            stretches = host_stretches(grey[T:B, L:R]); stretch = stretches[rng.randrange(len(stretches))]
+            stretch = matching_stretch(grey[T:B, L:R], host_stretches(grey[T:B, L:R]), materials[m]['writing'])
             box, alpha, level = covered_try((materials[m]['opacity'], materials[m]['writing']), grey, (L, T, R, B), stretch, rng)
             require(box == v['box'], f'{i}: the try does not come out the same')
             l, t, r, b = box; image, target = draw_pair(grey[t:b, l:r], alpha, level); wl, wt, wr, wb = v['at']
