@@ -75,6 +75,7 @@ from pathlib import Path
 from PIL import Image
 
 from .data.line_pack import band_mask, ink_mask
+from .models.internvl import processing
 from .util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 SYSTEM = 'You are an OCR transcription assistant.'
@@ -256,7 +257,7 @@ def main(argv=None):
                                                            **({str(w): digest(w) for w in sorted(args.adapter.glob('*.safetensors'))} if args.adapter else {}),
                                                            **({str(args.layer_map): digest(args.layer_map)} if args.layer_map else {}),
                                                            **({str(w): digest(w) for w in sorted(args.view_student.glob('*.safetensors'))} if args.view_student else {})},
-                   backend=args.backend, rows=len(jobs), lines=len(rows),
+                   backend=args.backend, rows=len(jobs), lines=len(rows), model_processing=processing(args.model),
                    conditions={c: {'image': image_keys(c), 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0]), 'rows': sum(j[0] == c for j in jobs)} for c in args.conditions},
                    system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'loop_limit': args.loop_limit, 'dtype': 'bfloat16'})
     name = args.model.name+(f'+{args.adapter.parent.name}' if args.adapter else '')+(f'+{args.view_student.parent.name}' if args.view_student else '')      # the reading of a model with an adapter is another model's

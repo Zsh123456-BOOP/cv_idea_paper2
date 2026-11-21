@@ -109,6 +109,35 @@ PY
     touch "$R/COMPLETE"; stamp "check complete"; exit 0
 fi
 
+# The planning session's wiring check before the regions: the four untaught Qwen readings on the printed check images (the image as
+# its own line for raw_context_revision); each must read, and the empty readings of the two neutral ones go to [读不出] as planned.
+if ! done_ qwen_wiring; then
+    [ -e "$R/q_check_pack/pack.json" ] || "$HME" - "${B}_check/check_pack" "$R/q_check_pack" <<'PY'
+import json, shutil, sys
+from pathlib import Path
+src, out = Path(sys.argv[1]), Path(sys.argv[2]); shutil.copytree(src/'crops', out/'crops')
+rows = [{**r, 'images': {**r['images'], 'context': r['images']['raw']}} for r in json.loads((src/'pack.json').read_text())['rows']]
+(out/'pack.json').write_text(json.dumps({'schema': 'revrender-line-pack', 'rows': rows}, ensure_ascii=False, indent=1))
+PY
+    for c in raw_neutral erased_neutral raw_revision raw_context_revision; do place 22000 1 qwen "$R/wiring_$c" "$R/q_check_pack" "$c"; done; wait
+    for c in raw_neutral erased_neutral; do [ -e "$R/wiring_norm_$c/predictions.jsonl" ] || "$HME" -m revrender.eval.ocr_compare normalize --readings "$R/wiring_$c" --output-dir "$R/wiring_norm_$c"; done
+    "$HME" - "$R" <<'PY'
+import json, sys
+from pathlib import Path
+R = Path(sys.argv[1]); rows = json.loads((R/'q_check_pack'/'pack.json').read_text())['rows']; out = {}
+read = lambda d: {g['id']: g for g in map(json.loads, (d/'predictions.jsonl').read_text().splitlines())}
+for c in ('raw_neutral', 'erased_neutral', 'raw_revision', 'raw_context_revision'):
+    got = read(R/f'wiring_{c}'); norm = read(R/f'wiring_norm_{c}') if (R/f'wiring_norm_{c}').exists() else None
+    out[c] = {'readings': {k: {'raw': g['raw'], 'text': g['text'], 'finish': g['finish_reason'], **({'scored_as': norm[k]['text']} if norm else {})} for k, g in got.items()},
+              'all_read': len(got) == len(rows), 'stopped_by_itself': all(g['finish_reason'] in ('stop', 'loop') for g in got.values()),
+              'empty_written_as_refusal': sum(norm[k]['text'] != g['text'] for k, g in got.items()) if norm else None,
+              'neutral_reads_text': all(g['text'].strip() for g in got.values()) if c.endswith('neutral') else None}
+passed = all(v['all_read'] and v['stopped_by_itself'] and v['neutral_reads_text'] is not False for v in out.values())
+(R/'checks'/'check_qwen_wiring.json').write_text(json.dumps({'images': [r['id'] for r in rows], 'conditions': out, 'passed': passed}, ensure_ascii=False, indent=2))
+print(json.dumps(out, ensure_ascii=False)[:4000]); sys.exit(0 if passed else 'the untaught Qwen readings did not run through on the printed images')
+PY
+    mark qwen_wiring; fi
+
 # The readings (one job at a time on each card).
 if ! done_ reads; then
     for line in unlimited minicpm_text minicpm_formula glm_text glm_formula; do
@@ -117,7 +146,7 @@ if ! done_ reads; then
     place 22000 1 qwen "$R/read_q_neutral" "$V" raw_neutral; place 22000 1 qwen "$R/read_q_neutral_erased" "$V" erased_neutral
     place 22000 1 qwen "$R/read_q_revision" "$V" raw_revision; place 22000 1 qwen "$R/read_q_context" "$RAWV" raw_context_revision; wait
     for d in "$R"/read_*/; do test -e "$d/predictions.jsonl"; done
-    # checks 2 and 3: the images given are the pack's files; every reading there, why each stopped
+    # checks 2 and 3 (and the empty readings written as refusals, each reading set): the images given are the pack's files; every reading there, why each stopped
     "$HME" - "$R" "$V" <<'PY'
 import collections, hashlib, json, sys
 from pathlib import Path
@@ -126,25 +155,28 @@ sha = {(r['id'], k): hashlib.sha256((V/r['images'][k]).read_bytes()).hexdigest()
 out = {}
 for d in sorted(x for x in R.glob('read_*') if x.is_dir()):
     got = [json.loads(l) for l in (d/'predictions.jsonl').read_text().splitlines()]
-    entry = {'readings': len(got), 'finish': dict(collections.Counter(g.get('finish_reason') for g in got))}
+    entry = {'readings': len(got), 'finish': dict(collections.Counter(g.get('finish_reason') for g in got)),
+             'empty_written_as_refusal': json.loads((d/'run_manifest.json').read_text()).get('empty_written_as_refusal')}
     if 'image_sha256' in got[0]:
         image = 'erased' if 'erased' in d.name else 'raw'; entry['images_are_the_pack_files'] = all(g['image_sha256'] == sha[(g['id'], image)] for g in got)
     out[d.name] = entry
 ok = all(v['readings'] == len(rows) and v.get('images_are_the_pack_files', True) for v in out.values())
-(R/'checks'/'check2_3_readings.json').write_text(json.dumps({'regions': len(rows), 'arms': out, 'passed': ok}, indent=2)); print(json.dumps(out))
+(R/'checks'/'check2_3.json').write_text(json.dumps({'regions': len(rows), 'arms': out, 'passed': ok}, indent=2)); print(json.dumps(out))
 sys.exit(0 if ok else 'a reading set is short or an image is not the pack file')
 PY
     mark reads; fi
 
 if ! done_ score; then
     for q in q_neutral q_neutral_erased; do [ -e "$R/norm_$q/predictions.jsonl" ] || "$HME" -m revrender.eval.ocr_compare normalize --readings "$R/read_$q" --output-dir "$R/norm_$q"; done
+    "$HME" -c 'import json,sys; json.dump({q: json.load(open(f"{sys.argv[1]}/norm_{q}/run_manifest.json")).get("empty_written_as_refusal") for q in ("q_neutral","q_neutral_erased")}, open(f"{sys.argv[1]}/checks/qwen_empty_as_refusal.json","w"), indent=2)' "$R"
     dirs5() { local k s=; for k in 0 1 2 3 4; do s+="${s:+,}$1_f$k"; done; echo "$s"; }
     ARMS_=()
     for line in unlimited minicpm_text minicpm_formula glm_text glm_formula; do
         ARMS_+=(--arm "O-原图|${NAME[$line]}=$R/read_raw_$line" --arm "O-擦线|${NAME[$line]}=$R/read_erased_$line")
     done
     ARMS_+=(--arm "Q-照读=$R/norm_q_neutral" --arm "Q-照读-擦线=$R/norm_q_neutral_erased" --arm "Q-指令=$R/read_q_revision" --arm "Q-指令+行=$R/read_q_context"
-            --arm "R0=$(dirs5 "$P2/read_R0")" --arm "当前最好=$(dirs5 "$FIX/read_fix")" --arm "H=$(dirs5 "$P2/read_H")")
+            --arm "R0=$(dirs5 "$P2/read_R0")" --arm "当前最好=$(dirs5 "$FIX/read_fix")" --arm "H=$(dirs5 "$P2/read_H")"
+            --arm "V-判别=$(dirs5 "${N}_maa_view20261121/read_disc")")      # reported only: the sixth round's highest, not passing its rule
     [ -e "$R/scores_vs_R0.json" ] || "$HME" -m revrender.eval.transcription --pack "$V" "${ARMS_[@]}" --reference R0 --output "$R/scores_vs_R0.json" > "$R/scores_vs_R0.log" 2>&1
     [ -e "$R/analysis/analysis.json" ] || "$HME" -m revrender.eval.ocr_compare analyse --pack "$V" "${ARMS_[@]}" --shares "$FIX/checks/strike_shares.json" \
         --output-dir "$R/analysis" > "$R/analysis.log" 2>&1

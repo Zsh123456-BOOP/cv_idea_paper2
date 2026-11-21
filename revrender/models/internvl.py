@@ -13,19 +13,41 @@ Two changes from the card's loading, both what the readers of Qwen3-VL have: the
 flash-attn the bundled code falls back to eager, which holds every attention matrix), and the tower's stochastic depth is off
 (``drop_path_rate`` 0.1 would make the frozen teacher and the frozen tower under a training reader random; reading is in eval, where
 it is off anyway).  The bundled code runs with ``recognize_ocr.safeguards`` set first (eval from model code and the network refused).
+
+    python -m revrender.models.internvl memory --model DIR --clean-pack VIEWS --scan-pack RAW_VIEWS --part reader|plugin|read --output-dir OUT
+
+``memory`` (the rule on the tiles, run at each ``INTERNVL_MAX_TILES`` before anything is read): the worst batch of one part -- the
+regions with the most tiles -- on a card: ``reader`` one training step of the reader (H's context_revision, two regions, checkpointing,
+as ``train_reader``), ``plugin`` one training step of the tower adapter (eight regions' windows and lines, teacher and student, as
+``train_clean_view train``), ``read`` one batch of eight read as V (an untaught adapter on the second and third images).  OUT.json: the
+peak memory allocated and reserved, the seconds, and whether it fitted (OUT/result.json).
 """
+import json
+import os
 import types
 from pathlib import Path
 
-import numpy as np
-
-TILE, MAX_TILES, TOKENS = 448, 12, 256
+TILE, TOKENS = 448, 256
+# at most this many tiles an image: the card's 12, lowered only when the smoke's memory says so, 12 -> 6 -> 4, one value for the
+# readers, the adapters and the readings (the planning session's rule, plan 换模型验证插件, revision two)
+MAX_TILES = int(os.environ.get('INTERNVL_MAX_TILES', '12'))
+if MAX_TILES not in (12, 6, 4):
+    raise ValueError('INTERNVL_MAX_TILES is 12, 6 or 4')
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 
 
 def is_internvl(model_dir):
-    import json
     return json.loads((Path(model_dir)/'config.json').read_text()).get('model_type') == 'internvl_chat'
+
+
+def processing(model_dir):
+    """What a run records of how the model sees and attends (InternVL: the tiles, and the two changes from the card's loading)."""
+    if not is_internvl(model_dir):
+        return None
+    card = json.loads((Path(model_dir)/'config.json').read_text())['vision_config'].get('drop_path_rate')
+    return {'tile': TILE, 'max_tiles': MAX_TILES, 'thumbnail': True, 'tokens_per_tile': TOKENS, 'resize': 'bicubic', 'mean': MEAN, 'std': STD,
+            'vision_drop_path_rate': {'card': card, 'used': 0.}, 'language_attention': 'sdpa (the bundled code falls back to eager without flash-attn)',
+            'images_in_words': '<image> before the words; several: Image-1: <image> ... (the card)'}
 
 
 def bundled(model_dir, name):
@@ -67,7 +89,6 @@ class Processor:
         self.tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True, use_fast=False)
         self.template = bundled(model_dir, 'conversation.get_conv_template')
         self.image_processor = self.images
-        self.settings = {'tile': TILE, 'max_tiles': MAX_TILES, 'thumbnail': True, 'tokens_per_tile': TOKENS, 'resize': 'bicubic', 'mean': MEAN, 'std': STD}
 
     def images(self, images, return_tensors='pt'):
         import torch
@@ -248,3 +269,68 @@ class Reader:
                 return language(input_ids=token.view(-1, 1), attention_mask=keys[0].view(len(jobs), 1, 1, -1), position_ids=(last+1+step).view(-1, 1),
                                 past_key_values=cache, use_cache=True)
             return greedy(first, advance, self.stop, max_new_tokens, loop_limit, self.processor.tokenizer)
+
+
+def memory(args):
+    """See the module's words."""
+    import time
+    import torch
+    from PIL import Image
+    from ..util import make_output_dir, write_json
+    out = make_output_dir(args.output_dir)
+    clean, scan = args.clean_pack, args.scan_pack
+    rows = {r['id']: r for r in json.loads((clean/'pack.json').read_text())['rows']}; scans = {r['id']: r for r in json.loads((scan/'pack.json').read_text())['rows']}
+    count = lambda path: len(tiles(Image.open(path).convert('RGB')))
+    size = {k: sum(count(clean/r['images'][key]) for key in ('raw', 'erased', 'context')) for k, r in rows.items()}
+    worst = sorted(rows, key=lambda k: -size[k])
+    opened = lambda pack, row, key: Image.open(pack/row['images'][key]).convert('RGB')
+    torch.cuda.reset_peak_memory_stats(); started = time.time(); fitted, error = True, None
+    try:
+        if args.part == 'reader':
+            from ..recognize_lines import prompt
+            from ..train_reader import Collate, answer_loss, lora_model
+            processor = Processor(args.model); processor.tokenizer.padding_side = 'right'
+            model = lora_model(args.model, 16, 32, .05).to('cuda')
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False}); model.enable_input_require_grads(); model.train()
+            chosen = [rows[k] for k in worst[:2]]
+            batch = Collate(processor, '')([([opened(clean, r, key) for key in ('raw', 'erased', 'context')], r['text'] or '', None, prompt('context_revision', r), None) for r in chosen])
+            batch = {k: v.to('cuda') for k, v in batch.items()}; batch['pixel_values'] = batch['pixel_values'].to(torch.bfloat16)
+            answer_loss(model, batch).backward()
+        elif args.part == 'plugin':
+            from ..train_clean_view import encode, levels, pair_loss, with_student
+            student = with_student(tower(args.model).to('cuda')); student.train(); processor = Processor(args.model)
+            pairs = [(opened(scan, scans[k], key), opened(clean, rows[k], key)) for k in sorted(rows, key=lambda k: -(count(clean/rows[k]['images']['erased'])+count(clean/rows[k]['images']['context'])))[:8]
+                     for key in ('erased', 'context')]
+            xs, gs = encode(processor, [a for a, _ in pairs], 'cuda'); xc, gc = encode(processor, [b for _, b in pairs], 'cuda')
+            with torch.no_grad(), student.disable_adapter():
+                teacher = levels(student, xc, gc)
+            pair_loss(levels(student, xs, gs), teacher).backward()
+        else:
+            from ..recognize_lines import SYSTEM, prompt
+            from ..train_clean_view import with_student
+            fresh = out/'untaught_adapter'; with_student(tower(args.model)).save_pretrained(str(fresh))
+            reader = Reader(args.model, student=fresh/'default' if (fresh/'default').exists() else fresh)
+            chosen = [scans[k] for k in worst[:8]]
+            reader.read([([opened(scan, r, key) for key in ('raw', 'erased', 'context')], prompt('context_revision', r), None, 0.) for r in chosen], SYSTEM, 256,
+                        loop_limit=4, students=[[False, True, True] for _ in chosen])
+    except torch.cuda.OutOfMemoryError as e:
+        fitted, error = False, str(e).splitlines()[0]
+    gib = lambda b: round(b/2**30, 2)
+    result = {'part': args.part, 'max_tiles': MAX_TILES, 'fitted': fitted, 'error': error, 'peak_allocated_gib': gib(torch.cuda.max_memory_allocated()),
+              'peak_reserved_gib': gib(torch.cuda.max_memory_reserved()), 'card_gib': gib(torch.cuda.get_device_properties(0).total_memory),
+              'seconds': round(time.time()-started, 1), 'worst_tiles_per_region': [size[k] for k in worst[:8]]}
+    write_json(out/'result.json', result); print(json.dumps(result), flush=True)
+
+
+def main(argv=None):
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0]); sub = p.add_subparsers(dest='command', required=True)
+    m = sub.add_parser('memory'); m.add_argument('--model', type=Path, required=True); m.add_argument('--clean-pack', type=Path, required=True)
+    m.add_argument('--scan-pack', type=Path, required=True); m.add_argument('--part', choices=('reader', 'plugin', 'read'), required=True)
+    m.add_argument('--output-dir', type=Path, required=True)
+    args = p.parse_args(argv)
+    memory(args)
+
+
+if __name__ == '__main__':
+    main()

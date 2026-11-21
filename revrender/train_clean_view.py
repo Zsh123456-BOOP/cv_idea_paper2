@@ -85,6 +85,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from .models.internvl import processing
 from .util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 TOUCHED = .99
@@ -260,7 +261,8 @@ def train(args):
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.pack/'pack.json', args.scan_pack/'pack.json',
                    *((args.synthetic/f'fold_{args.fold}_raw'/'pack.json',) if args.synthetic else ()))},
                    real_training=len(real), synthetic_training=len(synthetic), validation=len(val), validation_writers=sorted(held),
-                   trainable_parameters=sum(q.numel() for q in params), targets=TARGETS, features='merged + deepstack (all four levels; Qwen3.5: the merged tokens alone)',
+                   trainable_parameters=sum(q.numel() for q in params), targets=TARGETS, model_processing=processing(args.model),
+                   lora_modules=sorted({n.split('.lora_')[0].rsplit('.', 1)[-1] for n, q in model.named_parameters() if q.requires_grad and '.lora_' in n}), features='merged + deepstack (all four levels; Qwen3.5: the merged tokens alone)',
                    synthetic_share=(.25 if covered else .5) if synthetic else 0., covered_training=len(covered), covered_share=.25 if covered else 0.,
                    real_share=args.real_share, real_regions_all=everyone, real_writers=subset, real_regions_kept=len(real), window_only=args.window_only,
                    **({'discriminator': {'structure': 'token -> 2048 LeakyReLU(0.2) -> 5 residual blocks -> 1 (MAA TokenDiscriminator), float32',

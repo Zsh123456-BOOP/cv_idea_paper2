@@ -52,6 +52,7 @@ from . import pages as pages_module
 from .data import lines as lines_module
 from .data.line_pack import band_mask
 from .data.paste_strikes import compose
+from .models.internvl import processing
 from .recognize_lines import INTERVENED, MAPPED, SYSTEM, UNREADABLE, image_keys, prompt
 from .util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
@@ -334,7 +335,9 @@ def main(argv=None):
     source = args.pack/'pack.json' if args.pack else args.corpus
     write_manifest(out, config=to_jsonable(args), inputs={str(source): digest(source), **({str(w): digest(w) for w in sorted(args.init_adapter.glob('*.safetensors'))} if args.init_adapter else {})},
                    train_recipes=len(train_rows), val_recipes=len(val_rows),
-                   trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds,
+                   trainable_parameters=sum(q.numel() for q in params), kinds=args.kinds, lora_targets=LANGUAGE_TARGETS,
+                   lora_modules=sorted({n.split('.lora_')[0].rsplit('.', 1)[-1] for n, q in model.named_parameters() if q.requires_grad and '.lora_' in n}),
+                   model_processing=processing(args.model),
                    **({'students': {k: str(v) for k, v in adapters.items()}, 'student_off': args.student_off,
                        'students_used': {f'fold{j}': sum(r['fold'] == j for r in train_rows) for j in folds_used},
                        'student_adapter_files': {str(w): digest(w) for v in adapters.values() for w in sorted(v.glob('*.safetensors'))}} if students else {}))

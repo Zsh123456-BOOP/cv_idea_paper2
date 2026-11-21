@@ -86,6 +86,26 @@ if [ "$PART" = check1 ]; then
     touch "$R/COMPLETE"; stamp "check1 complete"; exit 0
 fi
 
+# InternVL: the most tiles an image, set by memory alone before anything is read (the planning session's rule): the worst batch of each
+# part (reader training, adapter training, reading) at 12, then 6, then 4 tiles; the largest that fits for all three, one value for
+# all; the main run takes the smoke's.
+probe() {   # OUT TILES PART
+    [ -e "$1/result.json" ] || INTERNVL_MAX_TILES=$2 job "$1" -- "$X" -m revrender.models.internvl memory --model "$M" --clean-pack "$V" --scan-pack "$RAWV" \
+        --part "$3" --output-dir "$1"
+}
+if [ "${SLUG:-}" = internvl ]; then
+    if [ "$PART" = smoke ] && ! done_ tiles; then
+        for t in 12 6 4; do
+            for part in reader plugin read; do place 23000 1 probe "$R/memory_${t}_$part" "$t" "$part"; done; wait
+            if "$HME" -c 'import json,sys; sys.exit(0 if all(json.load(open(f"{sys.argv[1]}/memory_{sys.argv[2]}_{p}/result.json"))["fitted"] for p in ("reader","plugin","read")) else 1)' "$R" "$t"; then
+                echo "$t" > "$R/checks/max_tiles"; break; fi
+        done
+        test -s "$R/checks/max_tiles"
+        mark tiles; fi
+    TILES_FROM=$R; [ "$PART" = smoke ] || TILES_FROM=${B}_internvl_smoke
+    export INTERNVL_MAX_TILES=$(cat "$TILES_FROM/checks/max_tiles"); stamp "InternVL at most $INTERNVL_MAX_TILES tiles an image"
+fi
+
 # The CPU checks: 5 the paired images' token grids alike (every region, the model's processor), 4 the folds and the validation writers.
 if ! done_ cpu_checks; then
     "$X" - "$M" "$V" "$RAWV" "$R/checks/check5_grids.json" <<'PY'
