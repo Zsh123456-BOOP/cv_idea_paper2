@@ -47,7 +47,8 @@ def processing(model_dir):
     card = json.loads((Path(model_dir)/'config.json').read_text())['vision_config'].get('drop_path_rate')
     return {'tile': TILE, 'max_tiles': MAX_TILES, 'thumbnail': True, 'tokens_per_tile': TOKENS, 'resize': 'bicubic', 'mean': MEAN, 'std': STD,
             'vision_drop_path_rate': {'card': card, 'used': 0.}, 'language_attention': 'sdpa (the bundled code falls back to eager without flash-attn)',
-            'images_in_words': '<image> before the words; several: Image-1: <image> ... (the card)'}
+            'images_in_words': '<image> before the words; several: Image-1: <image> ... (the card)',
+            'tower_alone_checkpointing': 'off (the bundled encoder hard-codes it on; compute only, the adapter needs it off to learn)'}
 
 
 def bundled(model_dir, name):
@@ -147,6 +148,7 @@ def tower(model_dir):
     module = torch.nn.Module()
     module.config = vision
     module.vision_model = bundled(model_dir, 'modeling_intern_vit.InternVisionModel')(vision)
+    module.vision_model.encoder.gradient_checkpointing = False   # the bundled encoder hard-codes reentrant checkpointing, which leaves the adapter without gradients
     width = vision.hidden_size*int(1/config.downsample_ratio)**2
     module.mlp1 = torch.nn.Sequential(torch.nn.LayerNorm(width), torch.nn.Linear(width, config.llm_config.hidden_size), torch.nn.GELU(),
                                       torch.nn.Linear(config.llm_config.hidden_size, config.llm_config.hidden_size))
