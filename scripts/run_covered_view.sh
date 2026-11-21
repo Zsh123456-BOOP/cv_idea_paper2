@@ -12,7 +12,8 @@
 # the builder), 4 the learning-curve subsets (subsets), 5 the reading path with the adapter off against H, 6 the head's inputs (its
 # run manifest).  The strike shares are checked region by region against the planning session's count ($B_inputs/region_stats.json).
 # Cards 1 and 2 (the user's word, 2026-11-21: 「那就用两张卡，1，2」); cards 0 and 3 are not touched,
-# ALLOW_GPU3 is not set.  Unattended; a step whose marker is in $R is skipped.
+# ALLOW_GPU3 is not set.  ARMS="fix l25 l50": only those arms are taught, read and scored (the planning session, 2026-11-21: V-涂满
+# waits for the user's word; rule A then is not judged).  Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -74,17 +75,19 @@ sys.exit(0 if share <= .02 else f'{sys.argv[4]} failed: more than 2% of the read
 PY
 }
 dirs() { local k s=; for k in "${READ[@]}"; do s+="${s:+,}$1_f$k"; done; echo "$s"; }   # PREFIX -> the folds' folders
-ARMS=(fix covered l25 l50); declare -A NAME=([fix]=V-修 [covered]=V-涂满 [l25]=L25 [l50]=L50)
+read -ra ARMS <<< "${ARMS:-fix covered l25 l50}"; has() { [[ " ${ARMS[*]} " == *" $1 "* ]]; }
+[ "${ARMS[0]}" = fix ] || { echo 'ARMS starts with fix (the head and the rules need V-修)'; exit 2; }
+declare -A NAME=([fix]=V-修 [covered]=V-涂满 [l25]=L25 [l50]=L50)
 declare -A MORE=([fix]="" [covered]="--covered $COV" [l25]="--real-share 0.25" [l50]="--real-share 0.5")
 view() { echo "${B}${TAG}_view_$1_f$2"; }
 
 # CPU: the strike shares (checked against the planning session's), the covered regions (check 3), the subsets (check 4).
 if ! done_ data; then
     [ -e "$SHARES" ] || "$PY" -m revrender.eval.privileged shares --pack "$V" --compare "${B}_inputs/region_stats.json" --output "$SHARES" > "$SHARES.log" 2>&1
-    [ -e "$COV/summary.json" ] || "$PY" -m revrender.data.synth_views covered --pack "$V" --synth "$O/paper2_clean_synth_regions_ink" \
+    ! has covered || [ -e "$COV/summary.json" ] || "$PY" -m revrender.data.synth_views covered --pack "$V" --synth "$O/paper2_clean_synth_regions_ink" \
         --same-student "$O/paper2_splits/same_student_pairs.json" --dataset "$O/paper2_clean_line_dataset20261117/regions.json" \
         --test-halves "$ROOT/configs/test_halves.json" --pages "$O/paper2_pages_clean_unlabeled3976" --take 1000 --output-dir "$COV" > "$COV.log" 2>&1
-    "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); bad=[k for k,v in s["folds"].items() if not v["accepted"]]; sys.exit("covered regions not accepted in folds "+",".join(bad) if bad else 0)' "$COV/summary.json"
+    ! has covered || "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); bad=[k for k,v in s["folds"].items() if not v["accepted"]]; sys.exit("covered regions not accepted in folds "+",".join(bad) if bad else 0)' "$COV/summary.json"
     [ -e "$R/checks/check4_subsets.json" ] || "$PY" -m revrender.train_clean_view subsets --pack "$V" --scan-pack "$RAWV" --shares 0.25 0.5 --output "$R/checks/check4_subsets.json"
     # the bar as revised before any reading (plan, section six, second revision): the five folds together within two points of the
     # share; each fold's own count reported (the first bar, each fold within 5 %, folds 1 and 2 missed)
@@ -102,9 +105,9 @@ if [ "$PART" = smoke ] && ! done_ checks; then
 # The adapters (V-修 first; the smoke run teaches V-修 on every fold, the head needs them, the rest on fold 0).
 if ! done_ plugins; then
     for k in "${FIX_FOLDS[@]}"; do place 12000 0 plugin "$(view fix "$k")" "$k"; done
-    for arm in covered l25 l50; do for k in "${READ[@]}"; do place 12000 0 plugin "$(view $arm "$k")" "$k" ${MORE[$arm]}; done; done; wait
+    for arm in "${ARMS[@]:1}"; do for k in "${READ[@]}"; do place 12000 0 plugin "$(view $arm "$k")" "$k" ${MORE[$arm]}; done; done; wait
     for k in "${FIX_FOLDS[@]}"; do test -e "$(view fix "$k")/student/adapter_config.json"; done
-    for arm in covered l25 l50; do for k in "${READ[@]}"; do test -e "$(view $arm "$k")/student/adapter_config.json"; done; done
+    for arm in "${ARMS[@]:1}"; do for k in "${READ[@]}"; do test -e "$(view $arm "$k")/student/adapter_config.json"; done; done
     if [ "$PART" = smoke ]; then   # 2: the mended tower's step-0 validation loss of fold 0 against the fourth round's
         "$PY" -c 'import json,sys; a=json.load(open(sys.argv[1]))["initial_val_loss"]; b=json.load(open(sys.argv[2]))["initial_val_loss"]; r={"mended":a,"fourth_round":b,"difference":a-b,"passed":abs(a-b)<=.02}; json.dump(r,open(sys.argv[3],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["passed"] else "check 2 failed")' \
             "$(view fix 0)/complete.json" "${P4}_view_real_f0/complete.json" "$R/checks/check2_step0.json"
@@ -133,10 +136,10 @@ if ! done_ measures; then
     mark measures; fi
 
 # The scores, the rules, the refusals.
-ARMS_=(--arm "V-修=$(dirs "$R/read_fix")" --arm "V-涂满=$(dirs "$R/read_covered")" --arm "L25=$(dirs "$R/read_l25")" --arm "L50=$(dirs "$R/read_l50")"
-       --arm "V-真+合=$(dirs "$P4/read_V-synth")" --arm "X=$(dirs "$P4/read_X")" --arm "E-NAFNet=$(dirs "$P2/read_E-NAFNet")" --arm "R0=$(dirs "$P2/read_R0")"
+ARMS_=(); for arm in "${ARMS[@]}"; do ARMS_+=(--arm "${NAME[$arm]}=$(dirs "$R/read_$arm")"); done
+ARMS_+=(--arm "V-真+合=$(dirs "$P4/read_V-synth")" --arm "X=$(dirs "$P4/read_X")" --arm "E-NAFNet=$(dirs "$P2/read_E-NAFNet")" --arm "R0=$(dirs "$P2/read_R0")"
        --arm "H=$(dirs "$P2/read_H")")
-REFS=(V-修 V-真+合 L25 L50 H R0 X E-NAFNet)
+REFS=(V-修 V-真+合 H R0 X E-NAFNet); ! has l25 || REFS+=(L25); ! has l50 || REFS+=(L50)
 if ! done_ score; then
     for ref in "${REFS[@]}"; do [ -e "$R/scores_vs_$ref.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" "${ARMS_[@]}" --reference "$ref" \
         $([ "$ref" != V-修 ] || echo --readings "$R/readings.jsonl") --output "$R/scores_vs_$ref.json" > "$R/scores_vs_$ref.log" 2>&1; done
@@ -144,7 +147,7 @@ if ! done_ score; then
         $(for ref in "${REFS[@]}"; do echo --scores "$ref=$R/scores_vs_$ref.json"; done) \
         $(for arm in "${ARMS[@]}"; do echo --distances "${NAME[$arm]}=$(dirs "$R/distance_$arm")"; done) --output-dir "$R/analysis" > "$R/analysis.log" 2>&1
     # the refusals over every region: in the smoke run the fourth round's V-真+合 stands in for the arms read on eight regions only
-    if [ "$PART" = main ]; then SEL=(--arm "V-修=$(dirs "$R/read_fix")" --arm "V-涂满=$(dirs "$R/read_covered")"); else
+    if [ "$PART" = main ]; then SEL=(--arm "V-修=$(dirs "$R/read_fix")"); ! has covered || SEL+=(--arm "V-涂满=$(dirs "$R/read_covered")"); else
         SEL=(--arm "V-真+合=${P4}/read_V-synth_f0,${P4}/read_V-synth_f1,${P4}/read_V-synth_f2,${P4}/read_V-synth_f3,${P4}/read_V-synth_f4"); fi
     [ -e "$R/selective/selective.json" ] || "$PY" -m revrender.eval.selective --pack "$V" "${SEL[@]}" \
         --other "R0=${P2}/read_R0_f0,${P2}/read_R0_f1,${P2}/read_R0_f2,${P2}/read_R0_f3,${P2}/read_R0_f4" \
