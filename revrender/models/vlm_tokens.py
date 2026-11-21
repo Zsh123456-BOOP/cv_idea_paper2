@@ -8,14 +8,61 @@ negative bias to the attention logits of the hidden keys instead of removing the
 
 ``Reader.read`` runs a greedy decode over a batch of (image, words, hidden tokens) with its own loop: the mask of a request is an
 additive 4D attention mask, the position ids are the model's own (``get_rope_index``), and a decode step carries the same bias over the
-cache.  With nothing hidden it reproduces ``generate`` token for token (tests/test_vlm_tokens.py, on a model).  Only Qwen3-VL is
-supported: its vision tower's own attention still mixes a hidden token's patches into its neighbours before the text sees any of
-them, so hiding tokens alone does not erase what was under them (blank the pixels as well to do that).
+cache.  With nothing hidden it reproduces ``generate`` token for token (tests/test_vlm_tokens.py, on a model).  Qwen3-VL and Qwen3.5
+(plan of 2026-11-21, 换模型验证插件) are supported, under transformers 4.57 and 5.x alike (``tower_levels``, ``rope_index``,
+``language_mask``): Qwen3.5 has no deepstack levels, half its language layers are linear attention (they take the padding mask, not
+the 4D one, so they see hidden tokens -- hide tokens on Qwen3-VL only), and its template opens a thinking block, closed empty before
+the answer (``answer_prefill``: the 27B's own words for not thinking, and what its template writes before a taught answer).  The
+vision tower's own attention still mixes a hidden token's patches into its neighbours before the text sees any of them, so hiding
+tokens alone does not erase what was under them (blank the pixels as well to do that).
 """
 import numpy as np
 from PIL import Image
 
 NEG = -1e9                 # an additive mask value that leaves no probability (softmax of the rest is exact in bf16)
+THINK_OPEN, THINK_CLOSED = '<think>\n', '\n</think>\n\n'
+
+
+def answer_prefill(processor):
+    """What goes after the generation prompt before the answer: the closing of the empty thinking block when the template opens one
+    (Qwen3.5), else nothing."""
+    probe = [{'role': 'user', 'content': [{'type': 'text', 'text': '.'}]}]
+    return THINK_CLOSED if processor.apply_chat_template(probe, add_generation_prompt=True, tokenize=False).endswith(THINK_OPEN) else ''
+
+
+def tower_levels(out):
+    """(merged, [deepstack levels]) of a vision tower's output or of ``get_image_features``'s, whatever the library version: 4.57
+    gives a pair (the merged tokens -- one tensor, or a tuple per image -- and the deepstack levels, each one tensor), 5.x an output
+    whose ``pooler_output`` is the merged tokens and ``deepstack_features`` the levels (each one tensor, or a tuple per image; none for
+    Qwen3.5)."""
+    if isinstance(out, (tuple, list)):
+        return out[0], list(out[1] or [])
+    return out.pooler_output, list(getattr(out, 'deepstack_features', None) or [])
+
+
+def image_levels(out):
+    """Per image, [merged, deepstack 1..]: the tokens of ``get_image_features``'s output, one image at a time."""
+    import torch
+    embeds, deep = tower_levels(out)
+    sizes = [e.shape[0] for e in embeds]
+    deep = [level if isinstance(level, (tuple, list)) else level.split(sizes) for level in deep]
+    return [[e, *(level[i] for level in deep)] for i, e in enumerate(embeds)] if torch.is_tensor(embeds[0]) else []
+
+
+def rope_index(inner, ids, grid, valid, image_token):
+    """The model's M-RoPE positions [3, B, L] of a batch of images and text: 5.x asks which tokens are image tokens, 4.57 does not."""
+    import inspect
+    if 'mm_token_type_ids' in inspect.signature(inner.get_rope_index).parameters:
+        return inner.get_rope_index(ids, (ids == image_token).int(), grid, None, attention_mask=valid.long())[0]
+    return inner.get_rope_index(ids, grid, None, attention_mask=valid.long())[0]
+
+
+def language_mask(config, mask, valid):
+    """The attention mask the language model takes: the additive 4D mask, and for a model with linear-attention layers (Qwen3.5) the
+    padding mask beside it for those layers (None in a decode step: a written token is never padding)."""
+    if 'linear_attention' not in (getattr(config.get_text_config(), 'layer_types', None) or ()):
+        return mask
+    return {'full_attention': mask, 'linear_attention': valid.long() if valid is not None and not bool(valid.all()) else None}
 
 
 def cell_shares(mask, rows, cols):
@@ -159,35 +206,40 @@ def student_features(features, students, off):
     import torch
     view = students.view
 
-    def chosen(pixel_values, image_grid_thw=None):
+    def chosen(pixel_values, image_grid_thw=None, **kwargs):
         with torch.no_grad():
             with view.disable_adapter():
-                embeds, deep = features(pixel_values, image_grid_thw)
-            flags = students.flags or [None]*len(embeds)
-            if len(flags) != len(embeds):
-                raise ValueError(f'{len(flags)} student flags for {len(embeds)} images')
+                out = features(pixel_values, image_grid_thw, **kwargs)
+            frozen = image_levels(out)
+            flags = students.flags or [None]*len(frozen)
+            if len(flags) != len(frozen):
+                raise ValueError(f'{len(flags)} student flags for {len(frozen)} images')
             used = [n for n in students.names if n in flags]
             if not used:
-                return embeds, deep
-            sizes = [e.shape[0] for e in embeds]
-            picked, levels = list(embeds), [list(d.split(sizes)) for d in deep]
+                return out
+            picked = list(frozen)
             for name in used:
                 if not off:
                     view.set_adapter(name, inference_mode=True)
                 with view.disable_adapter() if off else contextlib.nullcontext():
-                    s_embeds, s_deep = features(pixel_values, image_grid_thw)
+                    taught = image_levels(features(pixel_values, image_grid_thw, **kwargs))
                 for i, f in enumerate(flags):
                     if f == name:
-                        picked[i] = s_embeds[i]
-                        for level, d in zip(levels, s_deep):
-                            level[i] = d.split(sizes)[i]
+                        picked[i] = taught[i]
                 students.encoded[name] += flags.count(name)
-            return tuple(picked), [torch.cat(level) for level in levels]
+            embeds, deep = tuple(p[0] for p in picked), [tuple(p[n] for p in picked) for n in range(1, len(picked[0]))]
+            if isinstance(out, (tuple, list)):                              # 4.57: the levels each one tensor
+                return embeds, [torch.cat(level) for level in deep]
+            out.pooler_output = embeds
+            if getattr(out, 'deepstack_features', None) is not None:
+                out.deepstack_features = deep
+            return out
     return chosen
 
 
 class Reader:
-    """A Qwen3-VL model (with a LoRA adapter, if given) and its processor on one device, reading batches of lines with hidden visual tokens."""
+    """A Qwen3-VL or Qwen3.5 model (with a LoRA adapter, if given) and its processor on one device, reading batches of lines with hidden
+    visual tokens."""
 
     def __init__(self, model_dir, device='cuda', adapter=None, layer_map=None, student=None, student_off=False):
         import torch
@@ -207,6 +259,7 @@ class Reader:
         self.students = None
         if student:                                                      # a vision-tower adapter of ``train_clean_view``: see ``install_students``
             self.students = install_students(self.model.model, {'default': student}, student_off)
+        self.prefill = answer_prefill(self.processor)
         self.merge = self.model.config.vision_config.spatial_merge_size
         self.image_token = self.model.config.image_token_id
         eos = self.model.generation_config.eos_token_id
@@ -232,24 +285,25 @@ class Reader:
         shown = lambda image: [{'type': 'image', 'image': one} for one in (image if isinstance(image, (list, tuple)) else [image])]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': system}]},
                           {'role': 'user', 'content': [*shown(image), {'type': 'text', 'text': words}]}] for image, words, _, _ in jobs]
-        batch = self.processor.apply_chat_template(conversations, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
+        texts = [self.processor.apply_chat_template(c, add_generation_prompt=True, tokenize=False)+self.prefill for c in conversations]
+        images = [one['image'] for c in conversations for one in c[1]['content'] if one['type'] == 'image']
+        batch = self.processor(text=texts, images=images, return_tensors='pt', padding=True)
         ids, valid = batch['input_ids'], batch['attention_mask'].bool()
         blocked = blocked_keys(ids.numpy(), valid.numpy(), self.image_token, [job[2] for job in jobs])
         bias = key_bias(valid.numpy(), blocked, [job[3] for job in jobs])
         dtype = self.model.dtype
         mask = torch.from_numpy(prefill_mask(bias)).to(self.device, dtype)
         ids, valid = ids.to(self.device), valid.to(self.device)
-        positions, _ = self.model.model.get_rope_index(ids, batch['image_grid_thw'].to(self.device), None, attention_mask=valid.long())
+        positions = rope_index(self.model.model, ids, batch['image_grid_thw'].to(self.device), valid, self.image_token)
         several = lambda image: list(image) if isinstance(image, (list, tuple)) else [image]
         pixels = batch['pixel_values'] if maps is None else with_layer_maps(
             batch['pixel_values'], [m for job, layer in zip(jobs, maps) for m in layer_maps(several(job[0]), layer)], self.processor.image_processor)
         pixel_values, grid = pixels.to(self.device, dtype), batch['image_grid_thw'].to(self.device)
-        length = ids.shape[1]
         from transformers import DynamicCache
-        cache = DynamicCache()
+        config = self.model.config; cache = DynamicCache(config=config)
         with torch.inference_mode():
-            out = self.model(input_ids=ids, attention_mask=mask, position_ids=positions, pixel_values=pixel_values, image_grid_thw=grid, past_key_values=cache,
-                             use_cache=True, cache_position=torch.arange(length, device=self.device), logits_to_keep=1)
+            out = self.model(input_ids=ids, attention_mask=language_mask(config, mask, valid), position_ids=positions, pixel_values=pixel_values,
+                             image_grid_thw=grid, past_key_values=cache, use_cache=True, logits_to_keep=1)
             keys = torch.from_numpy(bias).to(self.device, dtype)
             last = positions.amax(dim=(0, 2))                                  # the last position each row used
             written, done, loops, logged = [[] for _ in jobs], [False]*len(jobs), set(), [[] for _ in jobs]
@@ -268,8 +322,8 @@ class Reader:
                     break
                 keys = torch.cat([keys, torch.zeros(len(jobs), 1, device=self.device, dtype=dtype)], dim=1)
                 position = (last+1+step).view(1, -1, 1).expand(3, -1, 1)
-                out = self.model(input_ids=token.view(-1, 1), attention_mask=keys.view(len(jobs), 1, 1, -1), position_ids=position, past_key_values=cache,
-                                 use_cache=True, cache_position=torch.tensor([length+step], device=self.device))
+                out = self.model(input_ids=token.view(-1, 1), attention_mask=language_mask(config, keys.view(len(jobs), 1, 1, -1), None), position_ids=position,
+                                 past_key_values=cache, use_cache=True)
         return [{'text': self.processor.tokenizer.decode([t for t in w if t not in self.stop], skip_special_tokens=True), 'tokens': len(w),
                  'confidence': float(np.exp(np.mean(logged[b]))) if logged[b] else 0.,
                  'finish': 'loop' if b in loops else 'stop' if w and w[-1] in self.stop else 'length'} for b, w in enumerate(written)]

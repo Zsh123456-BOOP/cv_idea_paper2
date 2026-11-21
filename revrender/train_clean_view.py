@@ -93,16 +93,20 @@ TARGETS = r'.*blocks\.\d+\.(attn\.(qkv|proj)|mlp\.(linear_fc1|linear_fc2))'
 
 
 def vision_tower(model_dir):
-    """The vision tower of a Qwen3-VL checkpoint alone (bf16 weights, sdpa), its patch embedding run as a matrix product.  Its buffers
+    """The vision tower of a Qwen3-VL or Qwen3.5 checkpoint alone (bf16 weights, sdpa), its patch embedding run as a matrix product (the
+    two towers are built alike; Qwen3.5's has no deepstack levels, so its features are the merged tokens alone).  Its buffers
     stay as built, as the whole model keeps them: the rotary ``inv_freq`` in float32 (a cast of the tower to bf16 coarsened the
     positions of the fourth and fifth rounds' adapters; sixth round, section 4.1)."""
     import torch
     from safetensors import safe_open
     from transformers import AutoConfig
-    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
     from .models.vlm_tokens import patch_embed_as_linear
-    config = AutoConfig.from_pretrained(str(model_dir)).vision_config; config._attn_implementation = 'sdpa'
-    tower = Qwen3VLVisionModel._from_config(config, torch_dtype=torch.bfloat16)
+    whole = AutoConfig.from_pretrained(str(model_dir)); config = whole.vision_config; config._attn_implementation = 'sdpa'
+    if whole.model_type == 'qwen3_5':
+        from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel as Tower
+    else:
+        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel as Tower
+    tower = Tower._from_config(config, dtype=torch.bfloat16)
     state = {}
     for path in sorted(Path(model_dir).glob('*.safetensors')):
         with safe_open(str(path), 'pt') as f:
@@ -124,8 +128,9 @@ def with_student(tower, rank=16, alpha=32, dropout=.05, adapter=None):
 
 
 def levels(tower, pixel_values, grid):
-    """[merged, deepstack 1..3]: each [tokens, width] float32."""
-    merged, deep = tower(pixel_values, grid_thw=grid)
+    """[merged, deepstack 1..3] (Qwen3.5: [merged]): each [tokens, width] float32."""
+    from .models.vlm_tokens import tower_levels
+    merged, deep = tower_levels(tower(pixel_values, grid_thw=grid))
     return [merged.float(), *(d.float() for d in deep)]
 
 
@@ -248,7 +253,7 @@ def train(args):
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.pack/'pack.json', args.scan_pack/'pack.json',
                    *((args.synthetic/f'fold_{args.fold}_raw'/'pack.json',) if args.synthetic else ()))},
                    real_training=len(real), synthetic_training=len(synthetic), validation=len(val), validation_writers=sorted(held),
-                   trainable_parameters=sum(q.numel() for q in params), targets=TARGETS, features='merged + deepstack (all four levels)',
+                   trainable_parameters=sum(q.numel() for q in params), targets=TARGETS, features='merged + deepstack (all four levels; Qwen3.5: the merged tokens alone)',
                    synthetic_share=(.25 if covered else .5) if synthetic else 0., covered_training=len(covered), covered_share=.25 if covered else 0.,
                    real_share=args.real_share, real_regions_all=everyone, real_writers=subset, real_regions_kept=len(real), window_only=args.window_only,
                    **({'discriminator': {'structure': 'token -> 2048 LeakyReLU(0.2) -> 5 residual blocks -> 1 (MAA TokenDiscriminator), float32',
@@ -271,7 +276,7 @@ def train(args):
         return student, teacher
 
     def validate():
-        model.eval(); totals = Totals(4)
+        model.eval(); totals = Totals(1+len(getattr(model.base_model.model.config, 'deepstack_visual_indexes', None) or ()))
         with torch.no_grad():
             for start in range(0, len(val), args.batch_size):
                 student, teacher = forward(*pairs_of(val[start:start+args.batch_size])); totals.add(student, teacher)
@@ -379,7 +384,7 @@ def agree(args):
     inner = model.get_base_model().model; students = install_students(inner, adapters)
     model.train()                                                       # where train_reader puts the reader before its steps
     plain = type(inner).get_image_features                              # the model's own, without the adapters' routing
-    split = lambda out: [[e, *(d.split([x.shape[0] for x in out[0]])[i] for d in out[1])] for i, e in enumerate(out[0])]
+    from .models.vlm_tokens import image_levels as split
     same = lambda a, b: all(torch.equal(x, y) for x, y in zip(a, b))
     result = {}
     # 2b: the tower and the adapters in eval while the reader trains; the same batch twice gives the same features

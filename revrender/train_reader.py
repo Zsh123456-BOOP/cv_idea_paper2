@@ -56,6 +56,8 @@ from .recognize_lines import INTERVENED, MAPPED, SYSTEM, UNREADABLE, image_keys,
 from .util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 EMPTY = '[空]'
+# every linear layer of the language model's blocks: attention and MLP, and the linear-attention projections of Qwen3.5's hybrid layers
+LANGUAGE_TARGETS = r'.*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|in_proj_qkv|in_proj_z|in_proj_a|in_proj_b|out_proj)'
 TARGET = '<transcription>{}</transcription>'
 
 
@@ -143,7 +145,10 @@ class Collate:
 
     def __init__(self, processor, words, students=()):
         self.processor, self.words, self.students = processor, words, tuple(students)
+        from .models.vlm_tokens import THINK_OPEN, answer_prefill
         self.start = processor.tokenizer.convert_tokens_to_ids('<|im_start|>')
+        prefill = answer_prefill(processor)                            # the template writes an empty thinking block before a taught answer
+        self.header = len(processor.tokenizer('<|im_start|>assistant\n'+(THINK_OPEN+prefill if prefill else ''), add_special_tokens=False)['input_ids'])
 
     def __call__(self, batch):
         batch = [item if len(item) == 5 else ([item[0]], item[1], None, None, None) for item in batch]      # (images, text, layer map, words, fold)
@@ -151,14 +156,14 @@ class Collate:
                           {'role': 'user', 'content': [*({'type': 'image', 'image': image} for image in images), {'type': 'text', 'text': words or self.words}]},
                           {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _, words, _ in batch]
         out = self.processor.apply_chat_template(conversations, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
-        out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw')}
+        out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw', 'mm_token_type_ids') if k in out}
         if batch[0][2] is not None:
             from .models.vlm_tokens import layer_maps, with_layer_maps
             out['pixel_values'] = with_layer_maps(out['pixel_values'], [m for images, _, layer, _, _ in batch for m in layer_maps(images, layer)], self.processor.image_processor)
         labels = out['input_ids'].clone()
         for b in range(labels.shape[0]):
             marks = (out['input_ids'][b] == self.start).nonzero().flatten()
-            labels[b, :int(marks[-1])+3] = -100                        # the system and user turns and "<|im_start|>assistant\n"
+            labels[b, :int(marks[-1])+self.header] = -100              # the system and user turns, "<|im_start|>assistant\n" and an empty thinking block
         labels[out['attention_mask'] == 0] = -100
         out['labels'] = labels
         if self.students:
@@ -177,7 +182,7 @@ def lora_model(model_dir, rank, alpha, dropout, layer_map=False, init=None):
     model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa')
     patch_embed_as_linear(model.model.visual.patch_embed)
     config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias='none',
-                        target_modules=r'.*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)')
+                        target_modules=LANGUAGE_TARGETS)
     if init:
         from peft import PeftModel
         adapted = PeftModel.from_pretrained(model, str(init), is_trainable=True)
