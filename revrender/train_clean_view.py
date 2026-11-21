@@ -7,6 +7,9 @@ the teacher (the same tower, frozen) at the clean image, and the student is pull
     python -m revrender.train_clean_view distance --model MODEL --student OUT/student --pack VIEWS --raw-pack RAW_VIEWS
         --erased-pack ERASED_VIEWS [--scan-pack SCAN_VIEWS] --fold K --output-dir DIST
     python -m revrender.train_clean_view agree --model MODEL --pack PACK --students PATTERN --fold K [--regions N] --output OUT.json
+    python -m revrender.train_clean_view subsets --pack VIEWS --scan-pack SCAN_VIEWS --shares 0.25 0.5 --output OUT.json
+    python -m revrender.train_clean_view same-tower --model MODEL --pack VIEWS --output OUT.json
+    python -m revrender.train_clean_view head --model MODEL --pack VIEWS --students PATTERN --output-dir HEAD
 
 The features: everything the tower hands the language model -- the merged tokens and the three deepstack levels of Qwen3-VL
 (``deepstack_visual_indexes``), each a token of the merged grid.  A scan and its clean twin have one size, so their tokens pair one
@@ -21,8 +24,25 @@ round); with NAFNet's held-out erased views it sees NAFNet's crop (N), with ``da
 in red (M; plan of 2026-11-20, 第五轮_X与V结合, sections 4.2-4.3).  Writers
 ordered by sha256("<writer>:42"), the first holding a tenth of those regions validate (their loss only).  ``--synthetic``: a
 ``data.synth_views build`` folder whose fold_K_raw / fold_K_clean packs give the synthetic pairs (scan -> clean host, window and
-line); each sample of a batch is then real or synthetic with even chances.  Every ``--eval-every`` steps the validation loss; the
-adapter of the lowest is kept (OUT/student), the curve in OUT/train_log.jsonl.
+line); each sample of a batch is then real or synthetic with even chances.  ``--covered``: a ``data.synth_views covered`` folder
+(the same packs), and a sample is real, synthetic or covered with chances 1/2, 1/4, 1/4 (sixth round, section 4.2).
+``--real-share S``: only the real pairs of the training writers ``real_subset`` takes for S (the learning curve, section 4.3; the
+validation writers and the synthetic pairs as ever).  Every ``--eval-every`` steps the validation loss; the adapter of the lowest is
+kept (OUT/student), the curve in OUT/train_log.jsonl.
+
+``subsets``: every fold's learning-curve writers for each share (OUT.json: writers, regions, the share reached, whether each share's
+writers hold the smaller ones'), as ``train --real-share`` takes them.  ``same-tower`` (the sixth round's check 1): one batch of
+the pack's images (eight regions, three images each) through the frozen tower alone (``vision_tower``) and through the whole model's
+tower: whether the four levels are the same bit for bit, and their mean and lowest token cosines.
+
+``head`` (the sixth round's B2, section 4.4): a small net that tells from what is there at test time how clean an adapter made a
+window.  Every region's window (the pack's ``raw``) through its own fold's adapter (PATTERN, ``{fold}``: the one that never trained
+on it) and through the frozen tower, the merged tokens of both side by side are the input; the target of a token is the cosine of
+the adapter's token to the frozen tower's token of the annotator's erased window (there only in training).  Per token: the two
+features -> 512 -> 1, squashed to 0-1, trained against the target clipped to 0-1 (mean squared error); a region's score is the mean
+over its tokens.  For each fold K a head learns on the other folds' regions (AdamW 1e-3, 16 regions a batch, 30 epochs, seed 42)
+and scores fold K's.  HEAD/scores.jsonl per region its score and the true mean cosine; HEAD/summary.json their Pearson and Spearman
+correlations per fold and over all.
 
 ``distance``: on the regions of fold K, the teacher's features of the scan, of the annotator's erased crop and of NAFNet's
 (``ERASED_VIEWS``), and the student's of the scan, for the window and for the line.  The tokens the strike touches: where the
@@ -56,7 +76,9 @@ TARGETS = r'.*blocks\.\d+\.(attn\.(qkv|proj)|mlp\.(linear_fc1|linear_fc2))'
 
 
 def vision_tower(model_dir):
-    """The vision tower of a Qwen3-VL checkpoint alone (bf16, sdpa), its patch embedding run as a matrix product."""
+    """The vision tower of a Qwen3-VL checkpoint alone (bf16 weights, sdpa), its patch embedding run as a matrix product.  Its buffers
+    stay as built, as the whole model keeps them: the rotary ``inv_freq`` in float32 (a cast of the tower to bf16 coarsened the
+    positions of the fourth and fifth rounds' adapters; sixth round, section 4.1)."""
     import torch
     from safetensors import safe_open
     from transformers import AutoConfig
@@ -72,7 +94,7 @@ def vision_tower(model_dir):
     missing, unexpected = tower.load_state_dict(state, strict=False)
     require(not missing and not unexpected, f'vision tower weights: missing {missing[:3]}, unexpected {unexpected[:3]}')
     patch_embed_as_linear(tower.patch_embed)
-    return tower.to(torch.bfloat16)
+    return tower
 
 
 def with_student(tower, rank=16, alpha=32, dropout=.05, adapter=None):
@@ -134,8 +156,24 @@ def opened(path):
     return Image.open(path).convert('RGB')
 
 
+def writer_key(writer):
+    return hashlib.sha256(f'{writer}:{SEED}'.encode()).hexdigest()
+
+
+def real_subset(regions, share):
+    """The learning curve's writers (sixth round, section 4.3): the training writers in sha256("<writer>:42") order, taken while that
+    brings their regions nearer ``share`` of all; a smaller share's writers are a prefix of a larger one's."""
+    writers = sorted({w for _, w, _ in regions}, key=writer_key); target = share*len(regions); chosen, count = [], 0
+    for w in writers:
+        n = sum(x == w for _, x, _ in regions)
+        if chosen and abs(count+n-target) >= abs(count-target):
+            break
+        chosen.append(w); count += n
+    return chosen
+
+
 def validation_writers(regions, share=.1):
-    writers = sorted({w for _, w, _ in regions}, key=lambda w: hashlib.sha256(f'{w}:{SEED}'.encode()).hexdigest())
+    writers = sorted({w for _, w, _ in regions}, key=writer_key)
     chosen, count, need = set(), 0, share*len(regions)
     for w in writers:
         if count >= need: break
@@ -148,6 +186,10 @@ def train(args):
     from transformers import AutoProcessor
     real = regions_of(args.pack, args.scan_pack, lambda r: r['fold'] != args.fold)
     held = validation_writers(real); val = [r for r in real if r[1] in held]; real = [r for r in real if r[1] not in held]
+    subset = real_subset(real, args.real_share) if args.real_share < 1 else sorted({w for _, w, _ in real}, key=writer_key)
+    everyone = len(real); real = [r for r in real if r[1] in set(subset)]
+    covered = regions_of(args.covered/f'fold_{args.fold}_clean', args.covered/f'fold_{args.fold}_raw', lambda r: True) if args.covered else []
+    require(not covered or args.synthetic, '--covered goes with --synthetic')
     synthetic = []
     if args.synthetic:
         # the clean pack: erased the clean window, context the line with the clean one; the raw pack: erased the synthetic window,
@@ -164,7 +206,8 @@ def train(args):
                    *((args.synthetic/f'fold_{args.fold}_raw'/'pack.json',) if args.synthetic else ()))},
                    real_training=len(real), synthetic_training=len(synthetic), validation=len(val), validation_writers=sorted(held),
                    trainable_parameters=sum(q.numel() for q in params), targets=TARGETS, features='merged + deepstack (all four levels)',
-                   synthetic_share=.5 if synthetic else 0.)
+                   synthetic_share=(.25 if covered else .5) if synthetic else 0., covered_training=len(covered), covered_share=.25 if covered else 0.,
+                   real_share=args.real_share, real_regions_all=everyone, real_writers=subset, real_regions_kept=len(real))
 
     def pairs_of(chosen):
         scans, cleans = [], []
@@ -192,12 +235,16 @@ def train(args):
     model.train()
     for step in range(args.steps):
         for group in optimizer.param_groups: group['lr'] = args.lr*schedule(step)
-        drawn = [bool(synthetic) and rng.random() < .5 for _ in range(args.batch_size)]
-        chosen = [rng.choice(synthetic) if d else rng.choice(real) for d in drawn]
+        if covered:                                # real 1/2, the earlier synthetic 1/4, the covered 1/4 (sixth round, section 4.2)
+            drawn = [(lambda u: 'covered' if u >= .75 else 'synthetic' if u >= .5 else 'real')(rng.random()) for _ in range(args.batch_size)]
+            chosen = [rng.choice({'real': real, 'synthetic': synthetic, 'covered': covered}[d]) for d in drawn]
+        else:                                      # as in the fourth round (the random stream unchanged)
+            drawn = [('synthetic' if bool(synthetic) and rng.random() < .5 else 'real') for _ in range(args.batch_size)]
+            chosen = [rng.choice(synthetic) if d == 'synthetic' else rng.choice(real) for d in drawn]
         student, teacher = forward(*pairs_of(chosen))
         loss = pair_loss(student, teacher); loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.); optimizer.step(); optimizer.zero_grad(set_to_none=True)
-        row = {'step': step+1, 'loss': float(loss), 'lr': optimizer.param_groups[0]['lr'], 'synthetic': sum(drawn),
+        row = {'step': step+1, 'loss': float(loss), 'lr': optimizer.param_groups[0]['lr'], 'synthetic': drawn.count('synthetic'), 'covered': drawn.count('covered'),
                'seconds': round(time.monotonic()-started, 1)}
         if (step+1) % args.eval_every == 0 or step+1 == args.steps:
             row['val_loss'] = validate()
@@ -318,11 +365,101 @@ def agree(args):
     require(result['passed'], f'check 2 failed: {args.output}')
 
 
+def subsets(args):
+    rows = json.loads((args.pack/'pack.json').read_text())['rows']; out = {}
+    for k in sorted({r['fold'] for r in rows}):
+        real = regions_of(args.pack, args.scan_pack, lambda r: r['fold'] != k)
+        held = validation_writers(real); train_ = [r for r in real if r[1] not in held]; fold = {'validation_writers': sorted(held), 'training_regions': len(train_)}
+        for share in args.shares:
+            writers = real_subset(train_, share); n = sum(r[1] in set(writers) for r in train_)
+            fold[str(share)] = {'writers': writers, 'regions': n, 'target': share*len(train_), 'off_target': n/(share*len(train_))-1}
+        shares = sorted(args.shares); fold['nested'] = all(set(fold[str(a)]['writers']) <= set(fold[str(b)]['writers']) for a, b in zip(shares, shares[1:]))
+        out[k] = fold
+    require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, out)
+    print(json.dumps({k: {s: v[str(s)]['regions'] for s in args.shares} | {'nested': v['nested']} for k, v in out.items()}), flush=True)
+
+
+def same_tower(args):
+    import torch
+    from transformers import AutoModelForImageTextToText, AutoProcessor
+    from .models.vlm_tokens import patch_embed_as_linear
+    rows = json.loads((args.pack/'pack.json').read_text())['rows'][:8]
+    processor = AutoProcessor.from_pretrained(str(args.model))
+    x, g = encode(processor, [opened(args.pack/r['images'][k]) for r in rows for k in ('raw', 'erased', 'context')], 'cuda')
+    with torch.no_grad():
+        alone = levels(vision_tower(args.model).to('cuda').eval(), x, g)
+        model = AutoModelForImageTextToText.from_pretrained(str(args.model), dtype=torch.bfloat16, attn_implementation='sdpa').to('cuda').eval()
+        patch_embed_as_linear(model.model.visual.patch_embed)
+        whole = levels(model.model.visual, x, g)
+    names = ('merged', 'deepstack1', 'deepstack2', 'deepstack3'); result = {'images': int(g.shape[0]), 'levels': {}}
+    for name, a, b in zip(names, alone, whole):
+        c = torch.nn.functional.cosine_similarity(a, b, dim=-1)
+        result['levels'][name] = {'bitwise': bool(torch.equal(a, b)), 'mean_cosine': float(c.mean()), 'lowest_cosine': float(c.min())}
+    result['passed'] = all(v['bitwise'] for v in result['levels'].values())
+    require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, result)
+    print(json.dumps(result), flush=True)
+    require(result['passed'], f'the tower alone and the whole model\'s differ: {args.output}')
+
+
+def head(args):
+    import torch
+    from scipy.stats import pearsonr, spearmanr
+    from transformers import AutoProcessor
+    rows = json.loads((args.pack/'pack.json').read_text())['rows']; folds = sorted({r['fold'] for r in rows})
+    adapters = {f'fold{j}': Path(args.students.format(fold=j)) for j in folds}
+    out = make_output_dir(args.output_dir); torch.manual_seed(SEED)
+    processor = AutoProcessor.from_pretrained(str(args.model))
+    from peft import PeftModel
+    tower = PeftModel.from_pretrained(vision_tower(args.model).to('cuda'), str(adapters['fold0']), adapter_name='fold0')
+    for name in list(adapters)[1:]:
+        tower.load_adapter(str(adapters[name]), adapter_name=name)
+    tower.eval()
+    write_manifest(out, config=to_jsonable(args), inputs={str(w): digest(w) for v in adapters.values() for w in sorted(v.glob('*.safetensors'))} | {str(args.pack/'pack.json'): digest(args.pack/'pack.json')},
+                   input_features="the window (the pack's raw) through its own fold's adapter and through the frozen tower: merged tokens, side by side",
+                   target="per token: cosine of the adapter's token to the frozen tower's token of the annotator's erased window (training only)",
+                   own_fold_adapter='each region through the adapter of its own fold (never trained on it)', trained_on='for fold K, the regions of the other folds only')
+    features, targets = {}, {}
+    with torch.no_grad():
+        for r in rows:
+            x, g = encode(processor, [opened(args.pack/r['images']['raw']), opened(args.pack/r['images']['erased'])], 'cuda')
+            n = int(g[0].prod())
+            with tower.disable_adapter():
+                frozen = levels(tower, x, g)[0]
+            tower.set_adapter(f'fold{r["fold"]}')
+            student = levels(tower, x[:n], g[:1])[0]
+            m = student.shape[0]
+            features[r['id']] = torch.cat([student, frozen[:m]], 1).half().cpu()
+            targets[r['id']] = torch.nn.functional.cosine_similarity(student, frozen[m:], dim=-1).clamp(0, 1).cpu()
+    width = next(iter(features.values())).shape[1]; scores = {}
+    for k in folds:
+        torch.manual_seed(SEED); order = random.Random(SEED)
+        net = torch.nn.Sequential(torch.nn.Linear(width, 512), torch.nn.GELU(), torch.nn.Linear(512, 1)).to('cuda')
+        optimizer = torch.optim.AdamW(net.parameters(), lr=1e-3)
+        train_ = [r['id'] for r in rows if r['fold'] != k]
+        for _ in range(30):
+            order.shuffle(train_)
+            for start in range(0, len(train_), 16):
+                ids = train_[start:start+16]
+                x = torch.cat([features[i] for i in ids]).float().cuda(); y = torch.cat([targets[i] for i in ids]).cuda()
+                loss = ((torch.sigmoid(net(x)[:, 0])-y)**2).mean(); loss.backward(); optimizer.step(); optimizer.zero_grad(set_to_none=True)
+        with torch.no_grad():
+            for r in (r for r in rows if r['fold'] == k):
+                scores[r['id']] = (float(torch.sigmoid(net(features[r['id']].float().cuda())[:, 0]).mean()), float(targets[r['id']].mean()))
+    with (out/'scores.jsonl').open('x', encoding='utf-8') as stream:
+        for r in rows:
+            stream.write(json.dumps({'id': r['id'], 'fold': r['fold'], 'writer': r['writer'], 'score': scores[r['id']][0], 'true_mean_cosine': scores[r['id']][1]})+'\n')
+    corr = lambda ids: {'regions': len(ids), 'pearson': float(pearsonr(*zip(*(scores[i] for i in ids)))[0]), 'spearman': float(spearmanr(*zip(*(scores[i] for i in ids)))[0])}
+    summary = {'all': corr([r['id'] for r in rows]), 'folds': {k: corr([r['id'] for r in rows if r['fold'] == k]) for k in folds}}
+    write_json(out/'summary.json', summary); print(json.dumps(summary), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0]); sub = p.add_subparsers(dest='command', required=True)
     t = sub.add_parser('train')
     for key in ('model', 'pack', 'scan-pack', 'output-dir'): t.add_argument('--'+key, type=Path, required=True)
     t.add_argument('--fold', type=int, required=True); t.add_argument('--synthetic', type=Path)
+    t.add_argument('--covered', type=Path, help='a data.synth_views covered folder: real 1/2, synthetic 1/4, covered 1/4')
+    t.add_argument('--real-share', type=float, default=1., help='the share of the real training regions kept (the learning curve)')
     t.add_argument('--steps', type=int, default=600); t.add_argument('--batch-size', type=int, default=8, help='regions a step (each a window and a line)')
     t.add_argument('--eval-every', type=int, default=50); t.add_argument('--rank', type=int, default=16); t.add_argument('--alpha', type=int, default=32)
     t.add_argument('--dropout', type=float, default=.05); t.add_argument('--lr', type=float, default=1e-4); t.add_argument('--warmup', type=int, default=30)
@@ -333,7 +470,16 @@ def main(argv=None):
     for key in ('model', 'pack', 'output'): a.add_argument('--'+key, type=Path, required=True)
     a.add_argument('--students', required=True, help="a fold's adapter, {fold} for the fold"); a.add_argument('--fold', type=int, required=True)
     a.add_argument('--regions', type=int, default=8); a.add_argument('--reader-adapter', type=Path, help="the reading Reader's adapter (2c)")
-    args = p.parse_args(argv); {'train': train, 'distance': distance, 'agree': agree}[args.command](args)
+    u = sub.add_parser('subsets')
+    for key in ('pack', 'scan-pack', 'output'): u.add_argument('--'+key, type=Path, required=True)
+    u.add_argument('--shares', type=float, nargs='+', required=True)
+    w = sub.add_parser('same-tower')
+    for key in ('model', 'pack', 'output'): w.add_argument('--'+key, type=Path, required=True)
+    h = sub.add_parser('head')
+    for key in ('model', 'pack', 'output-dir'): h.add_argument('--'+key, type=Path, required=True)
+    h.add_argument('--students', required=True, help="a fold's adapter, {fold} for the fold")
+    args = p.parse_args(argv)
+    {'train': train, 'distance': distance, 'agree': agree, 'subsets': subsets, 'same-tower': same_tower, 'head': head}[args.command](args)
 
 
 if __name__ == '__main__':
