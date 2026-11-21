@@ -99,6 +99,7 @@ if [ "${SLUG:-}" = internvl ]; then
     if [ "$PART" = smoke ] && ! done_ tiles; then
         for t in 12 6 4; do
             for part in reader plugin read; do place 23000 1 probe "$R/memory_${t}_$part" "$t" "$part"; done; wait
+            for part in reader plugin read; do test -e "$R/memory_${t}_$part/result.json"; done   # a probe that broke stops the run (only memory lowers the tiles)
             if "$HME" -c 'import json,sys; sys.exit(0 if all(json.load(open(f"{sys.argv[1]}/memory_{sys.argv[2]}_{p}/result.json"))["fitted"] for p in ("reader","plugin","read")) else 1)' "$R" "$t"; then
                 echo "$t" > "$R/checks/max_tiles"; break; fi
         done
