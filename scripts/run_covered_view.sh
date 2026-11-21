@@ -13,7 +13,12 @@
 # run manifest).  The strike shares are checked region by region against the planning session's count ($B_inputs/region_stats.json).
 # Cards 1 and 2 (the user's word, 2026-11-21: 「那就用两张卡，1，2」); cards 0 and 3 are not touched,
 # ALLOW_GPU3 is not set.  ARMS="fix l25 l50": only those arms are taught, read and scored (the planning session, 2026-11-21: V-涂满
-# waits for the user's word; rule A then is not judged).  Unattended; a step whose marker is in $R is skipped.
+# waits for the user's word; rule A then is not judged).  RUN=maa (the sixth round's update, 第六轮更新稿_MAA迁移与提示前提试验,
+# beside the run above, in paper2_clean_maa_view20261121): V-判别 (train_clean_view --discriminator; rule G against the run's V-修)
+# and the boards' premise test (data.hint_image boards; adapters C on blank boards and T on the answer, windows only, real pairs;
+# train_clean_view boards-distance; rule H), the spread of V-修 and V-判别 (MMD squared, energy distance); its smoke checks: V-修's
+# recipe on the new code (fold 0's step-0 validation loss the same as the run's, its first four losses beside), the discriminator
+# never saved, the boards read back (in the builder).  Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -22,9 +27,9 @@ O=/home/zsh/hme/outputs; N=$O/paper2_clean; B=${N}_covered_view20261121; PART=${
 case "$PART" in main) TAG=; P_STEPS=2000; P_EVAL=50; LIMIT=(); READ=(0 1 2 3 4); FIX_FOLDS=(0 1 2 3 4) ;;
     smoke) TAG=_smoke; P_STEPS=10; P_EVAL=10; LIMIT=(--limit 8); READ=(0); FIX_FOLDS=(0 1 2 3 4) ;;
     *) echo "PART is main or smoke"; exit 2 ;; esac
-R=$B$TAG; mkdir -p "$R/checks"
+FIX=$B$TAG; R=$FIX; [ "${RUN:-}" != maa ] || R=${N}_maa_view20261121$TAG; mkdir -p "$R/checks"
 P2=${N}_nafnet_folds20261119; V=${N}_revision_folds_human_masked20261117b_views; EV=${P2}_erased_views; RAWV=${P2}_raw_views
-P4=${N}_privileged_view20261120; SYN=${P4}_synth; COV=${B}_covered; SH=${P2}_reader_shared_f; SHARES=$R/checks/strike_shares.json
+P4=${N}_privileged_view20261120; SYN=${P4}_synth; COV=${B}_covered; SH=${P2}_reader_shared_f; SHARES=$FIX/checks/strike_shares.json
 MODEL=/home/zsh/hme/models/Qwen3-VL-8B-Instruct
 exec 8>"$R/lock"; flock -n 8 || { echo 'another run of this part is still going'; exit 1; }
 stamp() { echo "$* $(date -u +%FT%TZ)"; }
@@ -80,6 +85,64 @@ read -ra ARMS <<< "${ARMS:-fix covered l25 l50}"; has() { [[ " ${ARMS[*]} " == *
 declare -A NAME=([fix]=V-修 [covered]=V-涂满 [l25]=L25 [l50]=L50)
 declare -A MORE=([fix]="" [covered]="--covered $COV" [l25]="--real-share 0.25" [l50]="--real-share 0.5")
 view() { echo "${B}${TAG}_view_$1_f$2"; }
+
+if [ "${RUN:-}" = maa ]; then
+    BOARDS=${N}_maa_view20261121_boards; mine() { echo "${R}_view_$1_f$2"; }
+    window_plugin() {   # OUT FOLD KIND: an adapter on the windows with a board of KIND beside them, real pairs only (V-真's recipe)
+        [ -e "$1/complete.json" ] || job "$1" -- "$PY" -m revrender.train_clean_view train --model "$MODEL" --pack "$BOARDS/$3/teacher" --scan-pack "$BOARDS/$3/scan" \
+            --fold "$2" --window-only --steps "$P_STEPS" --eval-every "$P_EVAL" --output-dir "$1"
+    }
+    if ! done_ data; then
+        [ -e "$BOARDS/summary.json" ] || "$PY" -m revrender.data.hint_image boards --pack "$V" --model "$MODEL" --output-dir "$BOARDS" > "$BOARDS.log" 2>&1
+        "$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if all(v["passed"] for v in s.values()) else "boards not as made")' "$BOARDS/summary.json"
+        mark data; fi
+    if ! done_ plugins; then
+        if [ "$PART" = smoke ]; then   # V-修's recipe on the new code: fold 0's step-0 validation loss as the run's, its first four losses beside
+            place 12000 0 plugin "$R/check_replay" 0 --stop-after 4; wait
+            "$PY" -c 'import json,sys; read=lambda p:[json.loads(l) for l in open(p)][:5]; a,b=read(sys.argv[1]),read(sys.argv[2]); r={"step0":[a[0]["val_loss"],b[0]["val_loss"]],"losses_new":[x["loss"] for x in a[1:]],"losses_run":[x["loss"] for x in b[1:]],"step0_same":a[0]["val_loss"]==b[0]["val_loss"]}; json.dump(r,open(sys.argv[3],"w"),indent=2); print(json.dumps(r)); sys.exit(0 if r["step0_same"] else "the step-0 validation loss moved")' \
+                "$R/check_replay/train_log.jsonl" "${B}_view_fix_f0/train_log.jsonl" "$R/checks/check_replay.json"
+        fi
+        for k in "${READ[@]}"; do place 12000 0 plugin "$(mine disc "$k")" "$k" --discriminator; done
+        for k in "${READ[@]}"; do place 12000 0 window_plugin "$(mine hint_c "$k")" "$k" blank; place 12000 0 window_plugin "$(mine hint_t "$k")" "$k" answer; done; wait
+        for arm in disc hint_c hint_t; do for k in "${READ[@]}"; do test -e "$(mine $arm "$k")/student/adapter_config.json"; done; done
+        "$PY" - "$(mine disc "${READ[0]}")/student" "$(view fix "${READ[0]}")/student" "$R/checks/check_discriminator_not_saved.json" <<'PY'
+import json, sys
+from safetensors import safe_open
+keys = lambda d: sorted(safe_open(d+'/adapter_model.safetensors', 'pt').keys())
+mine, fix = keys(sys.argv[1]), keys(sys.argv[2])
+r = {'tensors': len(mine), 'same_keys_as_V-修': mine == fix, 'discriminator_like': [k for k in mine if 'lora_' not in k]}
+json.dump(r, open(sys.argv[3], 'w'), indent=2); print(json.dumps(r)); sys.exit(0 if r['same_keys_as_V-修'] and not r['discriminator_like'] else 'the saved adapter holds more than the adapter')
+PY
+        mark plugins; fi
+    if ! done_ reads; then
+        for k in "${READ[@]}"; do place 22000 1 read_with "$R/read_disc_f$k" "$RAWV" "${SH}$k/adapter" "$k" "${LIMIT[@]}" --view-student "$(mine disc "$k")/student" --student-images 2 3; done; wait
+        for k in "${READ[@]}"; do test -e "$R/read_disc_f$k/complete.json"; done
+        mark reads; fi
+    if ! done_ measures; then
+        for k in "${READ[@]}"; do
+            place 6000 0 distance "$R/distance_disc_f$k" "$(mine disc "$k")/student" "$k"
+            place 6000 0 job "$R/boards_c_f$k" -- "$PY" -m revrender.train_clean_view boards-distance --model "$MODEL" --student "$(mine hint_c "$k")/student" --boards "$BOARDS" \
+                --kinds blank --fold "$k" --output-dir "$R/boards_c_f$k"
+            place 6000 0 job "$R/boards_t_f$k" -- "$PY" -m revrender.train_clean_view boards-distance --model "$MODEL" --student "$(mine hint_t "$k")/student" --boards "$BOARDS" \
+                --kinds answer wrong blank --fold "$k" --output-dir "$R/boards_t_f$k"
+        done
+        [ -e "$R/spread.json" ] || place 12000 1 job "$R/spread.json" -- "$PY" -m revrender.train_clean_view spread --model "$MODEL" --pack "$V" \
+            --student "V-修=${B}${TAG}_view_fix_f{fold}/student" --student "V-判别=${R}_view_disc_f{fold}/student" --folds "${READ[@]}" --output "$R/spread.json"; wait
+        for k in "${READ[@]}"; do test -e "$R/distance_disc_f$k/distances.jsonl"; test -e "$R/boards_c_f$k/distances.jsonl"; test -e "$R/boards_t_f$k/distances.jsonl"; done; test -e "$R/spread.json"
+        mark measures; fi
+    if ! done_ score; then
+        ARMS_=(--arm "V-判别=$(dirs "$R/read_disc")" --arm "V-修=$(dirs "$FIX/read_fix")" --arm "V-真+合=$(dirs "$P4/read_V-synth")" --arm "X=$(dirs "$P4/read_X")"
+               --arm "E-NAFNet=$(dirs "$P2/read_E-NAFNet")" --arm "R0=$(dirs "$P2/read_R0")" --arm "H=$(dirs "$P2/read_H")")
+        REFS=(V-修 V-真+合 H R0 X E-NAFNet)
+        for ref in "${REFS[@]}"; do [ -e "$R/scores_vs_$ref.json" ] || "$PY" -m revrender.eval.transcription --pack "$V" "${ARMS_[@]}" --reference "$ref" \
+            $([ "$ref" != V-修 ] || echo --readings "$R/readings.jsonl") --output "$R/scores_vs_$ref.json" > "$R/scores_vs_$ref.log" 2>&1; done
+        [ -e "$R/analysis/analysis.json" ] || "$PY" -m revrender.eval.privileged analyse --pack "$V" "${ARMS_[@]}" --shares "$SHARES" \
+            $(for ref in "${REFS[@]}"; do echo --scores "$ref=$R/scores_vs_$ref.json"; done) --distances "V-判别=$(dirs "$R/distance_disc")" --output-dir "$R/analysis" > "$R/analysis.log" 2>&1
+        [ -e "$R/hint/hint.json" ] || "$PY" -m revrender.eval.privileged hint --control "$(dirs "$R/boards_c")" --hinted "$(dirs "$R/boards_t")" --shares "$SHARES" \
+            --output-dir "$R/hint" > "$R/hint.log" 2>&1
+        mark score; fi
+    touch "$R/COMPLETE"; stamp "$PART maa complete"; exit 0
+fi
 
 # CPU: the strike shares (checked against the planning session's), the covered regions (check 3), the subsets (check 4).
 if ! done_ data; then

@@ -47,3 +47,18 @@ def test_answered_aurc_and_threshold():
     assert answered_aurc(scores, right, 4) == pytest.approx((0+0+1/3+2/4)/4)
     assert answered_aurc(scores, right, 8) == pytest.approx(answered_aurc(scores, right, 4)/2)      # refusals count as never answered
     assert threshold(scores, right, .3, False) == .8 and threshold(scores, right, .0, True) is None
+
+
+def test_a_blank_board_for_no_text():
+    from revrender.data.hint_image import board
+    out, blank = board(None, 12, 30)
+    assert blank and out.shape == (12, 30) and (out == 255).all()
+    _, blank = board('[读不出]', 12, 30)
+    assert blank
+
+
+def test_token_discriminator_is_mapped_per_token():
+    torch = pytest.importorskip('torch')
+    from revrender.train_clean_view import TokenDiscriminator
+    judge = TokenDiscriminator(16, hidden=8, blocks=2)
+    assert judge(torch.zeros(5, 16)).shape == (5, 1) and next(judge.parameters()).dtype == torch.float32

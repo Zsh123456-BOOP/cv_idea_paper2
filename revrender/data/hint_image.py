@@ -4,6 +4,7 @@
     python -m revrender.data.hint_image stats --pack PACK [--readings DIR[,DIR...]] --output OUT.json
     python -m revrender.data.hint_image hints --pack PACK --source answer|wrong|white|readings [--readings DIR[,DIR...]] --output HINTS.json
     python -m revrender.data.hint_image windows --sets SETS --answers ANSWERS.json --readings READINGS.json --output-dir HINTED_SETS
+    python -m revrender.data.hint_image boards --pack VIEWS --model MODEL --output-dir BOARDS
 
 ``hint_text``: the text as typeset -- the annotator's or a reader's LaTeX spelling, ``?`` dropped, ``$$...$$`` as ``$...$``, an odd
 count of ``$`` dropped altogether (plain text); None (a white hint) for a refusal, an empty text or the unreadable mark.  ``render``:
@@ -16,6 +17,16 @@ plan's fixed rule (section four).  ``stats``: how many answers and readings fall
 null where it takes no part: unreadable, nothing to change, a ``\begin``), white, or a reading.  ``windows``: windowed sets
 (``data.struck_pack fold-sets --windowed``) again with the hint windows a restorer trains and stops on: per training region
 ``hint_answer_<k>`` and ``hint_reading_<k>``, per validation and held-out region ``hint_<k>`` from the readings.
+
+``boards`` (plan of 2026-11-21, 第六轮更新稿, section three): every region's window with a board beside it on the right, as high as
+the window and as wide (``board``): blank, the region's answer (``hint_text`` of its own annotated text; blank where unreadable) or
+its wrong answer (``wrong_answer``; blank where it takes no part), ``typeset`` black on white, scaled as a whole (its shape kept) to
+fit 80 % of the board's height and 90 % of its width, centred.  For each kind BOARDS/<kind>/teacher/pack.json (raw the scan window
+with the board, erased the annotator's erased window with the same board) and BOARDS/<kind>/scan/pack.json (erased the scan window
+with the board: what an adapter sees, ``train_clean_view train --scan-pack``); each row also says whether its board is blank and how
+many of its merged-token columns lie wholly over the window (``window_columns``, from the model's image processor: the window's
+tokens).  Every pair is read back and checked: the board halves the same pixel for pixel, the window halves the scan and the erased
+window, one token grid (BOARDS/summary.json).  BOARDS/contrast.html the first 20 regions' scan windows with each kind of board.
 """
 import argparse
 import io
@@ -165,6 +176,62 @@ def windows(args):
     print(json.dumps({'folds': len(list(out.glob('fold_*'))), 'plain_typeset': fell}), flush=True)
 
 
+def board(text, height, width):
+    """A white board (uint8, ``height`` x ``width``) with ``text`` typeset on it (``boards``), or blank; whether it is blank."""
+    out = np.full((height, width), 255, np.uint8); s = hint_text(text)
+    if s is None: return out, True
+    grey, _ = typeset(s); k = min(.8*height/grey.shape[0], .9*width/grey.shape[1])
+    h, w = max(1, int(round(grey.shape[0]*k))), max(1, int(round(grey.shape[1]*k)))
+    t, l = (height-h)//2, (width-w)//2
+    out[t:t+h, l:l+w] = np.asarray(Image.fromarray(grey).resize((w, h), Image.Resampling.LANCZOS))
+    return out, False
+
+
+def boards(args):
+    import base64
+    from transformers import AutoProcessor
+    from ..util import digest, make_output_dir, write_manifest
+    rows = json.loads((args.pack/'pack.json').read_text())['rows']
+    processor = AutoProcessor.from_pretrained(str(args.model)); merge = 2*processor.image_processor.patch_size
+    out = make_output_dir(args.output_dir); summary = {}
+    texts = {'blank': lambda r: None, 'answer': lambda r: r['text'] if r['readable'] else None, 'wrong': lambda r: wrong_answer(r['text']) if r['readable'] else None}
+    shown = {}
+    for kind, text_of in texts.items():
+        (out/kind/'crops').mkdir(parents=True); teacher, scan = [], []; checked = {'regions': 0, 'blank': 0, 'boards_equal': 0, 'windows_equal': 0, 'grids_equal': 0}
+        for n, r in enumerate(rows):
+            raw, erased = (np.asarray(Image.open(args.pack/r['images'][k]).convert('L')) for k in ('raw', 'erased'))
+            b, blank = board(text_of(r), *raw.shape)
+            pair = {'scan': np.concatenate([raw, b], 1), 'clean': np.concatenate([erased, b], 1)}
+            paths = {}
+            for name, image in pair.items():
+                path = out/kind/'crops'/f'{n:05d}_{name}.png'; Image.fromarray(image).save(path); paths[name] = str(path)
+            back = {name: np.asarray(Image.open(paths[name])) for name in paths}; w = raw.shape[1]
+            grids = [processor.image_processor(images=[Image.open(paths[name]).convert('RGB')], return_tensors='pt')['image_grid_thw'][0].tolist() for name in paths]
+            columns = grids[0][2]//2; resized = grids[0][2]*processor.image_processor.patch_size
+            window_columns = int(w*resized/back['scan'].shape[1]//merge)
+            checked['regions'] += 1; checked['blank'] += blank
+            checked['boards_equal'] += bool(np.array_equal(back['scan'][:, w:], back['clean'][:, w:]))
+            checked['windows_equal'] += bool(np.array_equal(back['scan'][:, :w], raw) and np.array_equal(back['clean'][:, :w], erased))
+            checked['grids_equal'] += grids[0] == grids[1]
+            extra = {'board_blank': blank, 'board_text': text_of(r), 'window_columns': window_columns, 'token_columns': columns}
+            teacher.append({**r, **extra, 'images': {'raw': paths['scan'], 'erased': paths['clean']}})
+            scan.append({**r, **extra, 'images': {'raw': paths['scan'], 'erased': paths['scan']}})
+            if n < 20: shown.setdefault(n, {})[kind] = paths['scan']
+        for name, chosen in (('teacher', teacher), ('scan', scan)):
+            (out/kind/name).mkdir(); write_json(out/kind/name/'pack.json', {'schema': 'revrender-line-pack', 'rows': chosen})
+        checked['passed'] = checked['boards_equal'] == checked['windows_equal'] == checked['grids_equal'] == checked['regions']
+        summary[kind] = checked
+    png = lambda path: 'data:image/png;base64,'+base64.b64encode(Path(path).read_bytes()).decode()
+    cells = ''.join(f'<div class="c"><div>{rows[n]["id"]}</div>'+''.join(f'<div class="k">{kind}</div><img src="{png(shown[n][kind])}">' for kind in texts)+'</div>' for n in sorted(shown))
+    (out/'contrast.html').write_text('<!doctype html><meta charset="utf-8"><title>Window boards</title><style>body{font:13px sans-serif;margin:16px}.c{display:inline-block;'
+                                     'margin:6px;padding:6px;border:1px solid #ccc;vertical-align:top}.k{color:#666;margin-top:4px}img{display:block;max-width:420px}</style>'
+                                     '<h1>Scan windows with their boards: blank, answer, wrong answer (first 20 regions)</h1>'+cells, encoding='utf-8')
+    write_json(out/'summary.json', summary)
+    write_manifest(out, config={k: str(v) for k, v in vars(args).items() if k != 'command'}, inputs={str(args.pack/'pack.json'): digest(args.pack/'pack.json')}, **summary)
+    print(json.dumps(summary), flush=True)
+    require(all(v['passed'] for v in summary.values()), f'a board pair is not as made: {out}/summary.json')
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0]); sub = p.add_subparsers(dest='command', required=True)
     s = sub.add_parser('stats')
@@ -176,7 +243,9 @@ def main(argv=None):
     h.add_argument('--fallback', type=Path, help='hints of the regions the readings lack (a smoke test reads a few)')
     w = sub.add_parser('windows')
     for key in ('sets', 'answers', 'readings', 'output-dir'): w.add_argument('--'+key, type=Path, required=True)
-    args = p.parse_args(argv); {'stats': stats, 'hints': hints, 'windows': windows}[args.command](args)
+    b = sub.add_parser('boards')
+    for key in ('pack', 'model', 'output-dir'): b.add_argument('--'+key, type=Path, required=True)
+    args = p.parse_args(argv); {'stats': stats, 'hints': hints, 'windows': windows, 'boards': boards}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -5,10 +5,19 @@ adapter looking at NAFNet's crop (NV, NVR) or at the scan with NAFNet's erasure 
 5): V-修 (the tower's positions mended), V-涂满 (with covered synthetic regions), L25 / L50 (the learning curve).
 
     python -m revrender.eval.privileged shares --pack VIEWS [--compare REGION_STATS.json] --output SHARES.json
+    python -m revrender.eval.privileged hint --control DIST[,DIST...] --hinted DIST[,DIST...] --shares SHARES.json --output-dir OUT
 
 ``shares``: each region's strike share of its ink (``data.synth_views.window_stats`` on the pack's raw and erased windows), the
 readable regions above their median the heavier half and the rest the lighter, and their quarters; with ``--compare`` region by
 region against another count (the planning session's ``strike_share``): the largest difference and the regions put in another half.
+
+The sixth round's update: rule G (in ``analyse``) V-判别 against V-修 written as rule A (``rule_a``: the heavier half the main
+measure, the whole and the lighter half its floor; the four grades of the whole beside).  ``hint``: rule H from the board distances
+(``train_clean_view boards-distance``) of the control adapters C (blank boards) and the hinted ones T (the answer; also the wrong
+answer and a blank board): on the readable heavier-half regions whose answer board is not blank, the mean of T's merged-level cosine
+with the answer minus C's with a blank board and its writer-resampled 95 % interval (``mean_interval``); at least +0.03 and the
+lower end above 0: the premise holds.  Reported: the other levels, the lighter half and the whole, T with the wrong answer (where one
+is made) and with a blank board against C.
 
     python -m revrender.eval.privileged analyse --pack VIEWS --arm NAME=DIR[,DIR...] [...] --scores REF=FILE [...]
         [--distances NAME=DIR[,DIR...] ...] [--teacher FILE ...] --output-dir OUT
@@ -105,6 +114,31 @@ def shares(args):
     require(not args.compare or result['compared']['agrees'], f'the strike shares do not agree with {args.compare}: {args.output}')
 
 
+def hint(args):
+    """Rule H of the sixth round's update (see the module's words)."""
+    load = lambda spec: {r['id']: r for folder in spec.split(',') for r in map(json.loads, (Path(folder)/'distances.jsonl').read_text().splitlines())}
+    control, hinted = load(args.control), load(args.hinted); half = {k: v.get('half') for k, v in json.loads(args.shares.read_text())['regions'].items()}
+    writers = {k: r['writer'] for k, r in hinted.items()}; rng = np.random.default_rng(SEED); result = {}
+    def compare(kind, part, level='merged', need=lambda r: not r['answer']['board_blank']):
+        values = {}
+        for k, t in hinted.items():
+            c = control.get(k)
+            if not (c and t['readable'] and need(t) and (part == 'whole' or half.get(k) == part) and t[kind][level] and c['blank'][level]): continue
+            values[k] = t[kind][level]['student']-c['blank'][level]['student']
+        return mean_interval(values, writers, rng) if values else None
+    main_ = compare('answer', 'heavy')
+    result['ruleH'] = {**main_, 'verdict': 'premise_holds' if main_['mean'] >= .03 and main_['interval'][0] > 0 else 'premise_does_not_hold'}
+    result['reported'] = {f'{kind}_{part}_{level}': compare(kind, part, level, need) for kind, need in (('answer', lambda r: not r['answer']['board_blank']),
+                          ('wrong', lambda r: not r['wrong']['board_blank']), ('blank', lambda r: not r['answer']['board_blank']))
+                          for part in ('heavy', 'light', 'whole') for level in LEVELS}
+    means = lambda d, kind, ks: float(np.mean([d[k][kind]['merged']['student'] for k in ks])) if ks else None
+    heavy_ids = [k for k, t in hinted.items() if t['readable'] and half.get(k) == 'heavy' and not t['answer']['board_blank'] and k in control and t['answer']['merged'] and control[k]['blank']['merged']]
+    result['means_heavy_merged'] = {'C_blank': means(control, 'blank', heavy_ids), 'T_answer': means(hinted, 'answer', heavy_ids), 'raw_answer_board': float(np.mean([hinted[k]['answer']['merged']['raw'] for k in heavy_ids]))}
+    out = make_output_dir(args.output_dir); write_json(out/'hint.json', result)
+    write_manifest(out, config={k: str(v) for k, v in vars(args).items() if k != 'command'}, inputs={str(args.shares): digest(args.shares)})
+    print(json.dumps({'ruleH': result['ruleH']}), flush=True)
+
+
 def pick(a):
     return {k: a[k] for k in ('ar', 'exact', 'ned', 'regions')}
 
@@ -190,6 +224,9 @@ def analyse(args):
             gain = (curve['V-修']['whole']-curve['L25']['whole'])/2
             curve['pairs'] = {'L50_vs_L25': pick(vs('L25', 'L50')), 'V-修_vs_L50': pick(vs('L50', 'V-修')),
                               'rough_200_percent': {'exact': curve['V-修']['whole']+gain, 'gain_per_doubling': gain, 'note': 'rough: the mean gain of the two doublings, carried once more'}}
+        if 'V-判别' in arms:
+            heavy, light, whole = on('heavy', 'V-修', 'V-判别'), on('light', 'V-修', 'V-判别'), vs('V-修', 'V-判别')
+            rules['ruleG_V-判别_vs_V-修'] = {'heavy': pick(heavy), 'light': pick(light), 'whole': pick(whole), 'verdict': rule_a(heavy, light, whole), 'whole_grade': grade(whole)}
         rules['learning_curve'] = curve
         rules['reported'] = {f'{n}_vs_{ref}': pick(vs(ref, n)) for n in ('V-修', 'V-涂满', 'L25', 'L50') if n in arms for ref in ('V-真+合', 'H', 'R0', 'X') if ref in scores and ref != n}
     names = list(arms)
@@ -235,7 +272,10 @@ def main(argv=None):
     a.add_argument('--shares', type=Path, help='a shares file: the sixth round\'s halves and quarters of the strike share')
     s = sub.add_parser('shares')
     s.add_argument('--pack', type=Path, required=True); s.add_argument('--compare', type=Path); s.add_argument('--output', type=Path, required=True)
-    args = p.parse_args(argv); {'analyse': analyse, 'shares': shares}[args.command](args)
+    h = sub.add_parser('hint')
+    h.add_argument('--control', required=True); h.add_argument('--hinted', required=True)
+    h.add_argument('--shares', type=Path, required=True); h.add_argument('--output-dir', type=Path, required=True)
+    args = p.parse_args(argv); {'analyse': analyse, 'shares': shares, 'hint': hint}[args.command](args)
 
 
 if __name__ == '__main__':
