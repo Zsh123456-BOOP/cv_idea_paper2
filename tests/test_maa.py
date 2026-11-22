@@ -42,3 +42,34 @@ def test_adapter_starts_as_nothing_and_keeps_small_images():
     width = 32
     per = 2*width + (width*MLP_HIDDEN+MLP_HIDDEN)+(MLP_HIDDEN*width+width) + (width*384+384)+(128*width+width)+8*13*13+1 + 2
     assert sum(q.numel() for q in one.parameters()) == per
+
+
+def test_view_on_a_tiny_tower(tmp_path):
+    torch = pytest.importorskip('torch'); pytest.importorskip('transformers')
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
+    from revrender.models.maa import MaaView, student_view
+    from revrender.train_clean_view import checkpoint_layers, levels, pair_loss
+    torch.manual_seed(42)
+    config = Qwen3VLVisionConfig(depth=3, hidden_size=32, intermediate_size=64, num_heads=4, out_hidden_size=48, deepstack_visual_indexes=[1], num_position_embeddings=64)
+    config._attn_implementation = 'sdpa'
+    tower = Qwen3VLVisionModel(config).float().eval()
+    grid = torch.tensor([[1, 6, 10], [1, 14, 16]]); x = torch.randn(int(grid.prod(-1).sum()), 3*2*16*16)
+    frozen = levels(tower, x, grid); view = MaaView(tower)
+    assert all(torch.equal(a, b) for a, b in zip(frozen, levels(view, x, grid)))            # check 1: alphas 0
+    assert not any(q.requires_grad for q in tower.parameters())
+    with torch.no_grad():
+        for a in view.sets['default']: a.alpha_mlp.fill_(.3); a.alpha_pool.fill_(.05)
+    with view.disable_adapter():
+        assert all(torch.equal(a, b) for a, b in zip(frozen, levels(view, x, grid)))
+    target = [f+.1 for f in frozen]; view.train()
+    pair_loss(levels(view, x, grid), target).backward()
+    plain = {k: q.grad.clone() for k, q in view.sets.named_parameters()}
+    assert all(q.grad is None for q in tower.parameters())                                  # check 3
+    view.sets.zero_grad(set_to_none=True); checkpoint_layers(view.base_model.model)
+    pair_loss(levels(view, x, grid), target).backward()
+    assert all(torch.allclose(plain[k], q.grad, atol=1e-6) for k, q in view.sets.named_parameters())
+    view.save_pretrained(tmp_path/'student')
+    again = Qwen3VLVisionModel(config).float().eval(); again.load_state_dict(tower.state_dict())
+    loaded = student_view(again, {'f0': tmp_path/'student'})
+    assert torch.equal(levels(loaded, x, grid)[0], levels(view, x, grid)[0])

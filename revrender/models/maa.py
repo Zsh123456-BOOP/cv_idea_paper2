@@ -130,6 +130,8 @@ class MaaView:
         class View(nn.Module):
             def __init__(self):
                 super().__init__()
+                for q in tower.parameters():                         # the tower stays frozen; only the adapters learn (as peft freezes its base)
+                    q.requires_grad_(False)
                 self.tower = tower
                 self.sets = nn.ModuleDict(sets or {n: adapter_set(tower.config.hidden_size, len(tower.blocks)) for n in names})
                 self.sets.to(next(tower.parameters()).device)
