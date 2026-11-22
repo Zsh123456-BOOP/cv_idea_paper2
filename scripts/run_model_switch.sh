@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The plug-in on other models, stage one (plan of 2026-11-21, 换模型验证插件; the user: 「可以，开工，4点都听你的」): Qwen3.5-9B (the new
-# env) and InternVL3.5-8B (the hme env, its bundled code under the safeguards; models.internvl), each with Qwen3-VL-8B's recipe:
+# env) and InternVL3.5-8B (the hme env, its bundled code under the safeguards; models.internvl), and Gemma 4 E4B (revisions seven and
+# eight: the new env, models.gemma; its check 9b on the template, the audio tower never called), each with Qwen3-VL-8B's recipe:
 #   H   a reader taught on the annotator's erased crops (context_revision, every region of the other folds, 100 steps), reading them;
 #   R0  a reader taught on the scans (raw_context_revision), reading them;
 #   V   H's reader with the tower adapter (V-修's recipe: real and 3,000 synthetic pairs, half each, at most 2,000 steps, the lowest
@@ -22,12 +23,14 @@ P2=${N}_nafnet_folds20261119; V=${N}_revision_folds_human_masked20261117b_views;
 SYN=${N}_privileged_view20261120_synth; FIX=${N}_covered_view20261121; SH=${P2}_reader_shared_f; R0R=${P2}_reader_R0_f
 case "$PART" in
     check1) R=${B}_check1 ;;
-    probe) case "${MODEL:-}" in Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;; InternVL3_5-8B) X=$HME; SLUG=internvl ;; *) echo 'MODEL is Qwen3.5-9B or InternVL3_5-8B'; exit 2 ;; esac
+    probe) case "${MODEL:-}" in Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;; InternVL3_5-8B) X=$HME; SLUG=internvl ;; gemma-4-E4B-it) X=$NEW; SLUG=gemma ;;
+               *) echo 'MODEL is Qwen3.5-9B, InternVL3_5-8B or gemma-4-E4B-it'; exit 2 ;; esac
            M=$MODELS/$MODEL; R=${B}_${SLUG}_probe ;;
     smoke|main) case "${MODEL:-}" in
                     Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;;
                     InternVL3_5-8B) X=$HME; SLUG=internvl ;;
-                    *) echo 'MODEL is Qwen3.5-9B or InternVL3_5-8B'; exit 2 ;; esac
+                    gemma-4-E4B-it) X=$NEW; SLUG=gemma ;;      # revisions seven and eight: the new env, models.gemma
+                    *) echo 'MODEL is Qwen3.5-9B, InternVL3_5-8B or gemma-4-E4B-it'; exit 2 ;; esac
                 M=$MODELS/$MODEL; R=${B}_$SLUG; [ "$PART" = main ] || R=${R}_smoke ;;
     *) echo "PART is check1, smoke or main"; exit 2 ;; esac
 case "$PART" in main) STEPS=100; P_STEPS=2000; P_EVAL=50; LIMIT=(); READ=(0 1 2 3 4) ;; *) STEPS=10; P_STEPS=10; P_EVAL=10; LIMIT=(--limit 8); READ=(0) ;; esac
@@ -173,11 +176,37 @@ from PIL import Image
 from revrender.models.vlm_tokens import processor_for
 p = processor_for(sys.argv[1]); clean, scan = Path(sys.argv[2]), Path(sys.argv[3])
 rows = {r['id']: r for r in json.loads((clean/'pack.json').read_text())['rows']}; scans = {r['id']: r for r in json.loads((scan/'pack.json').read_text())['rows']}
-grid = lambda path: p.image_processor(images=[Image.open(path).convert('RGB')], return_tensors='pt')['image_grid_thw'][0].tolist()
+def grid(path):   # the token grid, or Gemma's patch positions
+    b = p.image_processor(images=[Image.open(path).convert('RGB')], return_tensors='pt')
+    return b['image_grid_thw'][0].tolist() if 'image_grid_thw' in b else b['image_position_ids'][0].tolist()
 bad = [(k, key) for k in rows for key in ('erased', 'context') if grid(clean/rows[k]['images'][key]) != grid(scan/scans[k]['images'][key])]
 r = {'regions': len(rows), 'pairs': 2*len(rows), 'differ': bad, 'passed': not bad}; Path(sys.argv[4]).write_text(json.dumps(r, indent=2)); print(json.dumps({k: r[k] for k in ('pairs', 'passed')}))
 sys.exit(0 if r['passed'] else 'paired images give different token grids')
 PY
+    if [ "$SLUG" = gemma ]; then   # check 9 / 9b (revision eight): the files in use, our messages as the template renders them
+        "$X" - "$M" "$V" "$R/checks/check9_template.json" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+from PIL import Image
+from revrender.models.vlm_tokens import processor_for
+from revrender.recognize_lines import SYSTEM, prompt
+from revrender.train_reader import Collate
+model, pack, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+p = processor_for(model); rows = json.loads((pack/'pack.json').read_text())['rows']
+sha = lambda f: hashlib.sha256((model/f).read_bytes()).hexdigest()
+row = rows[0]; images = [Image.open(pack/row['images'][k]).convert('RGB') for k in ('raw', 'erased', 'context')]
+conv = [{'role': 'system', 'content': [{'type': 'text', 'text': SYSTEM}]}, {'role': 'user', 'content': [*({'type': 'image', 'image': i} for i in images), {'type': 'text', 'text': prompt('context_revision', row)}]}]
+asked = p.apply_chat_template(conv, add_generation_prompt=True, tokenize=False)
+taught = Collate(p, '')([(images, row['text'] or '', None, prompt('context_revision', row), None)])
+answer = p.tokenizer.decode(taught['labels'][0][taught['labels'][0] != -100])
+r = {'files': {f: sha(f) for f in ('tokenizer.json', 'tokenizer_config.json', 'chat_template.jinja')},
+     'system_turn_exact': f'<|turn>system\n{SYSTEM}<turn|>' in asked, 'generation_prompt': asked.endswith('<|turn>model\n'), 'thinking_token': '<|think|>' in asked,
+     'taught_answer': answer, 'taught_prefix_is_the_prompt': p.tokenizer.decode(taught['input_ids'][0]).startswith(asked)}
+r['passed'] = r['system_turn_exact'] and r['generation_prompt'] and not r['thinking_token'] and r['taught_prefix_is_the_prompt'] and answer.endswith('<turn|>\n')
+out.write_text(json.dumps(r, ensure_ascii=False, indent=2)); print(json.dumps({k: r[k] for k in ('system_turn_exact', 'generation_prompt', 'thinking_token', 'passed')}))
+sys.exit(0 if r['passed'] else 'check 9b failed')
+PY
+    fi
     mark cpu_checks; fi
 
 if ! done_ teach; then
@@ -212,7 +241,7 @@ keys = lambda d: [k for f in sorted(Path(d).glob('*.safetensors')) for k in safe
 check3 = {}
 for k in folds:
     reader = keys(R/f'reader_H_f{k}/adapter')+keys(R/f'reader_R0_f{k}/adapter'); tower = keys(R/f'plugin_f{k}/student')
-    check3[k] = {'reader_tensors': len(reader), 'reader_tower_tensors': [n for n in reader if 'visual' in n or 'vision_model' in n or 'mlp1' in n][:3],
+    check3[k] = {'reader_tensors': len(reader), 'reader_tower_tensors': [n for n in reader if any(w in n for w in ('visual', 'vision_model', 'mlp1', 'vision_tower', 'embed_vision'))][:3],
                  'adapter_tensors': len(tower), 'adapter_language_tensors': [n for n in tower if 'language_model' in n][:3]}
 check4 = {k: {'validation_writers_as_qwen3_vl': json.loads((R/f'plugin_f{k}'/'run_manifest.json').read_text())['validation_writers'] ==
                   json.loads((Path(f'{fix}_view_fix_f{k}')/'run_manifest.json').read_text())['validation_writers'],
@@ -237,9 +266,11 @@ if ! done_ reads; then
 import json, sys
 from pathlib import Path
 rows = [g for d in sorted(Path(sys.argv[1]).glob('read_*')) if d.is_dir() for g in map(json.loads, (d/'predictions.jsonl').read_text().splitlines())]
-think = [g['id'] for g in rows if '<think>' in g['raw'] or '</think>' in g['raw']]
+think = [g['id'] for g in rows if '<think>' in g['raw'] or '</think>' in g['raw'] or g.get('thinking_tokens', 0)]     # Gemma: its channel tokens
+done = [json.loads((d/'complete.json').read_text()) for d in sorted(Path(sys.argv[1]).glob('re*_*')) if d.is_dir() and (d/'complete.json').exists()]
+audio = sum(c.get('audio_tower_calls', 0) for c in done)                # Gemma (revision eight): the audio tower is never called
 r = {'readings': len(rows), 'with_thinking': think, 'finish': {f: sum(g['finish_reason'] == f for g in rows) for f in sorted({g['finish_reason'] for g in rows})},
-     'passed': not think}
+     'audio_tower_calls': audio, 'passed': not think and audio == 0}
 (Path(sys.argv[1])/'checks'/'check6_no_thinking.json').write_text(json.dumps(r, indent=2)); print(json.dumps(r))
 sys.exit(0 if r['passed'] else 'a reading wrote thinking')
 PY

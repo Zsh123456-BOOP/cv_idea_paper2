@@ -34,7 +34,9 @@ def main(argv=None):
     rows = {r['id']: r for r in json.loads((clean/'pack.json').read_text())['rows']}; scans = {r['id']: r for r in json.loads((scan/'pack.json').read_text())['rows']}
     processor = processor_for(args.model)
     opened = lambda pack, row, key: Image.open(pack/row['images'][key]).convert('RGB')
-    tokens = lambda images: int(processor.image_processor(images=images, return_tensors='pt')['image_grid_thw'].prod(-1).sum())    # patches or tiles
+    def tokens(images):                                                  # patches, tiles, or Gemma's patches that are not padding
+        batch = processor.image_processor(images=images, return_tensors='pt')
+        return int(batch['image_grid_thw'].prod(-1).sum()) if 'image_grid_thw' in batch else int((batch['image_position_ids'] != -1).all(-1).sum())
     size = {k: tokens([opened(clean, r, key) for key in ('raw', 'erased', 'context')]) for k, r in rows.items()}
     worst = sorted(rows, key=lambda k: -size[k]); middle = worst[len(worst)//2-8:len(worst)//2+8]
     fitted, error, timing = True, None, {}
@@ -46,10 +48,15 @@ def main(argv=None):
     try:
         if args.part == 'reader':
             from ..recognize_lines import prompt
+            from ..models import gemma
             from ..train_reader import Collate, answer_loss, lora_model, one_at_a_time
             processor.tokenizer.padding_side = 'right'; collate = Collate(processor, '')
             model = lora_model(args.model, 16, 32, .05)
-            model = model if internvl.SPLIT and internvl.is_internvl(args.model) else model.to('cuda'); timing['load_seconds'] = round(time.time()-started, 1)
+            if gemma.is_gemma(args.model):
+                gemma.on_card(model)                                     # the audio tower stays off the card
+            else:
+                model = model if internvl.SPLIT and internvl.is_internvl(args.model) else model.to('cuda')
+            timing['load_seconds'] = round(time.time()-started, 1)
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False}); model.enable_input_require_grads(); model.train()
             item = lambda r: ([opened(clean, r, key) for key in ('raw', 'erased', 'context')], r['text'] or '', None, prompt('context_revision', r), None)
 

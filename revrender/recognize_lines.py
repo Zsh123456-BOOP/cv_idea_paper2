@@ -285,7 +285,8 @@ def main(argv=None):
             require(len(results) == len(batch), 'missing generation results')
             for (condition, row), result in zip(batch, results):
                 stream.write(json.dumps({'condition': condition, 'id': row['id'], 'line_id': row['line_id'], 'model': name, 'text': reading_of(result['text']), **({'confidence': result['confidence']} if 'confidence' in result else {}),
-                                         'raw': result['text'], 'generated_tokens': result['tokens'], 'finish_reason': result['finish']}, ensure_ascii=False)+'\n')
+                                         'raw': result['text'], 'generated_tokens': result['tokens'], 'finish_reason': result['finish'],
+                                         **({'thinking_tokens': result['thinking_tokens']} if 'thinking_tokens' in result else {})}, ensure_ascii=False)+'\n')
             stream.flush()
             done += len(batch)
             print(json.dumps({'completed': done, 'total': len(jobs), 'seconds': round(time.monotonic()-started, 1)}), flush=True)

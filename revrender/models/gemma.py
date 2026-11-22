@@ -20,6 +20,7 @@ from pathlib import Path
 AUDIO = ('audio_tower', 'embed_audio')
 VISION_TARGETS = r'.*encoder\.layers\.\d+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)\.linear'
 ANSWER_HEADER, TURN = '<|turn>model\n', '<|turn>'
+CHANNEL = ('<|channel>', '<channel|>')                                  # the template's thinking channel
 
 
 def is_gemma(model_dir):
@@ -193,4 +194,5 @@ class Reader:
             def advance(token, step):
                 seen[0] = torch.cat([seen[0], torch.ones(len(jobs), 1, device=self.device, dtype=seen[0].dtype)], dim=1)
                 return self.model(input_ids=token.view(-1, 1), attention_mask=seen[0], position_ids=(last+1+step).view(-1, 1), past_key_values=cache, use_cache=True)
-            return greedy(first, advance, self.stop, max_new_tokens, loop_limit, self.processor.tokenizer)
+            channel = {self.processor.tokenizer.convert_tokens_to_ids(t) for t in CHANNEL}       # a thinking channel opened or closed (check 6)
+            return greedy(first, advance, self.stop, max_new_tokens, loop_limit, self.processor.tokenizer, watch=channel)

@@ -252,11 +252,11 @@ def student_features(features, students, off, grad=False):
     return chosen
 
 
-def greedy(first, advance, stop, max_new_tokens, loop_limit, tokenizer):
+def greedy(first, advance, stop, max_new_tokens, loop_limit, tokenizer, watch=()):
     """The greedy decode of a batch from the prefill's output ``first``: ``advance(token, step)`` runs one step of the written tokens
     and gives its output.  ``loop_limit``: a reading that ends in one block written that many times (``looped``) stops there and keeps
     the block once (finish ``loop``; 0: never).  A list of dicts (text, tokens, confidence -- the geometric mean of the written tokens'
-    probabilities --, finish)."""
+    probabilities --, finish); ``watch``: token ids whose writings are counted (``thinking_tokens``; Gemma's thinking channel)."""
     n = first.logits.shape[0]; out = first
     written, done, loops, logged = [[] for _ in range(n)], [False]*n, set(), [[] for _ in range(n)]
     for step in range(max_new_tokens):
@@ -275,7 +275,8 @@ def greedy(first, advance, stop, max_new_tokens, loop_limit, tokenizer):
         out = advance(token, step)
     return [{'text': tokenizer.decode([t for t in w if t not in stop], skip_special_tokens=True), 'tokens': len(w),
              'confidence': float(np.exp(np.mean(logged[b]))) if logged[b] else 0.,
-             'finish': 'loop' if b in loops else 'stop' if w and w[-1] in stop else 'length'} for b, w in enumerate(written)]
+             'finish': 'loop' if b in loops else 'stop' if w and w[-1] in stop else 'length', **({'thinking_tokens': sum(t in watch for t in w)} if watch else {})}
+            for b, w in enumerate(written)]
 
 
 def processor_for(model_dir):
