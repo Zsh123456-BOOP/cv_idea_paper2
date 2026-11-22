@@ -330,7 +330,7 @@ class Reader:
             patch_embed_with_layer_map(self.model.model.visual.patch_embed).load_state_dict(torch.load(str(layer_map), map_location=device))
         else:
             patch_embed_as_linear(self.model.model.visual.patch_embed)
-        self.students = self.mix = None                                  # mix: models.feature_mix.install
+        self.students = self.mix = None                                  # mix: models.feature_mix.install (or models.transplant.install)
         if student:                                                      # a vision-tower adapter of ``train_clean_view``: see ``install_students``
             self.students = install_students(self.model.model, {'default': student}, student_off)
         self.prefill = answer_prefill(self.processor)

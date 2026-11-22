@@ -31,38 +31,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from ..models.transplant import classes, merge_ordered      # noqa: F401  (the classes live with the transplant that uses them too)
 from ..util import SEED, digest, make_output_dir, require, to_jsonable, write_json, write_manifest
 
 CLASSES = ('struck', 'next', 'far')
 OUTPUTS = ('merged', 'deepstack1', 'deepstack2', 'deepstack3')
-
-
-def classes(mask, rows, cols):
-    """[rows, cols] 0 struck / 1 next / 2 far: a cell struck when the source rectangle it is resized from holds a mask pixel."""
-    h0, w0 = mask.shape
-    ys, xs = np.nonzero(mask)
-    struck = np.zeros((rows, cols), bool)
-    if len(ys):
-        # a source pixel [y, y + 1) falls in the cells whose source rectangles [i h0 / rows, (i + 1) h0 / rows) it overlaps
-        top = np.floor(ys*rows/h0).astype(int); bottom = np.ceil((ys+1)*rows/h0).astype(int)-1
-        left = np.floor(xs*cols/w0).astype(int); right = np.ceil((xs+1)*cols/w0).astype(int)-1
-        for t, b, l, r in zip(top, bottom, left, right):
-            struck[t:b+1, l:r+1] = True
-    near = np.zeros_like(struck)
-    for dy in (-1, 0, 1):
-        for dx in (-1, 0, 1):
-            shifted = np.zeros_like(struck)
-            shifted[max(dy, 0):rows+min(dy, 0), max(dx, 0):cols+min(dx, 0)] = struck[max(-dy, 0):rows+min(-dy, 0), max(-dx, 0):cols+min(-dx, 0)]
-            near |= shifted
-    return np.where(struck, 0, np.where(near, 1, 2))
-
-
-def merge_ordered(grid, merge):
-    """A [rows, cols] class grid in the tokens' 2 x 2 merge-group order (``models.maa.merge_order``)."""
-    import torch
-    from ..models.maa import merge_order
-    rows, cols = grid.shape
-    return merge_order(torch.as_tensor(grid).reshape(1, rows, cols, 1), merge).reshape(-1).numpy()
 
 
 def per_class(x, c, labels):

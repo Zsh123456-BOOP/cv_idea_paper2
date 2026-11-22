@@ -60,6 +60,9 @@ token keeping its position:
 ``--student-images`` names are seen through it, the others through the frozen tower (``models.vlm_tokens.student_features``).
 ``--mix-pack`` (Qwen3-VL): those images take features on the chord from the frozen tower's to the frozen tower's of the mix pack's same
 images instead, ``--mix-alpha`` or ``--mix-matched`` (``models.feature_mix``); OUT/mix_stats.jsonl per row.
+``--transplant-pack`` (Qwen3-VL, frozen tower): those images take, after ``--transplant-after`` blocks, the transplant pack's same images'
+tokens at the patches ``--transplant-select`` chooses by the strike ``--transplant-places`` (default the transplant pack) marks under
+``--transplant-rule`` (``models.transplant``); OUT/transplant_stats.jsonl per row.
 
 Greedy decoding, seed 42; every request carries one image, so nothing in the words can be read back as text.  The backend is vLLM (the
 default, for the plain conditions) or transformers (``hf``, for all of them: the plain conditions read the same to the precision of another
@@ -231,6 +234,11 @@ def main(argv=None):
     p.add_argument('--mix-pack', type=Path, help='hf, Qwen3-VL: the images --student-images names take features on the chord to this pack\'s same images (models.feature_mix)')
     p.add_argument('--mix-alpha', type=float, help='with --mix-pack: z = (1 - A) x + A c')
     p.add_argument('--mix-matched', choices=('x', 's'), help='with --mix-pack and --view-student: per token as close to c as the student; s farther than x -> x (M) or s (M\')')
+    p.add_argument('--transplant-pack', type=Path, help='hf, Qwen3-VL: the images --student-images names take this pack\'s same images\' tokens at chosen patches after some blocks (models.transplant)')
+    p.add_argument('--transplant-after', type=int, help='with --transplant-pack: after this many blocks of the vision tower')
+    p.add_argument('--transplant-select', choices=('struck', 'next', 'all', 'none'), help='with --transplant-pack: the struck patches, the struck and their neighbours, all, none')
+    p.add_argument('--transplant-places', type=Path, help='with --transplant-pack: the pack whose same images mark the strike (default the transplant pack)')
+    p.add_argument('--transplant-rule', choices=('any', 'brighter'), default='any', help='with --transplant-pack: a strike pixel differs at all, or is brighter by 0.2 on ink')
     p.add_argument('--trust-remote-code', action='store_true')
     p.add_argument('--limit', type=int, default=0, help='only the first N lines (a smoke test)')
     p.add_argument('--output-dir', type=Path, required=True)
@@ -244,7 +252,11 @@ def main(argv=None):
     require(not args.mix_pack or ((args.mix_alpha is None) != (args.mix_matched is None) and bool(args.student_images) and args.backend == 'hf'
                                   and bool(args.view_student) == bool(args.mix_matched) and not args.student_off),
             '--mix-pack takes one of --mix-alpha / --mix-matched and --student-images (the mixed places); --mix-matched, and only it, a --view-student')
-    require(bool(args.view_student) == bool(args.student_images) or args.mix_pack, '--view-student and --student-images go together')
+    require(not args.transplant_pack or (args.transplant_after and args.transplant_select and bool(args.student_images) and args.backend == 'hf'
+                                       and not args.view_student and not args.mix_pack),
+            '--transplant-pack takes --transplant-after, --transplant-select and --student-images (the transplanted places), no student and no mix')
+    require(args.transplant_pack or not (args.transplant_after or args.transplant_select or args.transplant_places), 'the --transplant-* options need --transplant-pack')
+    require(bool(args.view_student) == bool(args.student_images) or args.mix_pack or args.transplant_pack, '--view-student and --student-images go together')
     pack = json.loads((args.pack/'pack.json').read_text())
     require(pack.get('schema') == 'revrender-line-pack', 'not a line pack')
     rows = [r for r in pack['rows'] if args.fold is None or r['fold'] == args.fold][:args.limit or None]
@@ -259,6 +271,13 @@ def main(argv=None):
             from .models.feature_mix import install
             require(type(reader).__module__.endswith('vlm_tokens'), '--mix-pack reads with a Qwen3-VL reader')
             mix, mixed_rows = install(reader, args.mix_alpha, args.mix_matched), {r['id']: r for r in json.loads((args.mix_pack/'pack.json').read_text())['rows']}
+        if args.transplant_pack:
+            from .models import transplant
+            require(type(reader).__module__.endswith('vlm_tokens'), '--transplant-pack reads with a Qwen3-VL reader')
+            reader.mix = plant = transplant.install(reader, args.transplant_after)
+            mixed_rows = {r['id']: r for r in json.loads((args.transplant_pack/'pack.json').read_text())['rows']}
+            places_pack = args.transplant_places or args.transplant_pack
+            place_rows = {r['id']: r for r in json.loads((places_pack/'pack.json').read_text())['rows']}
     else:
         from vllm import LLM, SamplingParams
         model = LLM(model=str(args.model), dtype='bfloat16', seed=SEED, enforce_eager=True, max_model_len=args.max_model_len, max_num_seqs=16, gpu_memory_utilization=args.gpu_memory,
@@ -270,13 +289,15 @@ def main(argv=None):
                                                            **({str(w): digest(w) for w in sorted(args.adapter.glob('*.safetensors'))} if args.adapter else {}),
                                                            **({str(args.layer_map): digest(args.layer_map)} if args.layer_map else {}),
                                                            **({str(w): digest(w) for w in sorted(args.view_student.glob('*.safetensors'))} if args.view_student else {}),
-                                                           **({str(args.mix_pack/'pack.json'): digest(args.mix_pack/'pack.json')} if args.mix_pack else {})},
+                                                           **({str(args.mix_pack/'pack.json'): digest(args.mix_pack/'pack.json')} if args.mix_pack else {}),
+                                                           **({str(q/'pack.json'): digest(q/'pack.json') for q in (args.transplant_pack, args.transplant_places) if q} if args.transplant_pack else {})},
                    backend=args.backend, rows=len(jobs), lines=len(rows), model_processing=processing(args.model),
                    conditions={c: {'image': image_keys(c), 'token_rule': CONDITIONS[c][2], 'example_prompt': prompt(c, rows[0]), 'rows': sum(j[0] == c for j in jobs)} for c in args.conditions},
                    system=SYSTEM, generation={'temperature': 0, 'max_new_tokens': args.max_new_tokens, 'loop_limit': args.loop_limit, 'dtype': 'bfloat16'})
     name = args.model.name+(f'+{args.adapter.parent.name}' if args.adapter else '')+(f'+{args.view_student.parent.name}' if args.view_student else '')      # the reading of a model with an adapter is another model's
     started, done = time.monotonic(), 0
-    mix_stream = (out/'mix_stats.jsonl').open('x', encoding='utf-8') if args.mix_pack else None
+    companion = args.mix_pack or args.transplant_pack
+    mix_stream = (out/('mix_stats.jsonl' if args.mix_pack else 'transplant_stats.jsonl')).open('x', encoding='utf-8') if companion else None
     with (out/'predictions.jsonl').open('x', encoding='utf-8') as stream:
         for start in range(0, len(jobs), args.batch_size):
             batch = jobs[start:start+args.batch_size]
@@ -288,13 +309,18 @@ def main(argv=None):
                              hidden_flags(reader, CONDITIONS[c][2], row, shown[0], args.pack, args) if c in TOKEN_RULES else None,
                              args.soft if CONDITIONS[c][2] == 'soft_band' else 0.) for (c, row), shown in zip(batch, images)]
                 places = [[n+1 in args.student_images for n in range(len(shown))] for shown in images]
+                if args.transplant_pack:
+                    plant.selections = [chosen for (c, row), shown, flags in zip(batch, images, places) for chosen in transplant.job_selections(
+                        reader.processor, reader.merge, shown, [Image.open(places_pack/place_rows[row['id']]['images'][key]).convert('RGB') if f else None
+                                                                for key, f in zip(image_keys(c), flags)], args.transplant_rule, args.transplant_select)]
                 results = reader.read(requests, SYSTEM, args.max_new_tokens, maps=[opened(row, 'map') for _, row in batch] if args.layer_map else None,      # of each job's first image
-                                      loop_limit=args.loop_limit, students=places if args.view_student or args.mix_pack else None,
-                                      mix_images=[[Image.open(args.mix_pack/mixed_rows[row['id']]['images'][key]).convert('RGB') for key in image_keys(c)] for c, row in batch] if args.mix_pack else None)
+                                      loop_limit=args.loop_limit, students=places if args.view_student or companion else None,
+                                      mix_images=[[Image.open(companion/mixed_rows[row['id']]['images'][key]).convert('RGB') for key in image_keys(c)] for c, row in batch] if companion else None)
                 if mix_stream:
                     at = 0
                     for (c, row), shown in zip(batch, images):
-                        mix_stream.write(json.dumps({'id': row['id'], 'images': {str(n+1): mix.stats[at+n] for n in range(len(shown)) if mix.stats[at+n] is not None}})+'\n')
+                        stats = (mix if args.mix_pack else plant).stats
+                        mix_stream.write(json.dumps({'id': row['id'], 'images': {str(n+1): stats[at+n] for n in range(len(shown)) if stats[at+n] is not None}})+'\n')
                         at += len(shown)
                     mix_stream.flush()
             else:
