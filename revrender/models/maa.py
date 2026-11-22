@@ -290,7 +290,8 @@ def checks(args):
                         'check3': not result['check3']['outside_the_adapters'] and result['check3']['tower_parameters_trainable'] == 0}
     if args.output.exists():
         raise FileExistsError(args.output)
-    args.output.write_text(json.dumps(result, indent=1)); print(json.dumps({'parameters': result['parameters'], 'passed': result['passed']}), flush=True)
+    args.output.write_text(json.dumps(result, indent=1))
+    print(json.dumps({'parameters': result['parameters'], 'tower_parameters_trainable': result['check3']['tower_parameters_trainable'], 'passed': result['passed']}), flush=True)
     return result
 
 

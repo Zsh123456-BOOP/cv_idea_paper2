@@ -150,8 +150,9 @@ def grads(args):
     result = {'region': k, 'reading_loss': reading, 'parameters_with_gradients': sum(adapter[n].numel() for n in graded if n in adapter),
               'outside_the_adapter': [n for n in graded if n not in adapter], 'adapter_parameters': sum(q.numel() for q in adapter.values()),
               'reader_parameters_trainable': sum(q.numel() for n, q in signal.model.named_parameters() if q.requires_grad and n not in adapter),
+              'tower_parameters_trainable': sum(q.numel() for n, q in signal.tower.named_parameters() if q.requires_grad and 'lora_' not in n),
               'reading_moves_the_adapter_gradients': moved}
-    result['passed'] = not result['outside_the_adapter'] and result['reader_parameters_trainable'] == 0 and moved > 0
+    result['passed'] = not result['outside_the_adapter'] and result['reader_parameters_trainable'] == 0 and result['tower_parameters_trainable'] == 0 and moved > 0
     require(not args.output.exists(), f'{args.output} exists'); write_json(args.output, result)
     print(json.dumps({key: v for key, v in result.items() if key != 'outside_the_adapter'}), flush=True)
 

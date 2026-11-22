@@ -85,7 +85,7 @@ if [ "$RUN" = maa ]; then
     if [ "$PART" = smoke ] && ! done_ adapter_checks; then
         [ -e "$R/checks/check1_3.json" ] || place 12000 0 job "$R/checks/check1_3.json" -- "$PY" -m revrender.models.maa check --model "$MODEL" --pack "$V" \
             --scan-pack "$RAWV" --regions 20 --output "$R/checks/check1_3.json"; wait
-        "$PY" -c 'import json,sys; r=json.load(open(sys.argv[1])); print(json.dumps(r["passed"])); sys.exit(0 if all(r["passed"].values()) else "checks 1-3 failed")' "$R/checks/check1_3.json"
+        "$PY" -c 'import json,sys; r=json.load(open(sys.argv[1])); print(json.dumps({**r["passed"], "tower_parameters_trainable": r["check3"]["tower_parameters_trainable"]})); sys.exit(0 if all(r["passed"].values()) else "checks 1-3 failed")' "$R/checks/check1_3.json"
         mark adapter_checks; fi
     if ! done_ plugins; then
         for arm in s1 s2; do for k in "${READ[@]}"; do read -ra more <<< "${MORE[$arm]}"; place 12000 0 plugin "$(mine $arm "$k")" "$k" "${more[@]}"; done; done; wait
@@ -132,7 +132,7 @@ fi
 if [ "$PART" = smoke ] && ! done_ grads; then
     [ -e "$R/checks/check3_grads.json" ] || place 22000 1 job "$R/checks/check3_grads.json" -- "$PY" -m revrender.reading_signal grads --model "$MODEL" \
         --reader-adapter "${SH}0/adapter" --pack "$V" --scan-pack "$RAWV" --fold 0 --output "$R/checks/check3_grads.json"; wait
-    "$PY" -c 'import json,sys; r=json.load(open(sys.argv[1])); print(json.dumps({k: r[k] for k in ("passed", "parameters_with_gradients")})); sys.exit(0 if r["passed"] else "check 3 failed")' "$R/checks/check3_grads.json"
+    "$PY" -c 'import json,sys; r=json.load(open(sys.argv[1])); print(json.dumps({k: r[k] for k in ("passed", "parameters_with_gradients", "tower_parameters_trainable", "reader_parameters_trainable")})); sys.exit(0 if r["passed"] else "check 3 failed")' "$R/checks/check3_grads.json"
     mark grads; fi
 if ! done_ plugins; then
     for k in "${READ[@]}"; do place 22000 1 plugin "$(mine b "$k")" "$k" --reader-adapter "${SH}$k/adapter"; done; wait

@@ -196,14 +196,20 @@ p = processor_for(model); rows = json.loads((pack/'pack.json').read_text())['row
 sha = lambda f: hashlib.sha256((model/f).read_bytes()).hexdigest()
 row = rows[0]; images = [Image.open(pack/row['images'][k]).convert('RGB') for k in ('raw', 'erased', 'context')]
 conv = [{'role': 'system', 'content': [{'type': 'text', 'text': SYSTEM}]}, {'role': 'user', 'content': [*({'type': 'image', 'image': i} for i in images), {'type': 'text', 'text': prompt('context_revision', row)}]}]
+words = prompt('context_revision', row)
 asked = p.apply_chat_template(conv, add_generation_prompt=True, tokenize=False)
-taught = Collate(p, '')([(images, row['text'] or '', None, prompt('context_revision', row), None)])
-answer = p.tokenizer.decode(taught['labels'][0][taught['labels'][0] != -100])
-r = {'files': {f: sha(f) for f in ('tokenizer.json', 'tokenizer_config.json', 'chat_template.jinja')},
-     'system_turn_exact': f'<|turn>system\n{SYSTEM}<turn|>' in asked, 'generation_prompt': asked.endswith('<|turn>model\n'), 'thinking_token': '<|think|>' in asked,
-     'taught_answer': answer, 'taught_prefix_is_the_prompt': p.tokenizer.decode(taught['input_ids'][0]).startswith(asked)}
-r['passed'] = r['system_turn_exact'] and r['generation_prompt'] and not r['thinking_token'] and r['taught_prefix_is_the_prompt'] and answer.endswith('<turn|>\n')
-out.write_text(json.dumps(r, ensure_ascii=False, indent=2)); print(json.dumps({k: r[k] for k in ('system_turn_exact', 'generation_prompt', 'thinking_token', 'passed')}))
+taught = Collate(p, '')([(images, row['text'] or '', None, words, None)])
+labels = taught['labels'][0]; first = int((labels != -100).nonzero()[0]); answer = p.tokenizer.decode(taught['input_ids'][0][first:][labels[first:] != -100])
+read_ids = p(text=[asked], images=images, return_tensors='pt', padding=True)['input_ids'][0]
+user = asked[asked.index('<|turn>user\n'):asked.index('<|turn>model\n')]
+# revision nine: each turn word for word -- the system turn is the turn mark, the system text and the end mark, nothing more
+r = {'files': {f: sha(f) for f in ('tokenizer.json', 'tokenizer_config.json', 'chat_template.jinja')}, 'rendered': asked,
+     'system_turn_exact': asked.startswith(f'<bos><|turn>system\n{SYSTEM}<turn|>\n<|turn>user\n'),
+     'user_turn_ends_with_the_words': user.endswith(words+'<turn|>\n'), 'generation_prompt_exact': asked.endswith('<turn|>\n<|turn>model\n'),
+     'thinking_token': '<|think|>' in asked, 'taught_answer': answer, 'taught_answer_exact': answer == '<transcription>'+(row['text'] or '[空]').strip()+'</transcription><turn|>\n',
+     'taught_prefix_tokens_equal_the_reading': bool(read_ids.shape[0] == first and (read_ids == taught['input_ids'][0][:first]).all())}
+r['passed'] = all(r[k] for k in ('system_turn_exact', 'user_turn_ends_with_the_words', 'generation_prompt_exact', 'taught_prefix_tokens_equal_the_reading')) and not r['thinking_token']
+out.write_text(json.dumps(r, ensure_ascii=False, indent=2)); print(json.dumps({k: v for k, v in r.items() if k not in ('files', 'rendered')}, ensure_ascii=False))
 sys.exit(0 if r['passed'] else 'check 9b failed')
 PY
     fi
