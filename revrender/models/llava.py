@@ -33,7 +33,7 @@ def processing(model_dir):
             'features': 'layer -2, CLS dropped, projector, packed per image (unpadded, a newline token per row)',
             'system_turn': "the template's own: <<SYS>>\\n...\\n<</SYS>>\\n\\n before [INST]",
             'assistant_end': "the template's literal '<\\s> ' replaced by the end token '</s>' (taught and read alike)",
-            'adapter_layers': 'CLIP layers 0-22 (the last layer's output is not used)', 'language_attention': 'sdpa; causal, the padding mask and positions over the unpadded tokens'}
+            'adapter_layers': "CLIP layers 0-22 (the last layer's output is not used)", 'language_attention': 'sdpa; causal, the padding mask and positions over the unpadded tokens'}
 
 
 class Processor:
