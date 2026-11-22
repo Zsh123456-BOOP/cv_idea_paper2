@@ -242,7 +242,7 @@ def main(argv=None):
     require(rows, 'no row to read')
     jobs = [(c, row) for c in args.conditions for row in rows if all(key in row['images'] for key in image_keys(c))]
     require(jobs, 'no row has the images of the conditions')
-    out = make_output_dir(args.output_dir)
+    out = make_output_dir(args.output_dir); reader = None
     if args.backend == 'hf':
         from .models.vlm_tokens import reader_for
         reader = reader_for(args.model, adapter=args.adapter, layer_map=args.layer_map, student=args.view_student, student_off=args.student_off)
@@ -289,7 +289,9 @@ def main(argv=None):
             stream.flush()
             done += len(batch)
             print(json.dumps({'completed': done, 'total': len(jobs), 'seconds': round(time.monotonic()-started, 1)}), flush=True)
-    write_json(out/'complete.json', {'rows': done, 'seconds': round(time.monotonic()-started, 1), 'predictions_sha256': digest(out/'predictions.jsonl')})
+    audio = getattr(reader, 'audio_calls', None)                              # Gemma: the audio tower's calls (0)
+    write_json(out/'complete.json', {'rows': done, 'seconds': round(time.monotonic()-started, 1), 'predictions_sha256': digest(out/'predictions.jsonl'),
+                                     **({'audio_tower_calls': len(audio)} if audio is not None else {})})
     return 0
 
 

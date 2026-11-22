@@ -58,7 +58,8 @@ from .util import SEED, digest, make_output_dir, require, to_jsonable, write_jso
 
 EMPTY = '[空]'
 # every linear layer of the language model's blocks: attention and MLP, and the linear-attention projections of Qwen3.5's hybrid layers
-LANGUAGE_TARGETS = r'.*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|in_proj_qkv|in_proj_z|in_proj_a|in_proj_b|out_proj)'
+LANGUAGE_TARGETS = (r'.*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|in_proj_qkv|in_proj_z|in_proj_a|in_proj_b|out_proj'
+                    r'|per_layer_input_gate|per_layer_projection)')       # Qwen3-VL; Qwen3.5's linear attention; Gemma 4's per-layer inputs
 TARGET = '<transcription>{}</transcription>'
 
 
@@ -147,9 +148,10 @@ class Collate:
     def __init__(self, processor, words, students=()):
         self.processor, self.words, self.students = processor, words, tuple(students)
         from .models.vlm_tokens import THINK_OPEN, answer_prefill
-        self.start = processor.tokenizer.convert_tokens_to_ids('<|im_start|>')
+        self.start = processor.tokenizer.convert_tokens_to_ids(getattr(processor, 'turn', '<|im_start|>'))       # Gemma: <|turn>
         prefill = answer_prefill(processor)                            # the template writes an empty thinking block before a taught answer
-        self.header = len(processor.tokenizer('<|im_start|>assistant\n'+(THINK_OPEN+prefill if prefill else ''), add_special_tokens=False)['input_ids'])
+        header = getattr(processor, 'answer_header', '<|im_start|>assistant\n')
+        self.header = len(processor.tokenizer(header+(THINK_OPEN+prefill if prefill else ''), add_special_tokens=False)['input_ids'])
 
     def __call__(self, batch):
         batch = [item if len(item) == 5 else ([item[0]], item[1], None, None, None) for item in batch]      # (images, text, layer map, words, fold)
@@ -157,7 +159,7 @@ class Collate:
                           {'role': 'user', 'content': [*({'type': 'image', 'image': image} for image in images), {'type': 'text', 'text': words or self.words}]},
                           {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _, words, _ in batch]
         out = self.processor.apply_chat_template(conversations, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
-        out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw', 'mm_token_type_ids') if k in out}
+        out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw', 'image_position_ids', 'mm_token_type_ids') if k in out}
         if batch[0][2] is not None:
             from .models.vlm_tokens import layer_maps, with_layer_maps
             out['pixel_values'] = with_layer_maps(out['pixel_values'], [m for images, _, layer, _, _ in batch for m in layer_maps(images, layer)], self.processor.image_processor)
@@ -179,11 +181,15 @@ def lora_model(model_dir, rank, alpha, dropout, layer_map=False, init=None):
     import torch
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForImageTextToText
+    from .models import gemma
     from .models.internvl import is_internvl, training_model
     from .models.vlm_tokens import patch_embed_as_linear, patch_embed_with_layer_map
     if is_internvl(model_dir):                                           # InternVL3.5: its bundled model (models.internvl)
         require(not layer_map, 'layer maps are not supported on InternVL')
         model = training_model(model_dir)
+    elif gemma.is_gemma(model_dir):                                      # Gemma 4 (models.gemma): its patch embedding is not a Conv3d
+        require(not layer_map, 'layer maps are not supported on Gemma')
+        model = gemma.from_pretrained(model_dir)
     else:
         model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa')
         patch_embed_as_linear(model.model.visual.patch_embed)
@@ -339,9 +345,13 @@ def main(argv=None):
                                          num_workers=args.workers, generator=generator, drop_last=True, persistent_workers=args.workers > 0)
     val_loader = torch.utils.data.DataLoader(val_set, batch_size=1 if args.one_at_a_time else args.batch_size, collate_fn=collate, num_workers=0) if val_rows else None
     require(not (args.init_adapter and args.layer_map), '--init-adapter with --layer-map is not supported')
-    from .models import internvl
+    from .models import gemma, internvl
     model = lora_model(args.model, args.rank, args.alpha, args.dropout, args.layer_map, args.init_adapter)
-    model = model if internvl.SPLIT and internvl.is_internvl(args.model) else model.to('cuda')     # a split InternVL is placed already
+    audio_calls = None
+    if gemma.is_gemma(args.model):                                       # the audio tower stays off the card, its calls counted
+        audio_calls = gemma.on_card(model)
+    else:
+        model = model if internvl.SPLIT and internvl.is_internvl(args.model) else model.to('cuda')     # a split InternVL is placed already
     students, adapters = None, {f'fold{j}': Path(args.view_students.format(fold=j)) for j in folds_used}
     if args.view_students:
         from .models.vlm_tokens import install_students
@@ -409,6 +419,7 @@ def main(argv=None):
     write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'final_loss': row['loss'], 'final_val_loss': row.get('val_loss'),
                                      'kept_step': kept[1] or args.steps, 'kept_val_loss': kept[0] if kept[1] else row.get('val_loss'),
                                      **({'stopped_after': args.stop_after} if args.stop_after else {}),
+                                     **({'audio_tower_calls': len(audio_calls)} if audio_calls is not None else {}),
                                      **({'students_encoded': students.encoded} if students else {})})
     return 0
 

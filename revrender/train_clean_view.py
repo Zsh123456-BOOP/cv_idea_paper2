@@ -90,13 +90,17 @@ from .util import SEED, digest, make_output_dir, require, to_jsonable, write_jso
 
 TOUCHED = .99
 DISCRIMINATOR_LR, ADVERSARIAL_WEIGHT = 1e-6, .1      # MAA's values (its train_maa.py defaults)
-TARGETS = r'.*(blocks|encoder\.layers)\.\d+\.(attn\.(qkv|proj)|mlp\.(linear_fc1|linear_fc2|fc1|fc2))'     # Qwen's blocks, InternViT's layers
+TARGETS = (r'.*(blocks|encoder\.layers)\.\d+\.(attn\.(qkv|proj)|mlp\.(linear_fc1|linear_fc2|fc1|fc2)'     # Qwen's blocks, InternViT's layers,
+           r'|self_attn\.(q|k|v|o)_proj\.linear|mlp\.(gate|up|down)_proj\.linear)')                     # Gemma 4's (wrapped) layers
 
 
 def vision_tower(model_dir):
+    from .models import gemma
     from .models.internvl import is_internvl, tower
     if is_internvl(model_dir):                                           # InternVL3.5: its vision model and mlp1 (models.internvl.tower)
         return tower(model_dir)
+    if gemma.is_gemma(model_dir):                                        # Gemma 4: its vision model and embed_vision (models.gemma.tower)
+        return gemma.tower(model_dir)
     return qwen_tower(model_dir)
 
 
@@ -152,7 +156,8 @@ def levels(tower, pixel_values, grid):
 def encode(processor, images, device):
     import torch
     batch = processor.image_processor(images=images, return_tensors='pt')
-    return batch['pixel_values'].to(device, torch.bfloat16), batch['image_grid_thw'].to(device)
+    grid = batch['image_grid_thw'] if 'image_grid_thw' in batch else batch['image_position_ids']      # Gemma: the patches' positions
+    return batch['pixel_values'].to(device, torch.bfloat16), grid.to(device)
 
 
 class Totals:
