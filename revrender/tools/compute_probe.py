@@ -34,9 +34,14 @@ def main(argv=None):
     rows = {r['id']: r for r in json.loads((clean/'pack.json').read_text())['rows']}; scans = {r['id']: r for r in json.loads((scan/'pack.json').read_text())['rows']}
     processor = processor_for(args.model)
     opened = lambda pack, row, key: Image.open(pack/row['images'][key]).convert('RGB')
-    def tokens(images):                                                  # patches, tiles, or Gemma's patches that are not padding
+    def tokens(images):                                                  # patches, tiles, Gemma's patches that are not padding, LLaVA's tiles
         batch = processor.image_processor(images=images, return_tensors='pt')
-        return int(batch['image_grid_thw'].prod(-1).sum()) if 'image_grid_thw' in batch else int((batch['image_position_ids'] != -1).all(-1).sum())
+        if 'image_grid_thw' in batch:
+            return int(batch['image_grid_thw'].prod(-1).sum())
+        if 'image_sizes' in batch:
+            from transformers.models.llava_next.modeling_llava_next import image_size_to_num_patches
+            return sum(image_size_to_num_patches(s, processor.image_processor.image_grid_pinpoints, 336) for s in batch['image_sizes'].tolist())
+        return int((batch['image_position_ids'] != -1).all(-1).sum())
     size = {k: tokens([opened(clean, r, key) for key in ('raw', 'erased', 'context')]) for k, r in rows.items()}
     worst = sorted(rows, key=lambda k: -size[k]); middle = worst[len(worst)//2-8:len(worst)//2+8]
     fitted, error, timing = True, None, {}

@@ -39,13 +39,15 @@ def main(argv=None):
         ks = [k for k in rows if rows[k]['readable'] and half.get(k) == part and k in arms[ref] and k in arms[arm]]
         return pick(paired({k: counts(rows[k]['text'], arms[ref][k]) for k in ks}, {k: counts(rows[k]['text'], arms[arm][k]) for k in ks}, writers,
                            np.random.default_rng(SEED)))
-    gap = vs('R0', 'H')['exact']['interval'][0] > 0
+    gap = vs('R0', 'H')['exact']['interval'][0] > 0; with_v = 'V' in arms         # LLaVA's first step (revision ten): H and R0 alone
+    pairs = (('H', 'R0'), ('V', 'R0'), ('V', 'H')) if with_v else (('H', 'R0'),)
     result = {'model': args.model,
               'premise_H_vs_R0': {**pick(vs('R0', 'H')), 'verdict': 'gap_to_close' if gap else 'no_gap_to_close'},
-              'transfer_V_vs_R0': {**pick(vs('R0', 'V')), 'verdict': grade(vs('R0', 'V')) if gap else 'left_out_no_gap'},
+              'transfer_V_vs_R0': ({**pick(vs('R0', 'V')), 'verdict': grade(vs('R0', 'V')) if gap else 'left_out_no_gap'} if with_v else
+                                   {'verdict': 'not_taught_yet' if gap else 'left_out_no_gap'}),
               'reported': {'rates': {a: {k: scores['R0'][a][k] for k in ('exact', 'ar', 'ned', 'refusal', 'exact_by_length', 'left_wrong')} for a in arms},
-                           'V_vs_H': pick(vs('H', 'V')),
-                           'halves': {part: {f'{a}_vs_{b}': on(part, b, a) for a, b in (('H', 'R0'), ('V', 'R0'), ('V', 'H'))} for part in ('heavy', 'light')}}}
+                           **({'V_vs_H': pick(vs('H', 'V'))} if with_v else {}),
+                           'halves': {part: {f'{a}_vs_{b}': on(part, b, a) for a, b in pairs} for part in ('heavy', 'light')}}}
     if args.distances:
         result['reported']['distances'] = distances(args.distances, np.random.default_rng(SEED))[0]
     out = make_output_dir(args.output_dir)
