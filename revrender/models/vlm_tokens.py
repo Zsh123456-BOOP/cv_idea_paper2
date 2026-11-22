@@ -185,12 +185,10 @@ def install_students(inner, adapters, off=False, tower=None, attribute='get_imag
     of it learns.  ``off``: the flagged images go the adapters' way with the adapters disabled (the wiring and trajectory checks)."""
     import types
     import torch
-    from peft import PeftModel
+    from .maa import student_view
     tower = inner.visual if tower is None else tower
     names = list(adapters)
-    view = PeftModel.from_pretrained(tower, str(adapters[names[0]]), adapter_name=names[0])
-    for name in names[1:]:
-        view.load_adapter(str(adapters[name]), adapter_name=name)
+    view = student_view(tower, adapters)                                # low-rank adapters, or MAA's (models.maa)
     for q in view.parameters():
         q.requires_grad_(False)
     for part in (tower, *tower.children()):
@@ -201,13 +199,15 @@ def install_students(inner, adapters, off=False, tower=None, attribute='get_imag
     return students
 
 
-def picked(students, run, off):
+def picked(students, run, off, grad=False):
     """Per image, what ``run()`` gives per image (a list) with, for each image ``students.flags`` names an adapter for, that adapter
     switched on, and the adapters disabled for the others; no graph is kept.  ``off``: the flagged images the adapters' way with the
-    adapters disabled too.  Returns (the frozen run's whole output, the choice per image, or None when no image is flagged)."""
+    adapters disabled too.  ``grad`` (B of 插件结构优化: the adapter learns from the reader's answer loss): the adapter's run keeps its
+    graph, its adapter (the one in use, which learns) left as it is.  Returns (the frozen run's whole output, the choice per image, or
+    None when no image is flagged)."""
     import contextlib
     import torch
-    view = students.view
+    view = students.view; grad = grad and torch.is_grad_enabled()          # no graph for a run without gradients (validation)
     with torch.no_grad():
         with view.disable_adapter():
             whole, frozen = run()
@@ -219,9 +219,9 @@ def picked(students, run, off):
             return whole, None
         chosen = list(frozen)
         for name in used:
-            if not off:
+            if not off and not grad:
                 view.set_adapter(name, inference_mode=True)
-            with view.disable_adapter() if off else contextlib.nullcontext():
+            with view.disable_adapter() if off else contextlib.nullcontext(), torch.enable_grad() if grad else contextlib.nullcontext():
                 _, taught = run()
             for i, f in enumerate(flags):
                 if f == name:
@@ -230,7 +230,7 @@ def picked(students, run, off):
         return whole, chosen
 
 
-def student_features(features, students, off):
+def student_features(features, students, off, grad=False):
     """The model's image features (Qwen) with each image through the adapter ``students.flags`` names for it (``picked``): the merged
     tokens and the deepstack levels alike."""
     import torch
@@ -239,7 +239,7 @@ def student_features(features, students, off):
         def run():
             out = features(pixel_values, image_grid_thw, **kwargs)
             return out, image_levels(out)
-        out, choice = picked(students, run, off)
+        out, choice = picked(students, run, off, grad)
         if choice is None:
             return out
         embeds, deep = tuple(p[0] for p in choice), [tuple(p[n] for p in choice) for n in range(1, len(choice[0]))]

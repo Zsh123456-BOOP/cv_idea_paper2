@@ -126,10 +126,17 @@ def qwen_tower(model_dir):
     return tower
 
 
-def with_student(tower, rank=16, alpha=32, dropout=.05, adapter=None):
+def with_student(tower, rank=16, alpha=32, dropout=.05, adapter=None, structure='lora'):
     """The tower with a low-rank adapter on its blocks' linear layers (new, or ``adapter`` loaded): a peft model whose
-    ``disable_adapter()`` is the teacher."""
+    ``disable_adapter()`` is the teacher.  ``structure='maa'``, or an ``adapter`` folder of one: MAA's three-branch adapters on the
+    blocks' inputs instead (``models.maa.MaaView``, which answers as the peft model does)."""
     from peft import LoraConfig, PeftModel, get_peft_model
+    from .models.maa import MaaView, is_maa
+    if is_maa(adapter):
+        return MaaView.from_pretrained(tower, adapter)
+    if structure == 'maa':
+        require(adapter is None, 'a new MAA adapter set takes no --adapter')
+        return MaaView(tower)
     if adapter:
         return PeftModel.from_pretrained(tower, str(adapter))
     return get_peft_model(tower, LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias='none', target_modules=TARGETS))
@@ -152,15 +159,18 @@ class Totals:
     """Per level: the sum of 1 - cosine and the token count, the squared error and the teacher's square."""
 
     def __init__(self, n):
-        self.cos, self.tokens, self.sq, self.t2 = [0.]*n, [0]*n, [0.]*n, [0.]*n
+        self.cos, self.tokens, self.sq, self.t2, self.values = [0.]*n, [0]*n, [0.]*n, [0.]*n, [0]*n
 
     def add(self, student, teacher):
         import torch
         for k, (s, t) in enumerate(zip(student, teacher)):
             self.cos[k] += float((1-torch.nn.functional.cosine_similarity(s, t, dim=-1)).sum()); self.tokens[k] += s.shape[0]
-            self.sq[k] += float(((s-t)**2).sum()); self.t2[k] += float((t**2).sum())
+            self.sq[k] += float(((s-t)**2).sum()); self.t2[k] += float((t**2).sum()); self.values[k] += s.numel()
 
-    def loss(self):
+    def loss(self, kind='align'):
+        """``align``: ``pair_loss`` over everything added; ``mse``: ``mse_loss`` over everything added."""
+        if kind == 'mse':
+            return float(np.mean([q/max(1, v) for q, v in zip(self.sq, self.values)]))
         return float(np.mean([c/max(1, n)+q/max(1e-12, t) for c, n, q, t in zip(self.cos, self.tokens, self.sq, self.t2)]))
 
 
@@ -198,6 +208,20 @@ def pair_loss(student, teacher):
     import torch
     parts = [(1-torch.nn.functional.cosine_similarity(s, t, dim=-1)).mean()+((s-t)**2).mean()/(t**2).mean().clamp_min(1e-12) for s, t in zip(student, teacher)]
     return torch.stack(parts).mean()
+
+
+def mse_loss(student, teacher):
+    """MAA's feature loss (``F.mse_loss``, the mean squared error over every value) of each level, the mean of the levels (S2)."""
+    import torch
+    return torch.stack([((s-t)**2).mean() for s, t in zip(student, teacher)]).mean()
+
+
+def maa_schedule(step, warmup, steps):
+    """MAA's learning-rate factor: transformers' ``get_scheduler('cosine')`` with ``warmup`` steps -- linear from 0, then a cosine to 0
+    at ``steps`` -- at the optimizer's ``step``-th update (0-based)."""
+    if step < warmup:
+        return step/max(1, warmup)
+    return max(0., .5*(1+math.cos(math.pi*(step-warmup)/max(1, steps-warmup))))
 
 
 def regions_of(pack, scan_pack, keep, window_only=False):
@@ -274,11 +298,19 @@ def train(args):
         # the clean pack: erased the clean window, context the line with the clean one; the raw pack: erased the synthetic window,
         # context the line with the synthetic window
         synthetic = regions_of(args.synthetic/f'fold_{args.fold}_clean', args.synthetic/f'fold_{args.fold}_raw', lambda r: True)
+    require(args.accumulate == 1 or not args.discriminator, '--accumulate with --discriminator is not supported')
+    require(args.accumulate == 1 or args.loss == 'align', '--accumulate goes with --loss align')
+    require(not args.reader_adapter or (args.accumulate == 1 and not args.discriminator and not args.window_only), '--reader-adapter goes alone')
     out = make_output_dir(args.output_dir)
+    reading = None
+    if args.reader_adapter:                      # B: the fold's reader, frozen; the adapter goes into its own tower (reading_signal)
+        from .reading_signal import ReadingSignal
+        reading = ReadingSignal(args.model, args.reader_adapter, args.pack, args.scan_pack)
     torch.manual_seed(SEED); rng = random.Random(SEED)
     processor = processor_for(args.model)
-    require(args.accumulate == 1 or not args.discriminator, '--accumulate with --discriminator is not supported')
-    model = with_student(vision_tower(args.model).to('cuda'), args.rank, args.alpha, args.dropout)
+    model = with_student(reading.tower if reading else vision_tower(args.model).to('cuda'), args.rank, args.alpha, args.dropout, structure=args.structure)
+    if reading:
+        reading.route(model)
     if args.checkpointing:
         checkpoint_layers(model.base_model.model)
     params = [q for q in model.parameters() if q.requires_grad]
@@ -290,11 +322,16 @@ def train(args):
         judge_optimizer = torch.optim.AdamW(judge.parameters(), lr=args.discriminator_lr, weight_decay=0.)
         torch.set_rng_state(state[0]); torch.cuda.set_rng_state_all(state[1])
         bce = lambda logits, label: torch.nn.functional.binary_cross_entropy_with_logits(logits, torch.full_like(logits, label))
-    schedule = lambda step: min(1., (step+1)/args.warmup)*(.1+.9*.5*(1+math.cos(math.pi*step/args.steps)))
+    schedule = ((lambda step: maa_schedule(step, args.warmup, args.steps)) if args.schedule == 'maa' else
+                (lambda step: min(1., (step+1)/args.warmup)*(.1+.9*.5*(1+math.cos(math.pi*step/args.steps)))))
+    align_of = mse_loss if args.loss == 'mse' else pair_loss
     write_manifest(out, config=to_jsonable(args), inputs={str(p): digest(p) for p in (args.pack/'pack.json', args.scan_pack/'pack.json',
                    *((args.synthetic/f'fold_{args.fold}_raw'/'pack.json',) if args.synthetic else ()))},
                    real_training=len(real), synthetic_training=len(synthetic), validation=len(val), validation_writers=sorted(held),
-                   trainable_parameters=sum(q.numel() for q in params), targets=TARGETS, model_processing=processing(args.model),
+                   trainable_parameters=sum(q.numel() for q in params), structure=args.structure, model_processing=processing(args.model),
+                   targets=TARGETS if args.structure == 'lora' else 'MAA adapters on the input of every block (models.maa)',
+                   loss=args.loss, schedule=args.schedule, selection=f'the earliest lowest validation {args.loss} loss',
+                   **({'reading': {'reader_adapter': str(args.reader_adapter), 'weight': args.reading_weight, **reading.record()}} if reading else {}),
                    lora_modules=sorted({n.split('.lora_')[0].rsplit('.', 1)[-1] for n, q in model.named_parameters() if q.requires_grad and '.lora_' in n}), features='merged + deepstack (all four levels; Qwen3.5: the merged tokens alone)',
                    synthetic_share=(.25 if covered else .5) if synthetic else 0., covered_training=len(covered), covered_share=.25 if covered else 0.,
                    real_share=args.real_share, real_regions_all=everyone, real_writers=subset, real_regions_kept=len(real), window_only=args.window_only,
@@ -318,13 +355,20 @@ def train(args):
         return student, teacher
 
     def validate():
+        """The validation loss the step is kept by (``--loss``), both losses beside; B: the reading loss of the validation regions
+        (recorded only); MAA: its alphas."""
         model.eval(); totals = Totals(1+len(getattr(model.base_model.model.config, 'deepstack_visual_indexes', None) or ()))
         with torch.no_grad():
             for start in range(0, len(val), args.batch_size):
                 student, teacher = forward(*pairs_of(val[start:start+args.batch_size])); totals.add(student, teacher)
-        model.train(); return totals.loss()
+            measured = {'val_loss': totals.loss(args.loss), 'val_align': totals.loss('align'), 'val_mse': totals.loss('mse')}
+            if reading:
+                measured['val_reading'] = reading.mean_loss(model, [r[0] for r in val])
+            if args.structure == 'maa':
+                measured['alphas'] = model.alphas()
+        model.train(); return measured
     stream = (out/'train_log.jsonl').open('x', encoding='utf-8'); started = time.monotonic(); best = (math.inf, None)
-    first = validate(); stream.write(json.dumps({'step': 0, 'val_loss': first})+'\n'); stream.flush(); print(json.dumps({'step': 0, 'val_loss': first}), flush=True)
+    first = validate(); stream.write(json.dumps({'step': 0, **first})+'\n'); stream.flush(); print(json.dumps({'step': 0, **first}), flush=True)
     model.train()
     for step in range(args.stop_after or args.steps):
         for group in optimizer.param_groups: group['lr'] = args.lr*schedule(step)
@@ -348,7 +392,7 @@ def train(args):
             row = {'step': step+1, 'loss': loss, 'lr': optimizer.param_groups[0]['lr'], 'synthetic': drawn.count('synthetic'), 'covered': drawn.count('covered'),
                    'seconds': round(time.monotonic()-started, 1)}
             if (step+1) % args.eval_every == 0 or step+1 == args.steps:
-                row['val_loss'] = validate()
+                row.update(validate())
                 if row['val_loss'] < best[0]:
                     best = (row['val_loss'], step+1)
                     if (out/'student').exists():
@@ -362,17 +406,22 @@ def train(args):
             judged = .5*(bce(judge(teacher[0].detach()), 1.)+bce(judge(student[0].detach()), 0.)); judged.backward()
             torch.nn.utils.clip_grad_norm_(judge.parameters(), 1.); judge_optimizer.step(); judge_optimizer.zero_grad(set_to_none=True)
             for q in judge.parameters(): q.requires_grad_(False)
-            align = pair_loss(student, teacher); fooled = bce(judge(student[0]), 1.); loss = align+ADVERSARIAL_WEIGHT*fooled
+            align = align_of(student, teacher); fooled = bce(judge(student[0]), 1.); loss = align+ADVERSARIAL_WEIGHT*fooled
             for q in judge.parameters(): q.requires_grad_(True)
             extra = {'align': float(align), 'adversarial': float(fooled), 'discriminator': float(judged)}
         else:
-            loss = pair_loss(student, teacher)
+            loss = align_of(student, teacher)
         loss.backward()
+        if reading:                              # B: the reader's answer loss of the step's real regions, each its own mean, their mean
+            real_ids = [c[0] for c, d in zip(chosen, drawn) if d == 'real']
+            heard = reading.backward(model, real_ids, args.reading_weight)
+            extra = {'align': float(loss), 'reading': heard, 'reading_regions': len(real_ids)}
+            loss = loss.detach()+args.reading_weight*(heard or 0.)
         torch.nn.utils.clip_grad_norm_(params, 1.); optimizer.step(); optimizer.zero_grad(set_to_none=True)
         row = {'step': step+1, 'loss': float(loss), 'lr': optimizer.param_groups[0]['lr'], 'synthetic': drawn.count('synthetic'), 'covered': drawn.count('covered'),
                **extra, 'seconds': round(time.monotonic()-started, 1)}
         if (step+1) % args.eval_every == 0 or step+1 == args.steps:
-            row['val_loss'] = validate()
+            row.update(validate())
             if row['val_loss'] < best[0]:
                 best = (row['val_loss'], step+1)
                 if (out/'student').exists():
@@ -380,7 +429,8 @@ def train(args):
                 model.save_pretrained(out/'student')
         stream.write(json.dumps(row)+'\n'); stream.flush(); print(json.dumps(row), flush=True)
     stream.close()
-    write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'initial_val_loss': first,
+    write_json(out/'complete.json', {'steps': args.steps, 'seconds': round(time.monotonic()-started, 1), 'initial_val_loss': first['val_loss'],
+                                     'peak_allocated_gib': round(torch.cuda.max_memory_allocated()/2**30, 2),
                                      'kept_step': best[1], 'kept_val_loss': best[0] if best[1] else None})
 
 
@@ -616,15 +666,11 @@ SPREAD = 3000
 
 def spread(args):
     import torch
-    from peft import PeftModel
+    from .models.maa import student_view
     from .models.vlm_tokens import processor_for
     rows = json.loads((args.pack/'pack.json').read_text())['rows']; processor = processor_for(args.model)
-    named = [s.partition('=')[::2] for s in args.student]; tower = vision_tower(args.model).to('cuda'); model = None
-    for name, pattern in named:
-        for k in args.folds:
-            path = str(Path(pattern.format(fold=k)))
-            if model is None: model = PeftModel.from_pretrained(tower, path, adapter_name=f'{name}|{k}')
-            else: model.load_adapter(path, adapter_name=f'{name}|{k}')
+    named = [s.partition('=')[::2] for s in args.student]
+    model = student_view(vision_tower(args.model).to('cuda'), {f'{name}|{k}': Path(pattern.format(fold=k)) for name, pattern in named for k in args.folds})
     model.eval(); cos = lambda a, b: torch.nn.functional.cosine_similarity(a, b, dim=-1); result = {'folds': {}}
     def distances(a, b, width):
         kernel = lambda x, y: torch.exp(-torch.cdist(x, y).pow(2)/(2*width**2))
@@ -671,6 +717,11 @@ def main(argv=None):
     t.add_argument('--steps', type=int, default=600); t.add_argument('--batch-size', type=int, default=8, help='regions a step (each a window and a line)')
     t.add_argument('--eval-every', type=int, default=50); t.add_argument('--rank', type=int, default=16); t.add_argument('--alpha', type=int, default=32)
     t.add_argument('--dropout', type=float, default=.05); t.add_argument('--lr', type=float, default=1e-4); t.add_argument('--warmup', type=int, default=30)
+    t.add_argument('--structure', choices=('lora', 'maa'), default='lora', help="the adapter: low-rank on the blocks' linear layers, or MAA's three branches (S1, S2)")
+    t.add_argument('--loss', choices=('align', 'mse'), default='align', help="the alignment loss, trained and kept by: 1 - cosine + normalised squared error, or MAA's mean squared error (S2)")
+    t.add_argument('--schedule', choices=('ours', 'maa'), default='ours', help="ours: --warmup steps then a cosine to a tenth; maa: MAA's (transformers' cosine with --warmup, to 0)")
+    t.add_argument('--reader-adapter', type=Path, help="B: the fold's reader (train_reader), frozen; its answer loss of the real regions joins the adapter's")
+    t.add_argument('--reading-weight', type=float, default=.1, help="B: the reading loss's weight (the plan's 0.1)")
     d = sub.add_parser('distance')
     for key in ('model', 'student', 'pack', 'raw-pack', 'erased-pack', 'output-dir'): d.add_argument('--'+key, type=Path, required=True)
     d.add_argument('--fold', type=int, required=True); d.add_argument('--scan-pack', type=Path, help='what the student sees (default: the scan)')

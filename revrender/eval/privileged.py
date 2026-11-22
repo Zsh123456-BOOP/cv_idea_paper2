@@ -247,11 +247,24 @@ def analyse(args):
             useful = [n for n in strong if block[n]['verdict'] == 'useful']
             block['next_best'] = max(useful, key=lambda n: (block[n]['heavy_exact'], -STRONGER[n])) if useful else 'V-修'
             rules['ruleG_stronger'] = block
-        elif 'V-判别' in arms:
+        elif 'V-判别' in arms and not args.judged:
             heavy, light, whole = on('heavy', 'V-修', 'V-判别'), on('light', 'V-修', 'V-判别'), vs('V-修', 'V-判别')
             rules['ruleG_V-判别_vs_V-修'] = {'heavy': pick(heavy), 'light': pick(light), 'whole': pick(whole), 'verdict': rule_a(heavy, light, whole), 'whole_grade': grade(whole)}
+        if args.judged:                          # rules S and B (插件结构优化, section three): rule G's form on 97.5 % intervals, the 95 % beside
+            block = {}
+            for n in args.judged:
+                at = {q: [on(part, 'V-修', n, bounds) for part in ('heavy', 'light', 'whole')] for q, bounds in (('97.5', (1.25, 98.75)), ('95', (2.5, 97.5)))}
+                block[n] = {'heavy': pick(at['97.5'][0]), 'light': pick(at['97.5'][1]), 'whole': pick(at['97.5'][2]), 'verdict': rule_a(*at['97.5']),
+                            'at_95': {'heavy': pick(at['95'][0]), 'light': pick(at['95'][1]), 'whole': pick(at['95'][2]), 'verdict': rule_a(*at['95'])},
+                            'whole_exact': scores['V-修'][n]['exact']}
+            useful = [n for n in args.judged if block[n]['verdict'] == 'useful']
+            block['next_version'] = max(useful, key=lambda n: block[n]['whole_exact']) if useful else 'V-修'     # the useful arm with the highest whole exact
+            rules['ruleS'] = block
+        if args.pair:                            # reported only (S2 the comparison method): A - B on the whole and each half, 95 %
+            rules['pairs'] = {f'{a}_minus_{b}': {'whole': pick(vs(b, a)), 'heavy': pick(on('heavy', b, a)), 'light': pick(on('light', b, a))}
+                              for a, b in (spec.split(':') for spec in args.pair)}
         rules['learning_curve'] = curve
-        rules['reported'] = {f'{n}_vs_{ref}': pick(vs(ref, n)) for n in ('V-修', 'V-涂满', 'L25', 'L50', *STRONGER) if n in arms for ref in ('V-真+合', 'H', 'R0', 'X', 'V-判别') if ref in scores and ref != n}
+        rules['reported'] = {f'{n}_vs_{ref}': pick(vs(ref, n)) for n in ('V-修', 'V-涂满', 'L25', 'L50', *STRONGER, *args.judged) if n in arms for ref in ('V-真+合', 'H', 'R0', 'X', 'V-判别') if ref in scores and ref != n}
     names = list(arms)
     can = [k for k in rows if rows[k]['readable'] and all(k in arms[n] for n in names)]
     scored = lambda arm, ks: [counts(rows[k]['text'], arms[arm][k]) for k in ks]
@@ -293,6 +306,8 @@ def main(argv=None):
     a.add_argument('--scores', action='append', required=True); a.add_argument('--distances', action='append', default=[])
     a.add_argument('--teacher', action='append', default=[]); a.add_argument('--output-dir', type=Path, required=True)
     a.add_argument('--shares', type=Path, help='a shares file: the sixth round\'s halves and quarters of the strike share')
+    a.add_argument('--judged', action='append', default=[], help='an arm judged against V-修 by rule S / B (97.5 %%; 插件结构优化)')
+    a.add_argument('--pair', action='append', default=[], help='A:B, the reported difference A - B (whole and halves, 95 %%)')
     s = sub.add_parser('shares')
     s.add_argument('--pack', type=Path, required=True); s.add_argument('--compare', type=Path); s.add_argument('--output', type=Path, required=True)
     h = sub.add_parser('hint')
