@@ -58,7 +58,8 @@ arm() {   # NAME FOLD: k{K}_struck, k{K}_next, k9_next_NAFNet, or the checks' al
 ARMS=(k3_struck k3_next k6_struck k6_next k9_struck k9_next k13_struck k13_next k17_struck k17_next k9_next_NAFNet)
 
 if [ "$PART" = smoke ]; then
-    test -e "$CPU/complete.json" && test -e "$OFF/complete.json" || { echo 'the CPU run or T2'"'"'s --student-off reading missing'; exit 2; }
+    # check 3 needs only the CPU run's patches taken per region (regions.jsonl, all 610), not its float32 checks
+    [ "$(wc -l < "$CPU/regions.jsonl")" = 610 ] && test -e "$OFF/complete.json" || { echo 'the CPU run'"'"'s 610 regions or T2'"'"'s --student-off reading missing'; exit 2; }
     done_ features || { place 22000 1 job "$R/check12_features" -- "$PY" -m revrender.models.transplant --model "$MODEL" --pack "$RAWV" --transplant-pack "$V" \
         --fold 0 --regions 20 --output-dir "$R/check12_features"; wait; test -e "$R/check12_features/result.json"; mark features; }
     if ! done_ readings; then
