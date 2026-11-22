@@ -330,7 +330,7 @@ class Reader:
             patch_embed_with_layer_map(self.model.model.visual.patch_embed).load_state_dict(torch.load(str(layer_map), map_location=device))
         else:
             patch_embed_as_linear(self.model.model.visual.patch_embed)
-        self.students = None
+        self.students = self.mix = None                                  # mix: models.feature_mix.install
         if student:                                                      # a vision-tower adapter of ``train_clean_view``: see ``install_students``
             self.students = install_students(self.model.model, {'default': student}, student_off)
         self.prefill = answer_prefill(self.processor)
@@ -344,17 +344,22 @@ class Reader:
         thw = self.processor.image_processor(images=[image], return_tensors='pt')['image_grid_thw'][0]
         return int(thw[1])//self.merge, int(thw[2])//self.merge
 
-    def read(self, jobs, system, max_new_tokens=256, maps=None, loop_limit=0, students=None):
+    def read(self, jobs, system, max_new_tokens=256, maps=None, loop_limit=0, students=None, mix_images=None):
         """Greedy readings of (image, words, hidden, soft) jobs: ``image`` one image or several, ``hidden`` the bool flags of the image's
         tokens (or None), ``soft`` 0 to remove the hidden tokens from every attention or a positive bias subtracted from their attention
         logits; ``maps`` the layer map of each job's first image (a reader made with ``layer_map``).  ``loop_limit``: a reading that
         ends in one block written that many times (``looped``) stops there and keeps the block once (finish ``loop``; 0: never).  A list
         of dicts (text, tokens, confidence -- the geometric mean of the written tokens' probabilities --, finish).  ``students``: per job,
-        which of its images the student sees (a reader made with ``student``)."""
+        which of its images the student sees (a reader made with ``student``); with a mix (``models.feature_mix``), which are mixed, and
+        ``mix_images`` per job the mix pack's images."""
         torch = self.torch
-        if students is not None and self.students is None:
+        if students is not None and self.students is None and self.mix is None:
             raise ValueError('student images without a student')
-        if self.students is not None:
+        if self.mix is not None:
+            self.mix.flags = [bool(f) for job_flags in students for f in job_flags]
+            mixed = self.processor.image_processor(images=[one for images in mix_images for one in images], return_tensors='pt')
+            self.mix.companion = (mixed['pixel_values'], mixed['image_grid_thw'])
+        elif self.students is not None:
             self.students.flags = [('default' if f else None) for job_flags in students for f in job_flags] if students is not None else None
         shown = lambda image: [{'type': 'image', 'image': one} for one in (image if isinstance(image, (list, tuple)) else [image])]
         conversations = [[{'role': 'system', 'content': [{'type': 'text', 'text': system}]},
