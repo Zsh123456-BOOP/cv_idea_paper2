@@ -1,6 +1,7 @@
 """Gemma 4 E4B (plan of 2026-11-21, 换模型验证插件, revisions seven and eight) in the new env: what differs from the Qwen readers.
 
-- The chat: the local release files (Hugging Face commit 292a7e27; tokenizer.json sha256 cc8d3a0c...).  Its template takes a system
+- The chat: the release (Hugging Face commit 292a7e27) with the current tokenizer.json and chat template (4ecc2ba, revision eight: the
+  user's yes of 2026-11-22; ``gemma-4-E4B-it-hf4ecc2ba``, its ``files_manifest.json``).  The release template takes a system
   turn's content as a string alone (a list of parts is printed as the list), so ``Processor.apply_chat_template`` gives the system
   turn its text as a string; the generation prompt is ``<|turn>model\\n``; thinking stays off (no ``<|think|>``), so nothing is
   prefilled.  Images go to the processor nested per conversation (``Processor.__call__`` groups a flat list by each text's
@@ -31,8 +32,9 @@ def is_gemma(model_dir):
 def processing(model_dir):
     """What a run records of how Gemma sees and is spoken to."""
     image = json.loads((Path(model_dir)/'processor_config.json').read_text())['image_processor']
-    return {'max_soft_tokens': image['max_soft_tokens'], 'patch': image['patch_size'], 'pooling': image['pooling_kernel_size'],
-            'files': 'the local release (Hugging Face 292a7e27): tokenizer.json, tokenizer_config.json, chat_template.jinja',
+    swapped = Path(model_dir)/'files_manifest.json'                     # a folder of the release with the current tokenizer and template
+    files = json.loads(swapped.read_text()) if swapped.exists() else 'the local release (Hugging Face 292a7e27): tokenizer.json, tokenizer_config.json, chat_template.jinja'
+    return {'max_soft_tokens': image['max_soft_tokens'], 'patch': image['patch_size'], 'pooling': image['pooling_kernel_size'], 'files': files,
             'system_turn': 'its text as a string (the release template prints a list of parts as it is)', 'thinking': 'off: no <|think|>, nothing prefilled',
             'language_attention': 'sdpa; causal, the padding mask and positions over the unpadded tokens', 'audio': 'off the card, its calls counted (0)'}
 

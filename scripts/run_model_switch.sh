@@ -23,14 +23,15 @@ P2=${N}_nafnet_folds20261119; V=${N}_revision_folds_human_masked20261117b_views;
 SYN=${N}_privileged_view20261120_synth; FIX=${N}_covered_view20261121; SH=${P2}_reader_shared_f; R0R=${P2}_reader_R0_f
 case "$PART" in
     check1) R=${B}_check1 ;;
-    probe) case "${MODEL:-}" in Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;; InternVL3_5-8B) X=$HME; SLUG=internvl ;; gemma-4-E4B-it) X=$NEW; SLUG=gemma ;;
-               *) echo 'MODEL is Qwen3.5-9B, InternVL3_5-8B or gemma-4-E4B-it'; exit 2 ;; esac
+    probe) case "${MODEL:-}" in Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;; InternVL3_5-8B) X=$HME; SLUG=internvl ;; gemma-4-E4B-it-hf4ecc2ba) X=$NEW; SLUG=gemma ;;
+               *) echo 'MODEL is Qwen3.5-9B, InternVL3_5-8B or gemma-4-E4B-it-hf4ecc2ba'; exit 2 ;; esac
            M=$MODELS/$MODEL; R=${B}_${SLUG}_probe ;;
     smoke|main) case "${MODEL:-}" in
                     Qwen3.5-9B) X=$NEW; SLUG=qwen35 ;;
                     InternVL3_5-8B) X=$HME; SLUG=internvl ;;
-                    gemma-4-E4B-it) X=$NEW; SLUG=gemma ;;      # revisions seven and eight: the new env, models.gemma
-                    *) echo 'MODEL is Qwen3.5-9B, InternVL3_5-8B or gemma-4-E4B-it'; exit 2 ;; esac
+                    # revisions seven to nine: the new env, models.gemma; the release with the current tokenizer and template (the user's yes)
+                    gemma-4-E4B-it-hf4ecc2ba) X=$NEW; SLUG=gemma ;;
+                    *) echo 'MODEL is Qwen3.5-9B, InternVL3_5-8B or gemma-4-E4B-it-hf4ecc2ba'; exit 2 ;; esac
                 M=$MODELS/$MODEL; R=${B}_$SLUG; [ "$PART" = main ] || R=${R}_smoke ;;
     *) echo "PART is check1, smoke or main"; exit 2 ;; esac
 case "$PART" in main) STEPS=100; P_STEPS=2000; P_EVAL=50; LIMIT=(); READ=(0 1 2 3 4) ;; *) STEPS=10; P_STEPS=10; P_EVAL=10; LIMIT=(--limit 8); READ=(0) ;; esac
