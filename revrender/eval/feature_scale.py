@@ -138,6 +138,10 @@ def measure(args):
     write_json(out/'complete.json', {'regions': len(kept)})
 
 
+def mean(values):
+    return float(np.mean(values)) if values else None
+
+
 def summary(args):
     out = make_output_dir(args.output_dir)
     per_region = json.loads((args.measured/'per_region.json').read_text())
@@ -151,6 +155,8 @@ def summary(args):
         z = np.load(args.measured/f'{view_}.npz'); ids = list(z['ids']); n, sums, squares = z['n'], z['sums'], z['squares']      # sums [R, level, q, w]
         for part, inside in parts.items():
             sel = [j for j, i in enumerate(ids) if inside(i) and n[j] > 0]
+            if not sel:
+                result[f'{view_}:{part}'] = {'regions': 0}; continue
             writers = sorted({per_region[ids[j]]['writer'] for j in sel}); index = {w: m for m, w in enumerate(writers)}
             wn = np.zeros(len(writers)); ws = np.zeros((len(writers),)+sums.shape[1:]); wq = np.zeros((len(writers),)+squares.shape[1:])
             win = np.zeros((len(writers),)+squares.shape[1:])
@@ -166,10 +172,10 @@ def summary(args):
                 for stat in ('norm', 'proj', 'perp'):
                     for v in ('x', 's', 'M'):
                         vals = [per_region[ids[j]][view_][name].get(f'{stat}_{v}') for j in sel]
-                        e[f'{stat}_{v}'] = float(np.mean([x for x in vals if x is not None]))
+                        e[f'{stat}_{v}'] = mean([x for x in vals if x is not None])
                 for key in ('cos_x', 'cos_s', 'cos_M', "cos_M'", *(f'cos_alpha_{a}' for a in ALPHAS), 'taken_back_touched', 'taken_back_all'):
                     vals = [per_region[ids[j]][view_][name].get(key) for j in sel]
-                    e[key] = float(np.mean([x for x in vals if x is not None]))
+                    e[key] = mean([x for x in vals if x is not None])
                 entry['levels'][name] = e
             result[f'{view_}:{part}'] = entry
     rs = result['window:heavy']['levels']['merged']['R_s']
