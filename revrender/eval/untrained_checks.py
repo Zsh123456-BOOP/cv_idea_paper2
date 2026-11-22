@@ -3,7 +3,7 @@
     python -m revrender.eval.untrained_checks --pack VIEWS --shares SHARES --arm NAME=DIR[,DIR...] [...] --mix-stats NAME=DIR[,DIR...]
         --output-dir OUT
 
-Arms by name: V-修 (images 2 and 3 through the fold's V-修 adapter, read again), V-只2, V-只3, α=0 ... α=1 (the chord), M, M'.  On the
+Arms by name: V-修 (images 2 and 3 through the fold's V-修 adapter, read again), V-只2, V-只3, α0 ... α1 (the chord; no "=" in a name: an arm is NAME=DIRS), M, M'.  On the
 readable regions, exact and AR differences with a writer bootstrap (1,000, seed 42, 95 %; ``eval.transcription.paired``):
 
 - rule T1: V-只2 - V-修 on exact: the lower end above 0 -> 第3张图过插件有害; the upper end below 0 -> 有用; else 说不准.

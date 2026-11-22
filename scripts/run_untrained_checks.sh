@@ -104,8 +104,8 @@ if ! done_ readings; then
 fi
 done_ analysis || { "$PY" -m revrender.eval.untrained_checks --pack "$V" --shares "$SHARES" \
     --arm "V-修=$(dirs "$R/read_V-修")" --arm "V-只2=$(dirs "$R/read_V-只2")" --arm "V-只3=$(dirs "$R/read_V-只3")" \
-    --arm "α=0=$(dirs "$R/read_a0")" --arm "α=0.25=$(dirs "$R/read_a0.25")" --arm "α=0.5=$(dirs "$R/read_a0.5")" --arm "α=0.75=$(dirs "$R/read_a0.75")" \
-    --arm "α=1=$(dirs "$R/read_a1")" --arm "M=$(dirs "$R/read_M")" --arm "M'=$(dirs "$R/read_Mp")" --mix-stats "M=$(dirs "$R/read_M")" \
+    --arm "α0=$(dirs "$R/read_a0")" --arm "α0.25=$(dirs "$R/read_a0.25")" --arm "α0.5=$(dirs "$R/read_a0.5")" --arm "α0.75=$(dirs "$R/read_a0.75")" \
+    --arm "α1=$(dirs "$R/read_a1")" --arm "M=$(dirs "$R/read_M")" --arm "M'=$(dirs "$R/read_Mp")" --mix-stats "M=$(dirs "$R/read_M")" \
     --output-dir "$R/analysis" > "$R/analysis.log" 2>&1; mark analysis; }
 t3
 done_ t3_summary || { "$PY" -m revrender.eval.feature_scale summary --measured "$T3" --shares "$SHARES" --output-dir "$R/t3_summary" > "$R/t3_summary.log" 2>&1; mark t3_summary; }
