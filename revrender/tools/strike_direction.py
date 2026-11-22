@@ -56,7 +56,10 @@ class Moments:
 
 
 def top(matrix, k):
-    return np.linalg.eigh(matrix)[1][:, ::-1][:, :k]
+    """The first k eigenvectors of a symmetric matrix, largest first (only those computed)."""
+    from scipy.linalg import eigh
+    n = len(matrix)
+    return eigh(matrix, subset_by_index=[n-k, n-1])[1][:, ::-1]
 
 
 def concentration(fit, held):
@@ -76,9 +79,9 @@ def ridge(fit):
     return w, mx, md, top(w.T@sxx@w, max(KS))
 
 
-def residual(fit, held):
-    """The held-out normalised residual of the full-rank ridge map of x to d: |d - d_hat|^2 / |d|^2."""
-    w, mx, md, _ = ridge(fit)
+def residual(fitted, held):
+    """The held-out normalised residual of the full-rank ridge map of x to d (``fitted``: ``ridge``'s): |d - d_hat|^2 / |d|^2."""
+    w, mx, md, _ = fitted
     hx, hd = held.x/held.n, held.d/held.n
     sxx = held.xx-held.n*np.outer(hx, hx); sxd = held.xd-held.n*np.outer(hx, hd); sdd = held.dd-held.n*np.outer(hd, hd)
     shift = hd-md-(hx-mx)@w
@@ -103,16 +106,65 @@ def closeness(f, c, touched):
     return float(cos_rows(f, c)[touched].mean()) if touched.any() else None
 
 
+def synthetic(args):
+    """The synthetic pairs, reported only (revision one): each fold's synthetic set (``SYNTH/fold_K_raw`` -> ``fold_K_clean``, window
+    and line, the frozen tower; a region shared by several folds' sets computed once); per block and the merged tokens, (a) E(k) of the
+    fold's synthetic d under the real fit's d directions, (b) E(k) of the real held-out fold's d under the fold's synthetic d directions."""
+    import torch
+    from ..models.vlm_tokens import processor_for
+    from ..train_clean_view import encode, vision_tower
+    torch.set_num_threads(args.threads)
+    out = make_output_dir(args.output_dir); real = np.load(args.real/'real_d.npz')
+    folds = sorted(int(p.name.split('_')[1]) for p in args.synthetic.glob('fold_*_raw'))
+    packs = {k: ({r['id']: r for r in json.loads((args.synthetic/f'fold_{k}_raw'/'pack.json').read_text())['rows']},
+                 {r['id']: r for r in json.loads((args.synthetic/f'fold_{k}_clean'/'pack.json').read_text())['rows']}) for k in folds}
+    sets = {k: set(packs[k][0]) for k in folds}; ids = sorted(set().union(*sets.values()))
+    dtype = torch.float32 if args.device == 'cpu' else torch.bfloat16
+    processor = processor_for(args.model); tower = vision_tower(args.model).to(args.device, dtype).eval()
+    depth, merge = len(tower.blocks), tower.spatial_merge_size; captured = []
+    for block in tower.blocks:
+        block.register_forward_hook(lambda m, i, o: captured.append(o.detach().float().cpu().numpy()))
+    write_manifest(out, config=to_jsonable(args), regions=len(ids), per_fold={k: len(v) for k, v in sets.items()}, ks=KS, dtype=str(dtype))
+    dd = {k: [np.zeros((tower.config.hidden_size,)*2) for _ in range(depth)]+[np.zeros((tower.config.out_hidden_size,)*2)] for k in folds}
+    opened = lambda path: Image.open(path).convert('RGB')
+
+    def features(images):
+        x, g = encode(processor, images, args.device); captured.clear()
+        with torch.no_grad():
+            merged_out = tower(x.to(dtype), grid_thw=g)[0]
+        return [c for c in captured]+[merged_out.float().cpu().numpy()], g.tolist()
+    for n, i in enumerate(ids):
+        k0 = next(k for k in folds if i in sets[k]); raw, clean = packs[k0][0][i], packs[k0][1][i]
+        (xs, gx), (cs, gc) = features([opened(raw['images'][key]) for key in ('erased', 'context')]), features([opened(clean['images'][key]) for key in ('erased', 'context')])
+        require(gx == gc, f'{i}: the synthetic pair gives two grids')
+        for k in folds:
+            if i in sets[k]:
+                for b in range(depth+1):
+                    d = (xs[b]-cs[b]).astype(np.float64); dd[k][b] += d.T@d
+        if n % 200 == 0: print(json.dumps({'regions': n+1, 'of': len(ids)}), flush=True)
+    share = lambda dirs, m, q: float(np.trace(dirs[:, :q].T@m@dirs[:, :q])/np.trace(m))
+    result = {}
+    for b in range(depth+1):
+        name = 'merged' if b == depth else b
+        a = {q: float(np.mean([share(real[f'{name}_f{k}_directions'].astype(np.float64), dd[k][b], q) for k in folds])) for q in KS}
+        own = {k: top(dd[k][b], max(KS)) for k in folds}
+        bb = {q: float(np.mean([share(own[k], real[f'{name}_f{k}_held_dd'].astype(np.float64), q) for k in folds])) for q in KS}
+        result[str(name)] = {'synthetic_d_under_real_directions': a, 'real_held_out_d_under_synthetic_directions': bb}
+    write_json(out/'result.json', result); print(json.dumps({'merged': result['merged']}), flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     for key in ('model', 'pack', 'raw-pack', 'shares', 'output-dir'): p.add_argument('--'+key, type=Path, required=True)
     p.add_argument('--students', required=True, help="V-修's adapter of a fold, {fold} for the fold")
     p.add_argument('--records', required=True, help="V-修's distance run of a fold (distances.jsonl inside), {fold} for the fold")
-    p.add_argument('--synthetic', type=Path, help='a data.synth_views build folder: E(k) of its pairs (reported)')
+    p.add_argument('--synthetic', type=Path, help='a data.synth_views build folder: E(k) of its pairs (reported; with --real)')
+    p.add_argument('--real', type=Path, help="the real pairs' run (its real_d.npz), for --synthetic")
     p.add_argument('--threads', type=int, default=8); p.add_argument('--device', default='cpu')
     p.add_argument('--limit', type=int, help='a dry run of the code: the first LIMIT regions of each fold')
     args = p.parse_args(argv)
-    require(not args.synthetic, 'the synthetic pairs wait for the planning session (which directions)')
+    if args.synthetic:
+        return synthetic(args)
     import torch
     from ..models.maa import student_view
     from ..models.vlm_tokens import cell_shares, processor_for
@@ -205,7 +257,8 @@ def main(argv=None):
             f"check 2: the mean closeness is more than 0.005 off the records (an adapter, image or token set wired wrong): {checks['check2_means']}")
 
     # the folds' fits and the measures
-    result = {'layers': {}, 'merged': {}, 'erasure': {}, 'leace': {}, 'residual_by_block': {}}
+    result = {'layers': {}, 'merged': {}, 'erasure': {}, 'leace': {}}
+    kept, ridges = {}, {}                                                # for the synthetic pairs' run: each fit's d directions, each held-out d'd
     for b in list(range(depth))+['merged']:
         pick = (lambda m: m[1]) if b == 'merged' else (lambda m, b=b: m[0][b])
         e, ref, res = {q: [] for q in KS}, {q: [] for q in KS}, []
@@ -213,8 +266,10 @@ def main(argv=None):
         for k in folds:
             fit = Moments(wm if b == 'merged' else wb).combine([pick(own[j]) for j in folds if j != k], [pick(val[k])])
             held = pick(own[k]); ek, rk = concentration(fit, held); heldouts.append(np.trace(held.dd))
+            kept[f'{b}_f{k}_directions'] = top(fit.dd, max(KS)).astype(np.float32); kept[f'{b}_f{k}_held_dd'] = held.dd.astype(np.float32)
             for q in KS: e[q].append(ek[q]); ref[q].append(rk[q])
-            res.append(residual(fit, held))
+            fitted = ridge(fit); res.append(residual(fitted, held))
+            if b == 'merged': ridges[k] = fitted
         weights = np.array(heldouts)/sum(heldouts)                         # the folds' E(k) weighted by their held-out energy
         block = {'E': {q: float(np.dot(weights, e[q])) for q in KS}, 'E_reference_c': {q: float(np.mean(ref[q])) for q in KS},
                  'E_by_fold': {q: e[q] for q in KS}, 'full_rank_residual': float(np.mean(res))}
@@ -222,8 +277,7 @@ def main(argv=None):
     # linear erasure and LEACE on the merged window tokens of each held-out fold
     gains = {q: [] for q in (*KS, 'full')}; rows_out = []
     for k in folds:
-        fit = Moments(wm).combine([own[j][1] for j in folds if j != k], [val[k][1]])
-        w, mx, md, dirs = ridge(fit)
+        w, mx, md, dirs = ridges[k]
         maps = {q: w@dirs[:, :q]@dirs[:, :q].T for q in KS}; maps['full'] = w
         fit_tokens = [t for j in folds if j != k for t in windows[j] if t[0] in fit_ids[k]]
         eraser = leace(np.concatenate([t[1] for t in fit_tokens]).astype(np.float64), np.concatenate([t[3] for t in fit_tokens]))
@@ -247,6 +301,7 @@ def main(argv=None):
     with (out/'erasure_by_region.jsonl').open('x') as stream:
         for r in rows_out: stream.write(json.dumps(r)+'\n')
     write_json(out/'result.json', result)
+    np.savez(out/'real_d.npz', **kept)
     print(json.dumps({'merged_E': result['merged']['E'], 'g_all': {q: v['g'] for q, v in result['erasure']['all'].items()},
                       'check2_largest_difference': checks['check2_largest_difference']}), flush=True)
 
