@@ -8,7 +8,8 @@
 #   R0, 当前最好 (the sixth round's V-修) and H: the readings there are.
 # eval.transcription against R0; eval.ocr_compare analyse (P1-P4, the ladder, the halves).  PART=check: the plan's section-five checks
 # on printed non-project images (a pack of them: Chinese, formulas, both on one line) and the safeguards' self-test in both envs;
-# PART=main: the 610 regions.  Cards 1 and 2 (the user: 「那就用两张卡，1，2」), one job at a time on each; 0 and 3 not touched.
+# PART=main: the 610 regions.  One job at a time on a card (run on cards 1 and 2);
+# the cards: _common.sh place_on_cards (the user's word of 2026-11-23: any of 0-3, at most two of them ours at a time, the least used first).
 # The hme env is used as it is (nothing installed or changed).
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
@@ -24,7 +25,6 @@ stamp() { echo "$* $(date -u +%FT%TZ)"; }
 done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
-CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
 place() { place_on_cards "$@"; }
 job() { local out="$1"; shift 2; bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1; }
 ocr() {   # OUT PYTHON KIND MODEL PROMPT IMAGE PACK

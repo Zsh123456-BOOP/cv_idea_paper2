@@ -11,8 +11,8 @@
 # (same-tower), 2 V-修's step-0 validation loss of fold 0 against the fourth round's 0.5101, 3 the covered regions' acceptance (in
 # the builder), 4 the learning-curve subsets (subsets), 5 the reading path with the adapter off against H, 6 the head's inputs (its
 # run manifest).  The strike shares are checked region by region against the planning session's count ($B_inputs/region_stats.json).
-# Cards 1 and 2 (the user's word, 2026-11-21: 「那就用两张卡，1，2」); cards 0 and 3 are not touched,
-# ALLOW_GPU3 is not set.  ARMS="fix l25 l50": only those arms are taught, read and scored (the planning session, 2026-11-21: V-涂满
+# Run on cards 1 and 2 (the user's word, 2026-11-21); the cards now: _common.sh place_on_cards (the user's word of 2026-11-23).
+# ARMS="fix l25 l50": only those arms are taught, read and scored (the planning session, 2026-11-21: V-涂满
 # waits for the user's word; rule A then is not judged).  RUN=maa (the sixth round's update, 第六轮更新稿_MAA迁移与提示前提试验,
 # beside the run above, in paper2_clean_maa_view20261121): V-判别 (train_clean_view --discriminator; rule G against the run's V-修)
 # and the boards' premise test (data.hint_image boards; adapters C on blank boards and T on the answer, windows only, real pairs;
@@ -42,8 +42,7 @@ done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 test -e "$P2/COMPLETE" && test -e "$P4/COMPLETE" && test -e "${B}_inputs/region_stats.json" || { echo 'the second or fourth round, or the planning session'"'"'s strike shares, missing'; exit 2; }
-CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
-place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on card 1 or 2, whichever opens first (_common.sh)
+place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on the least used of our two cards it fits on (_common.sh)
 job() {   # OUT -- COMMAND...: one GPU job on $CARD
     local out="$1"; shift 2
     bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1

@@ -9,8 +9,8 @@
 # erased image's, its checks inside, then its summary.  PART=smoke: checks 1 and 2 on the features (models.transplant, 20 regions of
 # fold 0, bit for bit), fold 0 read under the eleven arms and under every patch after 9 blocks (against H's readings) and none (against
 # T2's --student-off reading), the patches taken against the CPU run's, and the seconds.  PART=main: the eleven arms on the five folds.
-# Cards CARD_INDICES (default 1 and 2; the user allowed 0 as well for this round on 2026-11-23), one reading on a card at a time; card 3
-# never.  Unattended; a step whose marker is in $R is skipped.
+# One reading on a card at a time; the cards: _common.sh place_on_cards (the user's word of 2026-11-23: any of 0-3, at most two of them ours at a time, the least used first).
+# A reading's MiB (20000): the 18.9 GB a transplanted reading showed on its card, and a margin.  Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -35,9 +35,7 @@ if [ "$PART" = cpu ]; then
     stamp "cpu done"; touch "$R/COMPLETE"; exit 0
 fi
 
-CARDS=(); for i in ${CARD_INDICES:-1 2}; do   # the cards the user allows this round (default 1 and 2; 2026-11-23 also 0); never 3
-    [ "$i" != 3 ] || { echo 'card 3 is not ours'; exit 2; }; CARDS+=("${ALL_CARDS[$i]}"); done
-place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on card 1 or 2, whichever opens first (_common.sh)
+place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on the least used of our two cards it fits on (_common.sh)
 job() {   # OUT -- COMMAND...: one GPU job on $CARD
     local out="$1" t0; shift 2; t0=$(date +%s)
     bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1
@@ -62,10 +60,10 @@ ARMS=(k3_struck k3_next k6_struck k6_next k9_struck k9_next k13_struck k13_next 
 if [ "$PART" = smoke ]; then
     # check 3 needs only the CPU run's patches taken per region (regions.jsonl, all 610), not its float32 checks
     [ "$(wc -l < "$CPU/regions.jsonl")" = 610 ] && test -e "$OFF/complete.json" || { echo 'the CPU run'"'"'s 610 regions or T2'"'"'s --student-off reading missing'; exit 2; }
-    done_ features || { place 22000 1 job "$R/check12_features" -- "$PY" -m revrender.models.transplant --model "$MODEL" --pack "$RAWV" --transplant-pack "$V" \
+    done_ features || { place 20000 1 job "$R/check12_features" -- "$PY" -m revrender.models.transplant --model "$MODEL" --pack "$RAWV" --transplant-pack "$V" \
         --fold 0 --regions 20 --output-dir "$R/check12_features"; wait; test -e "$R/check12_features/result.json"; mark features; }
     if ! done_ readings; then
-        for name in all9 none "${ARMS[@]}"; do place 22000 1 arm "$name" 0; done; wait; mark readings
+        for name in all9 none "${ARMS[@]}"; do place 20000 1 arm "$name" 0; done; wait; mark readings
     fi
     "$PY" - "$R" "$P2/read_H_f0" "$OFF" "$CPU" "$SPREAD" > "$R/checks/checks.log" <<'PY'
 import json, sys
@@ -105,6 +103,6 @@ fi
 
 # PART=main
 if ! done_ readings; then
-    for k in "${READ[@]}"; do for name in "${ARMS[@]}"; do place 22000 1 arm "$name" "$k"; done; done; wait; mark readings
+    for k in "${READ[@]}"; do for name in "${ARMS[@]}"; do place 20000 1 arm "$name" "$k"; done; done; wait; mark readings
 fi
 stamp "all done"; touch "$R/COMPLETE"

@@ -13,7 +13,8 @@
 # PART=smoke MODEL=...: the plan's checks 2-6 and 8 -- the untaught adapter's features equal the teacher's, the saved files apart, the
 # folds and validation writers as Qwen3-VL-8B's, the paired images' token grids alike, no thinking written (Qwen3.5), ten steps of an
 # adapter and of each reader, eight regions read each way.  PART=main MODEL=...: five folds of everything, the readings, the window
-# cosines, eval.transcription against R0 and H, eval.model_switch.  Cards 1 and 2, at most two of our jobs on a card; 0 and 3 not touched.
+# cosines, eval.transcription against R0 and H, eval.model_switch.  At most two of our jobs on a card;
+# the cards: _common.sh place_on_cards (the user's word of 2026-11-23: any of 0-3, at most two of them ours at a time, the least used first).
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -48,7 +49,6 @@ stamp() { echo "$* $(date -u +%FT%TZ)"; }
 done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
-CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
 place() { place_on_cards "$@"; }
 job() { local out="$1"; shift 2; bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1; }
 # how each part is computed, as the model's probe chose it (revisions four and five): the reader one sample at a time, the reading batch,

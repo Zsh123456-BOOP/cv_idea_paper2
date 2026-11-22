@@ -13,6 +13,15 @@ trap 'echo "job failed at line $LINENO $(date -u +%FT%TZ)"; touch "$OUT.FAILED"'
 hold_card "$GPU_UUID"
 export HME_NUMA_NODE="$NUMA"
 echo "GPU lock held (shared) $(date -u +%FT%TZ): $*"
-numactl --cpunodebind="$NUMA" --membind="$NUMA" "$@"
+numactl --cpunodebind="$NUMA" --membind="$NUMA" "$@" & JOB=$!
+(   # the job's peak memory on the card(s), every five seconds, to $OUT.peak_mib (what a later placement asks for)
+    trap - ERR; set +eE; peak=0
+    while kill -0 "$JOB" 2>/dev/null; do
+        m=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null | awk -F', ' -v p="$JOB" '$1 == p {s += $2} END {print s+0}')
+        if [ "${m:-0}" -gt "$peak" ]; then peak=$m; echo "$peak" > "$OUT.peak_mib"; fi
+        sleep 5
+    done
+) &
+wait "$JOB"
 test -e "$OUT"
 echo "job complete $(date -u +%FT%TZ)"

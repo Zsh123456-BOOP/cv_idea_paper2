@@ -9,7 +9,8 @@
 # PART=smoke: check 4 (feature_mix grids, all 610), T3 (its check 6 inside), check 3 (feature_mix routes, 20 regions of fold 0), and fold
 # 0 read as V-修, alpha 0 and 1, the --student-off path, M and M' for checks 1, 2 and 5; check 7 the seconds.  PART=main: the ten arms
 # on the five folds, eval.untrained_checks (rules T1, T2 and the reported items), eval.feature_scale summary (rule T3).
-# Cards 1 and 2, one reading on a card at a time; cards 0 and 3 not touched.  Unattended; a step whose marker is in $R is skipped.
+# One reading on a card at a time (run on cards 1 and 2);
+# the cards: _common.sh place_on_cards (the user's word of 2026-11-23: any of 0-3, at most two of them ours at a time, the least used first).  Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -26,8 +27,7 @@ done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 test -e "$P2/COMPLETE" && test -e "$FIX/COMPLETE" && test -e "$SHARES" || { echo 'the second or sixth round missing'; exit 2; }
-CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
-place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on card 1 or 2, whichever opens first (_common.sh)
+place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on the least used of our two cards it fits on (_common.sh)
 job() {   # OUT -- COMMAND...: one GPU job on $CARD
     local out="$1" t0; shift 2; t0=$(date +%s)
     bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1

@@ -11,7 +11,8 @@
 # order bit for bit, only adapter parameters with gradients) or 3 for B (reading_signal grads), 4 five steps of each arm (finite
 # losses, peak memory, seconds a step, the estimate), 5 (B), 6 (tools.plugin_leakage), and eight regions of fold 0 read through each.
 # PART=main: the five folds, the readings, the spread (MMD squared; S1 and S2), eval.transcription, eval.privileged with rule S / B
-# (--judged, 97.5 %) and the reported S2 pairs.  Cards 1 and 2, at most two of our jobs on a card; cards 0 and 3 not touched.
+# (--judged, 97.5 %) and the reported S2 pairs.  At most two of our jobs on a card;
+# the cards: _common.sh place_on_cards (the user's word of 2026-11-23: any of 0-3, at most two of them ours at a time, the least used first).
 # Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
@@ -32,8 +33,7 @@ done_() { [ -e "$R/$1.done" ]; }
 mark() { touch "$R/$1.done"; stamp "done $1"; }
 trap 'stamp "failed at line $LINENO"; touch "$R/FAILED"' ERR
 test -e "$P2/COMPLETE" && test -e "$P4/COMPLETE" && test -e "$FIX/COMPLETE" && test -e "$SHARES" || { echo 'the second, fourth or sixth round missing'; exit 2; }
-CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
-place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on card 1 or 2, whichever opens first (_common.sh)
+place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on the least used of our two cards it fits on (_common.sh)
 job() {   # OUT -- COMMAND...: one GPU job on $CARD
     local out="$1"; shift 2
     bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" "$NUMA" "$out" -- "$@" > "$out.log" 2>&1

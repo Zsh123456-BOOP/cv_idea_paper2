@@ -3,6 +3,8 @@
 #  - outputs go to /home/zsh/hme/outputs/paper2_*   (create-only: a launcher refuses an existing OUT)
 #  - every job holds its card's lock SHARED (flock -s), so an exclusive holder elsewhere waits for all of us;
 #    at most two of our jobs per card; card 3 is not ours unless ALLOW_GPU3=1 (the user's word)
+#  - the cards (the user's word, 2026-11-23, standing): any of 0-3, at most MAX_CARDS = 2 of them ours at a time, a job on the least used of
+#    those two that it fits on (``place_on_cards``; its MiB the job's measured peak with a margin, launch_gpu_job.sh writes OUT.peak_mib)
 #  - never kill another user's process; never install into a shared environment
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="${PY:-/home/zsh/hme/envs/hme/bin/python}"
@@ -54,12 +56,24 @@ one_card_place() {   # CARD MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the 
     "$@" & PLACED_PIDS+=($!); PLACED_CARDS+=("$card"); sleep 30
 }
 
-place_on_cards() {   # MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background on the first of $CARDS that is open twice, ten seconds
-    local mib="$1" whole="$2" c; shift 2    # apart (CARD and NUMA set for it); the caller's stamp() logs where
+MAX_CARDS=2
+used_of() { nvidia-smi -i "$1" --query-gpu=memory.used --format=csv,noheader,nounits; }
+candidate_cards() {   # the cards a new job may go to, least used first: those our jobs are on, topped up with the least used others to MAX_CARDS
+    local c chosen=() seen
+    for c in "${ALL_CARDS[@]}"; do [ "$(ours_on "$c")" -gt 0 ] && chosen+=("$c"); done
+    for c in $(for c in "${ALL_CARDS[@]}"; do echo "$(used_of "$c") $c"; done | sort -n | cut -d' ' -f2); do
+        [ "${#chosen[@]}" -lt "$MAX_CARDS" ] || break
+        seen=0; for x in "${chosen[@]}"; do [ "$x" != "$c" ] || seen=1; done; [ "$seen" = 1 ] || chosen+=("$c")
+    done
+    for c in "${chosen[@]}"; do echo "$(used_of "$c") $c"; done | sort -n | cut -d' ' -f2
+}
+place_on_cards() {   # MiB WHOLE FUNCTION ARGS...: FUNCTION ARGS... in the background on the first of ``candidate_cards`` that is open twice, ten
+    local mib="$1" whole="$2" c; shift 2    # seconds apart (CARD and NUMA set for it; ALLOW_GPU3 on card 3); the caller's stamp() logs where
     while true; do
-        for c in "${CARDS[@]}"; do
+        for c in $(candidate_cards); do
             if one_card_open "$c" "$mib" "$whole" && sleep 10 && one_card_open "$c" "$mib" "$whole"; then
-                ( CARD=$c; NUMA=$(numa_of "$c"); "$@" ) & PLACED_PIDS+=($!); PLACED_CARDS+=("$c"); stamp "placed $1 $2 on ${c:4:8}"; sleep 30; return 0
+                ( CARD=$c; NUMA=$(numa_of "$c"); [ "$c" != "$CARD3" ] || export ALLOW_GPU3=1; "$@" ) & PLACED_PIDS+=($!); PLACED_CARDS+=("$c")
+                stamp "placed $1 $2 on ${c:4:8}"; sleep 30; return 0
             fi
         done
         sleep 30
