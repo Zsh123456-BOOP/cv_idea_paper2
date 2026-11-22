@@ -46,6 +46,8 @@ job() { local out="$1"; shift 2; bash "$ROOT/scripts/launch_gpu_job.sh" "$CARD" 
 TEACH_MORE=(); READ_BATCH=8; PLUGIN_MORE=()
 if [ -n "${SLUG:-}" ] && [ "$PART" != probe ]; then
     COMPUTE=${B}_${SLUG}_probe/checks/compute.json
+    # the user's choice where no setting met the rule (InternVL at 4 tiles, revision six) stands in for the probe's
+    [ ! -e "${B}_${SLUG}_probe/checks/user_choice.json" ] || COMPUTE=${B}_${SLUG}_probe/checks/user_choice.json
     test -e "$COMPUTE" || { echo "the probe's choice is missing: run PART=probe MODEL=$MODEL first"; exit 2; }
     read -r ONE RB PIECES CKPT SPLIT_R SPLIT_B <<< "$("$HME" -c 'import json,sys; c=json.load(open(sys.argv[1]))["chosen"]; print(int(c["reader"]["one_at_a_time"]), c["read"]["read_batch"], c["plugin"]["plugin_pieces"], int(c["plugin"]["checkpointing"]), c["reader"]["cards"], c["read"]["cards"])' "$COMPUTE")"
     [ "$SPLIT_R$SPLIT_B" = 11 ] || { echo 'a split model is chosen: the two-card placement is not written yet'; exit 2; }
@@ -159,7 +161,7 @@ fi
 
 # InternVL: the most tiles an image, as its probe chose it (PART=probe), for every part of the smoke and the main run.
 if [ "${SLUG:-}" = internvl ]; then
-    export INTERNVL_MAX_TILES=$(cat "${B}_internvl_probe/checks/max_tiles"); stamp "InternVL at most $INTERNVL_MAX_TILES tiles an image"
+    export INTERNVL_MAX_TILES=$("$HME" -c 'import json,sys; print(json.load(open(sys.argv[1]))["chosen"]["tiles"])' "$COMPUTE"); stamp "InternVL at most $INTERNVL_MAX_TILES tiles an image"
 fi
 
 # The CPU checks: 5 the paired images' token grids alike (every region, the model's processor), 4 the folds and the validation writers.
