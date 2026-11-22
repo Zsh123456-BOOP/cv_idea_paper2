@@ -159,12 +159,17 @@ class Collate:
                           {'role': 'user', 'content': [*({'type': 'image', 'image': image} for image in images), {'type': 'text', 'text': words or self.words}]},
                           {'role': 'assistant', 'content': [{'type': 'text', 'text': target_of(text)}]}] for images, text, _, words, _ in batch]
         out = self.processor.apply_chat_template(conversations, tokenize=True, return_dict=True, return_tensors='pt', padding=True)
-        out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw', 'image_position_ids', 'mm_token_type_ids') if k in out}
+        out = {k: out[k] for k in ('input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw', 'image_position_ids', 'image_sizes', 'mm_token_type_ids') if k in out}
         if batch[0][2] is not None:
             from .models.vlm_tokens import layer_maps, with_layer_maps
             out['pixel_values'] = with_layer_maps(out['pixel_values'], [m for images, _, layer, _, _ in batch for m in layer_maps(images, layer)], self.processor.image_processor)
         labels = out['input_ids'].clone()
+        asked = self.processor.prompt_lengths(conversations) if hasattr(self.processor, 'prompt_lengths') else None     # LLaVA: no turn token
+        require(asked is None or self.processor.tokenizer.padding_side == 'right', 'prompt lengths need right padding')
         for b in range(labels.shape[0]):
+            if asked is not None:
+                labels[b, :asked[b]] = -100                              # the prompt alone, tokenized as the whole chat is
+                continue
             marks = (out['input_ids'][b] == self.start).nonzero().flatten()
             labels[b, :int(marks[-1])+self.header] = -100              # the system and user turns, "<|im_start|>assistant\n" and an empty thinking block
         labels[out['attention_mask'] == 0] = -100
@@ -181,7 +186,7 @@ def lora_model(model_dir, rank, alpha, dropout, layer_map=False, init=None):
     import torch
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForImageTextToText
-    from .models import gemma
+    from .models import gemma, llava
     from .models.internvl import is_internvl, training_model
     from .models.vlm_tokens import patch_embed_as_linear, patch_embed_with_layer_map
     if is_internvl(model_dir):                                           # InternVL3.5: its bundled model (models.internvl)
@@ -190,6 +195,9 @@ def lora_model(model_dir, rank, alpha, dropout, layer_map=False, init=None):
     elif gemma.is_gemma(model_dir):                                      # Gemma 4 (models.gemma): its patch embedding is not a Conv3d
         require(not layer_map, 'layer maps are not supported on Gemma')
         model = gemma.from_pretrained(model_dir)
+    elif llava.is_llava(model_dir):                                      # LLaVA-1.6 (models.llava): CLIP, no Conv3d
+        require(not layer_map, 'layer maps are not supported on LLaVA')
+        model = llava.from_pretrained(model_dir)
     else:
         model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.bfloat16, attn_implementation='sdpa')
         patch_embed_as_linear(model.model.visual.patch_embed)

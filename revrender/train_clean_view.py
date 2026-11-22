@@ -95,12 +95,14 @@ TARGETS = (r'.*(blocks|encoder\.layers)\.\d+\.(attn\.(qkv|proj)|mlp\.(linear_fc1
 
 
 def vision_tower(model_dir):
-    from .models import gemma
+    from .models import gemma, llava
     from .models.internvl import is_internvl, tower
     if is_internvl(model_dir):                                           # InternVL3.5: its vision model and mlp1 (models.internvl.tower)
         return tower(model_dir)
     if gemma.is_gemma(model_dir):                                        # Gemma 4: its vision model and embed_vision (models.gemma.tower)
         return gemma.tower(model_dir)
+    if llava.is_llava(model_dir):                                        # LLaVA-1.6: CLIP, the projector, packed (models.llava.tower)
+        return llava.tower(model_dir)
     return qwen_tower(model_dir)
 
 
@@ -143,7 +145,8 @@ def with_student(tower, rank=16, alpha=32, dropout=.05, adapter=None, structure=
         return MaaView(tower)
     if adapter:
         return PeftModel.from_pretrained(tower, str(adapter))
-    return get_peft_model(tower, LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias='none', target_modules=TARGETS))
+    targets = getattr(tower, 'adapter_targets', TARGETS)                 # LLaVA: the CLIP layers that reach its features
+    return get_peft_model(tower, LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias='none', target_modules=targets))
 
 
 def levels(tower, pixel_values, grid):
@@ -156,7 +159,7 @@ def levels(tower, pixel_values, grid):
 def encode(processor, images, device):
     import torch
     batch = processor.image_processor(images=images, return_tensors='pt')
-    grid = batch['image_grid_thw'] if 'image_grid_thw' in batch else batch['image_position_ids']      # Gemma: the patches' positions
+    grid = next(batch[k] for k in ('image_grid_thw', 'image_position_ids', 'image_sizes') if k in batch)      # Gemma: positions; LLaVA: sizes
     return batch['pixel_values'].to(device, torch.bfloat16), grid.to(device)
 
 

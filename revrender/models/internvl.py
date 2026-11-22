@@ -40,8 +40,11 @@ def processing(model_dir):
     """What a run records of how the model sees and attends (InternVL: the tiles, and the two changes from the card's loading; Gemma:
     ``models.gemma.processing``)."""
     from .gemma import is_gemma, processing as gemma_processing
+    from .llava import is_llava, processing as llava_processing
     if is_gemma(model_dir):
         return gemma_processing(model_dir)
+    if is_llava(model_dir):
+        return llava_processing(model_dir)
     if not is_internvl(model_dir):
         return None
     card = json.loads((Path(model_dir)/'config.json').read_text())['vision_config'].get('drop_path_rate')

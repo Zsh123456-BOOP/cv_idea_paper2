@@ -283,10 +283,13 @@ def processor_for(model_dir):
     """The processor of a model folder: transformers' own, or ``models.internvl.Processor``."""
     from .gemma import Processor as GemmaProcessor, is_gemma
     from .internvl import Processor as InternProcessor, is_internvl
+    from .llava import Processor as LlavaProcessor, is_llava
     if is_internvl(model_dir):
         return InternProcessor(model_dir)
     if is_gemma(model_dir):
         return GemmaProcessor(model_dir)
+    if is_llava(model_dir):
+        return LlavaProcessor(model_dir)
     from transformers import AutoProcessor
     return AutoProcessor.from_pretrained(str(model_dir))
 
@@ -301,6 +304,10 @@ def reader_for(model_dir, **kwargs):
     if is_gemma(model_dir):
         from .gemma import Reader as GemmaReader
         return GemmaReader(model_dir, **kwargs)
+    from .llava import is_llava
+    if is_llava(model_dir):
+        from .llava import Reader as LlavaReader
+        return LlavaReader(model_dir, **kwargs)
     return Reader(model_dir, **kwargs)
 
 
