@@ -12,7 +12,8 @@ differ in --; one arm by NAFNet's fold-out erased image under the removal metric
 image go through the tower as one batch of copies of the scan, each copy's block K hooked (one image never sees another: the blocks
 attend within an image).  Per region, image, arm, output and class of the 32-pixel cells (the human strike, ``classes``): the tokens and
 the mean cos(z, c); the raw's cos(x, c) beside them (OUT/regions.jsonl), and the patches each arm took.  NAFNet's places beside the
-human's: per class set (struck; struck and next) the patches of both, of NAFNet, of the human.
+human's: per class set (struck; struck and next) the patches of both, of NAFNet, of the human; the arm's chosen patches, those
+on the human's struck, the human's struck, the human's struck and next (``overlap``).
 
 Checks (OUT/checks.json; the bit-for-bit ones are ``models.transplant``'s on the card): 1 one grid for the scan and the erased image;
 2 the read pack's window is the transplant pack's raw crop, pixel for pixel (so the strike is the pack's map, as the spread had it);
@@ -52,9 +53,14 @@ def by_class(cos, cells):
 
 
 def overlap(naf, human):
-    """Patch counts of NAFNet's and the human's places, per class set."""
-    return {name: {'both': int(((naf <= top) & (human <= top)).sum()),
-                   'nafnet': int((naf <= top).sum()), 'human': int((human <= top).sum())} for name, top in (('struck', 0), ('next', 1))}
+    """Patch counts of NAFNet's and the human's places, per class set (struck; struck and next): of both, of NAFNet, of the human; and
+    the NAFNet arm's chosen patches (its struck and next), those of them on the human's struck patches, the human's struck, the human's
+    struck and next."""
+    out = {name: {'both': int(((naf <= top) & (human <= top)).sum()),
+                  'nafnet': int((naf <= top).sum()), 'human': int((human <= top).sum())} for name, top in (('struck', 0), ('next', 1))}
+    out['arm'] = {'chosen': int((naf <= 1).sum()), 'chosen_on_human_struck': int(((naf <= 1) & (human == 0)).sum()),
+                  'human_struck': int((human == 0).sum()), 'human_struck_and_next': int((human <= 1).sum())}
+    return out
 
 
 def measure(args):

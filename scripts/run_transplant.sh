@@ -64,10 +64,10 @@ if [ "$PART" = smoke ]; then
     if ! done_ readings; then
         for name in all9 none "${ARMS[@]}"; do place 22000 1 arm "$name" 0; done; wait; mark readings
     fi
-    "$PY" - "$R" "$P2/read_H_f0" "$OFF" "$CPU" > "$R/checks/checks.log" <<'PY'
+    "$PY" - "$R" "$P2/read_H_f0" "$OFF" "$CPU" "$SPREAD" > "$R/checks/checks.log" <<'PY'
 import json, sys
 from pathlib import Path
-R, H, off, cpu = (Path(a) for a in sys.argv[1:])
+R, H, off, cpu, spread_dir = (Path(a) for a in sys.argv[1:])
 load = lambda d: {g['id']: g for g in map(json.loads, (d/'predictions.jsonl').read_text().splitlines())}
 def same(a, b):
     A, B = load(a), load(b); differ = [{'id': k, 'a': A[k]['raw'], 'b': B.get(k, {}).get('raw')} for k in sorted(A) if A[k]['raw'] != B.get(k, {}).get('raw')]
@@ -84,6 +84,14 @@ for arm in arms:
             if st['replaced'] != want:
                 differ.append({'arm': arm, 'id': g['id'], 'image': image, 'read': st['replaced'], 'cpu': want})
 r['check3_patches_taken_vs_cpu'] = {'arms': arms, 'differ': differ[:50], 'differing': len(differ), 'passed': not differ}
+spread = {g['id']: g for g in map(json.loads, (spread_dir/'regions.jsonl').read_text().splitlines())}; differ, images = [], 0
+for arm in [a for a in arms if not a.endswith('NAFNet')]:
+    for g in map(json.loads, (R/f'read_{arm}_f0'/'transplant_stats.jsonl').read_text().splitlines()):
+        for image, st in g['images'].items():
+            rec = spread[g['id']][views[image]]['class_shares']['patches']; want = rec['struck']+(rec['next'] if arm.endswith('_next') else 0); images += 1
+            if st['replaced'] != want:
+                differ.append({'arm': arm, 'id': g['id'], 'image': image, 'read': st['replaced'], 'spread': want})
+r['check3_patches_taken_vs_spread_records'] = {'images': images, 'differ': differ[:50], 'differing': len(differ), 'passed': not differ and images > 0}
 r['check5_seconds'] = {d.name: {**json.loads((d/'complete.json').read_text()), 'wall_seconds': int((Path(str(d)+'.wall')).read_text())} for d in sorted(R.glob('read_*_f0'))}
 r['passed'] = all(v['passed'] for v in r.values() if isinstance(v, dict) and 'passed' in v)
 (R/'checks'/'checks.json').write_text(json.dumps(r, ensure_ascii=False, indent=1))

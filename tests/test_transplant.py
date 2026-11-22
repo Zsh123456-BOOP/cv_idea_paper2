@@ -65,4 +65,5 @@ def test_hook_on_a_toy_tower():
 def test_nafnet_places_counts():
     from revrender.eval.transplant_closeness import overlap
     naf, human = np.array([0, 1, 2, 0, 2]), np.array([0, 0, 1, 2, 2])
-    assert overlap(naf, human) == {'struck': {'both': 1, 'nafnet': 2, 'human': 2}, 'next': {'both': 2, 'nafnet': 3, 'human': 3}}
+    assert overlap(naf, human) == {'struck': {'both': 1, 'nafnet': 2, 'human': 2}, 'next': {'both': 2, 'nafnet': 3, 'human': 3},
+                                   'arm': {'chosen': 3, 'chosen_on_human_struck': 2, 'human_struck': 2, 'human_struck_and_next': 3}}
