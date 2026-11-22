@@ -62,7 +62,7 @@ def test_view_on_a_tiny_tower(tmp_path):
         for a in view.sets['default']: a.alpha_mlp.fill_(.3); a.alpha_pool.fill_(.05)
     with view.disable_adapter():
         assert all(torch.equal(a, b) for a, b in zip(frozen, levels(view, x, grid)))
-    target = [f+.1 for f in frozen]; view.train()
+    target = [f.detach()+.1 for f in frozen]; view.train()
     pair_loss(levels(view, x, grid), target).backward()
     plain = {k: q.grad.clone() for k, q in view.sets.named_parameters()}
     assert all(q.grad is None for q in tower.parameters())                                  # check 3
