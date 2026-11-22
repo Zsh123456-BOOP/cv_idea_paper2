@@ -43,7 +43,7 @@ def test_matched_levels_keep_s_or_x_where_s_is_farther():
 def test_pooled_and_within_variance_from_the_sums():
     from revrender.eval.feature_scale import QUANTITIES, _ratios
     rng = np.random.default_rng(0)
-    regions = [[rng.normal(size=(int(rng.integers(3, 9)), 5))*(1+q) for q in range(len(QUANTITIES))] for _ in range(6)]
+    regions = [[rng.normal(size=(n, 5))*(1+q) for q in range(len(QUANTITIES))] for n in rng.integers(3, 9, size=6)]
     wn = np.array([float(len(r[0])) for r in regions])
     ws = np.array([[[t.sum(0) for t in r]] for r in regions]); wq = np.array([[[float((t*t).sum()) for t in r]] for r in regions])
     win = np.array([[[float(((t-t.mean(0))**2).sum()) for t in r]] for r in regions])
