@@ -113,12 +113,14 @@ def mixed_features(features, mix):
 
 
 def install(reader, alpha=None, matched=None):
-    """Route a Qwen3-VL ``vlm_tokens.Reader``'s image features through a ``Mix`` (its student, if any, gives s); returns the mix."""
+    """Route a Qwen3-VL ``vlm_tokens.Reader``'s image features through a ``Mix`` (its student, if any, gives s), set as the reader's
+    ``mix``; returns it."""
     inner = reader.model.model
     if reader.students is not None:                                     # undo the student route: the mix calls the tower itself
         del inner.get_image_features
     mix = Mix(alpha, matched, reader.students.view if reader.students is not None else None)
     inner.get_image_features = mixed_features(inner.get_image_features, mix)
+    reader.mix = mix                                                    # Reader.read hands it the flags and the companion images
     return mix
 
 

@@ -274,7 +274,7 @@ def main(argv=None):
         if args.transplant_pack:
             from .models import transplant
             require(type(reader).__module__.endswith('vlm_tokens'), '--transplant-pack reads with a Qwen3-VL reader')
-            reader.mix = plant = transplant.install(reader, args.transplant_after)
+            plant = transplant.install(reader, args.transplant_after)
             mixed_rows = {r['id']: r for r in json.loads((args.transplant_pack/'pack.json').read_text())['rows']}
             places_pack = args.transplant_places or args.transplant_pack
             place_rows = {r['id']: r for r in json.loads((places_pack/'pack.json').read_text())['rows']}

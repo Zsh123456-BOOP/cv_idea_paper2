@@ -67,3 +67,16 @@ def test_nafnet_places_counts():
     naf, human = np.array([0, 1, 2, 0, 2]), np.array([0, 0, 1, 2, 2])
     assert overlap(naf, human) == {'struck': {'both': 1, 'nafnet': 2, 'human': 2}, 'next': {'both': 2, 'nafnet': 3, 'human': 3},
                                    'arm': {'chosen': 3, 'chosen_on_human_struck': 2, 'human_struck': 2, 'human_struck_and_next': 3}}
+
+
+def test_install_sets_the_readers_mix():
+    """Reader.read hands the flags and the companion images to ``reader.mix``: both installs must set it (T2's smoke run failed on
+    'student images without a student' when the mix's install left it None)."""
+    pytest.importorskip('torch')
+    import types
+    from revrender.models import feature_mix, transplant
+    for install in (lambda r: feature_mix.install(r, alpha=.5), lambda r: transplant.install(r, 9)):
+        inner = types.SimpleNamespace(get_image_features=lambda *a, **k: None, visual=types.SimpleNamespace(blocks=[None]*27))
+        reader = types.SimpleNamespace(model=types.SimpleNamespace(model=inner), students=None, mix=None)
+        got = install(reader)
+        assert reader.mix is got and got is not None

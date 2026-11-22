@@ -143,12 +143,14 @@ def transplanted_features(features, visual, plant):
 
 
 def install(reader, after):
-    """Route a Qwen3-VL ``vlm_tokens.Reader``'s image features (no student) through a ``Transplant``; returns it."""
+    """Route a Qwen3-VL ``vlm_tokens.Reader``'s image features (no student) through a ``Transplant``, set as the reader's ``mix``;
+    returns it."""
     inner = reader.model.model
     if reader.students is not None:
         raise ValueError('a transplant reads with the frozen tower, no student')
     plant = Transplant(after, len(inner.visual.blocks))
     inner.get_image_features = transplanted_features(inner.get_image_features, inner.visual, plant)
+    reader.mix = plant                                                  # Reader.read hands it the flags and the companion images
     return plant
 
 
