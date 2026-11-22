@@ -9,7 +9,9 @@ from the Qwen readers.
   prompt token for token; where the answer starts is the length of its prompt alone (``prompt_lengths``).
 - The images: the processor's own anyres cutting (a 336 base view and up to four 336 tiles, 576 tokens each, unpadded, a newline token
   per row).  The features the language model takes: the projector's output of layer -2 without its CLS token, packed per image
-  (``get_image_features``); a tower adapter is aligned on them (``tower``) and routed per image when reading (``image_route``).
+  (``get_image_features``); a tower adapter is aligned on their image tokens -- the newline tokens, a constant alike on both sides,
+  left out (revision eleven: the loss counts image tokens, as on the other models; ``tower``) -- and routed per image when reading,
+  the newlines in place (``image_route``).
 - The tower adapter: low-rank on the CLIP layers whose output reaches layer -2's features (0-22; ``ADAPTER_TARGETS``): the last layer's
   output is not used, so an adapter there would never learn.
 - The language model: 1-D positions over the unpadded tokens and the padding mask, as Gemma (``Reader.run``).  Hiding tokens and layer
@@ -30,7 +32,7 @@ def is_llava(model_dir):
 def processing(model_dir):
     image = json.loads((Path(model_dir)/'preprocessor_config.json').read_text())
     return {'cutting': image.get('aspect_ratio_setting', 'anyres'), 'grid_pinpoints': image['image_grid_pinpoints'], 'tile': 336, 'tokens_per_tile': 576,
-            'features': 'layer -2, CLS dropped, projector, packed per image (unpadded, a newline token per row)',
+            'features': 'layer -2, CLS dropped, projector, packed per image (unpadded, a newline token per row; the newlines left out of the adapter loss)',
             'system_turn': "the template's own: <<SYS>>\\n...\\n<</SYS>>\\n\\n before [INST]",
             'assistant_end': "the template's literal '<\\s> ' replaced by the end token '</s>' (taught and read alike)",
             'adapter_layers': "CLIP layers 0-22 (the last layer's output is not used)", 'language_attention': 'sdpa; causal, the padding mask and positions over the unpadded tokens'}
@@ -91,7 +93,8 @@ def image_route(features, students, off, grad=False):
 
 def tower_module(vision_tower, projector, newline, config):
     """A module whose forward gives what the language model takes from a batch of images: ``(the packed features of every image
-    [tokens, width], [])`` -- ``get_image_features`` of LLaVA-NeXT, its parts given (shared or loaded)."""
+    [tokens, width], [])`` -- ``get_image_features`` of LLaVA-NeXT, its parts given (shared or loaded); ``newline`` None packs them
+    without the newline tokens (the tower an adapter is aligned on)."""
     import types
     import torch
     from transformers.models.llava_next.modeling_llava_next import LlavaNextModel
@@ -112,7 +115,7 @@ def tower_module(vision_tower, projector, newline, config):
 
 
 def tower(model_dir):
-    """The tower alone (CLIP, the projector and the newline, bf16), loaded from the checkpoint's own tensors."""
+    """The tower alone (CLIP and the projector, bf16; no newline), loaded from the checkpoint's own tensors."""
     import torch
     from safetensors import safe_open
     from transformers import AutoConfig, CLIPVisionModel
@@ -120,11 +123,10 @@ def tower(model_dir):
     config = AutoConfig.from_pretrained(str(model_dir)); config.vision_config._attn_implementation = 'sdpa'
     vision = CLIPVisionModel._from_config(config.vision_config, dtype=torch.bfloat16)
     projector = LlavaNextMultiModalProjector(config).to(torch.bfloat16)
-    newline = torch.nn.Parameter(torch.zeros(config.text_config.hidden_size, dtype=torch.bfloat16))
-    module = tower_module(vision, projector, newline, config); state = {}
+    module = tower_module(vision, projector, None, config); state = {}           # no newline tokens in what is aligned (revision eleven)
     for path in sorted(Path(model_dir).glob('*.safetensors')):
         with safe_open(str(path), 'pt') as f:
-            state.update({k: f.get_tensor(k) for k in f.keys() if k.startswith(('vision_tower.', 'multi_modal_projector.', 'image_newline'))})
+            state.update({k: f.get_tensor(k) for k in f.keys() if k.startswith(('vision_tower.', 'multi_modal_projector.'))})
     missing, unexpected = module.load_state_dict(state, strict=False)
     if missing or unexpected:
         raise ValueError(f'tower weights: missing {missing[:3]}, unexpected {unexpected[:3]}')

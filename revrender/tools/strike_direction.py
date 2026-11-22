@@ -195,7 +195,14 @@ def main(argv=None):
                                          'student_record': records[i].get('student')} for i in first]
     diffs = [abs(c[a]-c[a+'_record']) for c in checks['check2_against_records'] for a in ('raw', 'student') if c[a] is not None and c[a+'_record'] is not None]
     checks['check2_largest_difference'] = max(diffs) if diffs else None
+    # the wiring check (revision one): over the five folds the means of this run's x and s closeness within 0.005 of the records'
+    both = {a: [i for i in per_region if per_region[i][a] is not None and records.get(i, {}).get(a) is not None] for a in ('raw', 'student')}
+    means = {a: {'this_run': float(np.mean([per_region[i][a] for i in both[a]])), 'records': float(np.mean([records[i][a] for i in both[a]])), 'regions': len(both[a])}
+             for a in ('raw', 'student')}
+    checks['check2_means'] = {a: {**m, 'difference': m['this_run']-m['records'], 'within_0.005': abs(m['this_run']-m['records']) <= .005} for a, m in means.items()}
     write_json(out/'checks.json', checks); write_json(out/'per_region.json', per_region)
+    require(args.limit or all(v['within_0.005'] for v in checks['check2_means'].values()),
+            f"check 2: the mean closeness is more than 0.005 off the records (an adapter, image or token set wired wrong): {checks['check2_means']}")
 
     # the folds' fits and the measures
     result = {'layers': {}, 'merged': {}, 'erasure': {}, 'leace': {}, 'residual_by_block': {}}
