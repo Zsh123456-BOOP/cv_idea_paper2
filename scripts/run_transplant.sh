@@ -9,7 +9,8 @@
 # erased image's, its checks inside, then its summary.  PART=smoke: checks 1 and 2 on the features (models.transplant, 20 regions of
 # fold 0, bit for bit), fold 0 read under the eleven arms and under every patch after 9 blocks (against H's readings) and none (against
 # T2's --student-off reading), the patches taken against the CPU run's, and the seconds.  PART=main: the eleven arms on the five folds.
-# Cards 1 and 2, one reading on a card at a time; cards 0 and 3 not touched.  Unattended; a step whose marker is in $R is skipped.
+# Cards CARD_INDICES (default 1 and 2; the user allowed 0 as well for this round on 2026-11-23), one reading on a card at a time; card 3
+# never.  Unattended; a step whose marker is in $R is skipped.
 set -Eeuo pipefail
 source "$(dirname "$0")/_common.sh"
 require_clean_source
@@ -34,7 +35,8 @@ if [ "$PART" = cpu ]; then
     stamp "cpu done"; touch "$R/COMPLETE"; exit 0
 fi
 
-CARDS=("${ALL_CARDS[1]}" "${ALL_CARDS[2]}")
+CARDS=(); for i in ${CARD_INDICES:-1 2}; do   # the cards the user allows this round (default 1 and 2; 2026-11-23 also 0); never 3
+    [ "$i" != 3 ] || { echo 'card 3 is not ours'; exit 2; }; CARDS+=("${ALL_CARDS[$i]}"); done
 place() { place_on_cards "$@"; }   # MiB WHOLE FUNCTION ARGS...: on card 1 or 2, whichever opens first (_common.sh)
 job() {   # OUT -- COMMAND...: one GPU job on $CARD
     local out="$1" t0; shift 2; t0=$(date +%s)
